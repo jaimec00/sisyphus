@@ -11,9 +11,13 @@ the run is resumable.
 0. **Sync:** work in a worktree branched from the latest `origin/main`
    (`git fetch origin`). Re-`git fetch origin && git rebase origin/main` before
    opening the PR so "green" is green against current main.
-1. Read the **brief from the GitHub issue** (`gh issue view <n>`): acceptance
-   criteria + owned paths. If the issue is missing/unclear, stop and escalate to
-   Sisyphus. (The brief is the issue, not a file.)
+1. Read the **brief from the GitHub issue**: acceptance criteria + owned paths.
+   Use the JSON form: `gh issue view <n> --json number,title,body,labels,state`.
+   The bare `gh issue view <n>` fails in this repo on the Projects-classic
+   deprecation GraphQL error, so always pin `--json` fields. Treat an empty or
+   missing body as a **hard stop**, not a silent pass. If the issue is
+   missing/unclear, stop and escalate to Sisyphus. (The brief is the issue, not a
+   file.)
 2. Dispatch **context-explorer** → `context.md`.
 3. Dispatch **implementer** → code + tests + `implementation.md`.
 4. Dispatch **red-team** → `red_team.md`.

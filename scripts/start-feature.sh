@@ -70,6 +70,8 @@ tmux has-session -t "$tmux_name" 2>/dev/null && die "tmux session already runnin
 inner="export PATH=\"\$HOME/.local/bin:\$HOME/.pixi/bin:\$PATH\"; \
 cd '$wt'; \
 mkdir -p '$logdir'; \
+echo '[bootstrap] pixi install (provision env before first agent action)...' | tee -a '$log'; \
+pixi install >>'$log' 2>&1 || echo '[bootstrap] pixi install returned nonzero; manager will surface it' | tee -a '$log'; \
 claude --model '$MODEL' --permission-mode bypassPermissions \
   --output-format stream-json --verbose \
   -p '/run-feature $ISSUE' 2>&1 | tee '$log'; \

@@ -17,5 +17,10 @@ Rules:
 - Cover: relevant existing modules/APIs; the CLAUDE.md architectural invariants
   that apply here; the acceptance criteria restated; the brief's owned paths;
   likely touch points; existing tests/patterns to follow; known gotchas.
+- When the feature turns on the **behaviour of a dependency or tool** (build
+  system, test runner, plugin), read that tool's **installed source** in the
+  environment (e.g. the rattler/pixi package cache) rather than reasoning from
+  memory. Label each such claim explicitly as **inferred-from-source** vs.
+  **empirically-observed**, so the implementer knows what still needs verifying.
 - Be concise and high-signal — a map, not a novel.
 - Do **not** design the solution or write code. That is the implementer's job.
