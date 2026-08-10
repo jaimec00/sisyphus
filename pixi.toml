@@ -23,4 +23,10 @@ python = "*"
 
 [tasks]
 build = "colcon build --symlink-install"
-test = "colcon test && colcon test-result --verbose"
+# `colcon test` reports success for a package that collected zero tests, and
+# `colcon test-result` hides such a result unless --all is passed. This driver
+# runs colcon (plus the workspace-tooling suite), surfaces every result, and
+# fails if any package produced no tests -- see scripts/check_test_integrity.py.
+test = "python scripts/check_test_integrity.py"
+# Re-read the results already in build/ without re-running anything.
+test-audit = "python scripts/check_test_integrity.py --audit-only"

@@ -15,9 +15,11 @@ setup(
     zip_safe=True,
     maintainer='Jaime',
     maintainer_email='hejaca00@gmail.com',
-    description='Robot description: URDF/Xacro + MJCF (4-wheel base + extendable column + 2 arms).',
+    description=(
+        'Robot description: URDF/Xacro + MJCF '
+        '(4-wheel base + extendable column + 2 arms).'),
     license='MIT',
-    tests_require=['pytest'],
+    extras_require={'test': ['pytest']},
     entry_points={
         'console_scripts': [],
     },

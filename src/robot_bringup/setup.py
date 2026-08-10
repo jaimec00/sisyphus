@@ -17,7 +17,7 @@ setup(
     maintainer_email='hejaca00@gmail.com',
     description='Bringup: launch files (Python), params (YAML), semantic map.',
     license='MIT',
-    tests_require=['pytest'],
+    extras_require={'test': ['pytest']},
     entry_points={
         'console_scripts': [],
     },

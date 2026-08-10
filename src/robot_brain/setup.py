@@ -17,7 +17,7 @@ setup(
     maintainer_email='hejaca00@gmail.com',
     description='LLM harness: planner loop, prompt assembly, tag/command parsing (the brain).',
     license='MIT',
-    tests_require=['pytest'],
+    extras_require={'test': ['pytest']},
     entry_points={
         'console_scripts': [],
     },
