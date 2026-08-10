@@ -12,6 +12,7 @@ import pytest
 from robot_skills import (
     FailureCode,
     Grasp,
+    GripperObservation,
     JsonSerializable,
     NavigateTo,
     Observation,
@@ -94,6 +95,13 @@ def test_from_dict_raises_only_serialization_error():
     one_armed['robot'] = {**good['robot'], 'grippers': [good['robot']['grippers'][0]]}
     with pytest.raises(SerializationError, match='one entry per side'):
         Observation.from_dict(one_armed)
+
+    # A gripper carrying an object it reports not gripping is likewise refused
+    # by the constructor, and must surface as a parse error like the rest.
+    held = good['robot']['grippers'][0]
+    held = {**held, 'held_object_id': 'mug_1', 'grasped': True}
+    with pytest.raises(SerializationError, match='while grasped=False'):
+        GripperObservation.from_dict({**held, 'grasped': False})
 
     # And so is the status/code agreement on a result.
     result = SkillResult.ok(NavigateTo('kitchen'), observation).to_dict()
