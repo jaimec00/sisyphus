@@ -21,8 +21,9 @@ git-tracked `docs/features/<slug>/` files. GitHub is both the state substrate
 and the trigger.
 
 ## The loop (per feature)
-1. **Brief** — Sisyphus writes `docs/features/<slug>/brief.md` (goal, owned
-   paths, acceptance criteria, required tests) and opens a labeled GitHub issue.
+1. **Brief** — Sisyphus opens a **brief PR** (self-merged, no full loop) adding
+   `docs/features/<slug>/brief.md` (goal, owned paths, acceptance criteria,
+   required tests), plus a labeled GitHub issue.
 2. **Trigger** — a self-hosted GitHub Actions runner (or a small dev-runner) on
    the laptop starts a Claude Code manager in a fresh worktree
    (`git worktree add worktrees/<slug> -b feat/<slug>`).
@@ -37,11 +38,25 @@ and the trigger.
    Loop 4–7 until green.
 8. **PR** — the manager opens a **squash-merge** PR; light CI (lint) + the full
    local suite must pass.
-9. **Merge** — Sisyphus reviews readiness, picks order, squash-merges. Other
-   open worktrees rebase on main, re-green, then take their turn.
+9. **Merge** — when the PR is green (tests + red-team + CI), Sisyphus picks order
+   and squash-merges (no manual approval gate — green is the gate). Other open
+   worktrees then rebase on main, re-green, and take their turn.
 
 `status.md` tracks phase/round/blockers so any agent (or a restart) resumes
 deterministically.
+
+## Change management & staying current
+Every change to `main` — features **and** Sisyphus's briefs/docs/ops — goes
+through a PR; no direct pushes. No manual approval gate; green checks are the
+gate. Operational/meta PRs are self-merged by Sisyphus without the full loop.
+Because main moves, agents `fetch`+`rebase origin/main` before work and after any
+merge — never build on stale main.
+
+## Escalation channel
+Workers escalate in-process to their worktree manager. Only the **manager**
+converses outward: it comments on its PR/issue and pauses; Sisyphus (polling PR
+status via a cron) replies by comment (relaying genuine design forks to Jaime);
+the manager resumes on the reply.
 
 ## Parallelism
 Sisyphus decomposes along package seams (`robot_brain` / `robot_skills` / ...).
@@ -52,9 +67,12 @@ integration/nightly suite is the final gate.
 Run/test logs go to gitignored `.dev/runs/<slug>/<ts>/`, kept until the PR
 merges, then pruned. The nightly job cleans stragglers.
 
-## Nightly
-A cron job on the laptop runs the full suite on `main` and reports regressions.
+## Automated checks
+- **Laptop nightly cron:** runs the full suite on `main`, reports regressions.
+- **Sisyphus (Pi) cron:** polls open PR statuses + manager escalation comments,
+  squash-merges green PRs, and answers escalations.
 
 ## Budgets & safety
-Per-feature agent/token caps. Merges to main are gated (ready + green + Sisyphus
-approval). No force-push to main; no destructive actions without Jaime.
+Per-feature agent/token caps. Merges require green checks (tests + red-team + CI);
+Sisyphus merges — no manual approval gate. No force-push to main; no destructive
+actions without Jaime.
