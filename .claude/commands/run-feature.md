@@ -17,12 +17,19 @@ the run is resumable.
 3. Dispatch **implementer** → code + tests + `implementation.md`.
 4. Dispatch **red-team** → `red_team.md`.
 5. If BLOCK items exist: resume **implementer** to fix. Max **2** red-team↔fix
-   rounds; surviving NOTES → GitHub issues.
+   rounds; surviving NOTES → proposed as follow-ups in `retro.md` (Sisyphus files
+   the issues; do not create them yourself).
 6. Dispatch **test-runner**. If FAIL: resume implementer (may read the logs) →
    back to steps 4/6 as needed until green.
 7. When green against **current** main: open a **squash-merge** PR, ensure light
    CI + the full local suite pass, and report "ready" to Sisyphus with the PR
    link. **Do NOT merge** — Sisyphus owns merges.
+8. **Retro:** write `docs/features/<slug>/retro.md` — (a) operational
+   difficulties the team hit, (b) concrete suggestions (workflow changes, agent
+   tooling, missing context/docs that would have helped), (c) **drafted
+   follow-up proposals** (title + rationale + affected paths). Do **not** create
+   issues yourself — Sisyphus files them. Post a one-line PR comment pointing to
+   the retro so Sisyphus's cron surfaces it.
 
 Escalate to Sisyphus only for a real blocker or a genuine design fork. As the
 worktree manager, **you are the only one who converses outward** — post a comment
