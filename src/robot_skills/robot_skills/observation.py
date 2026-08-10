@@ -145,6 +145,17 @@ class GripperObservation(JsonSerializable):
     The one combination that cannot happen is holding a named object without
     gripping it, and the constructor rejects it; the Mock, which has no force
     sensing, derives ``grasped`` from what it holds.
+
+    **Contract for a backend with real sensing.**  That rejection makes "the
+    world model still thinks it carries ``mug_1``, but the jaws report empty" --
+    a dropped object -- unrepresentable, on purpose: a stale ``held_object_id``
+    is a lie the brain would plan against.  On a detected drop the backend must
+    therefore clear ``held_object_id`` (and the matching
+    :attr:`SceneObject.held_by`) in the *same* update that reports
+    ``grasped=False``, and place the object where it believes it fell.  It must
+    not build the observation from a half-updated world model: the constructor
+    raises a ``ValueError`` inside ``get_observation()``, where there is no
+    parse boundary to translate it.
     """
 
     side: Side
@@ -412,13 +423,16 @@ class Observation(JsonSerializable):
         """Rebuild an :class:`Observation` from its dict form."""
         context = cls.__name__
         data = ensure_mapping(data, context=context)
+        # Version first: a payload from another schema most likely trips
+        # check_keys on a key that version added, and "unknown key(s): ..."
+        # would send the reader hunting an LLM typo instead of a mismatch.
+        check_schema_version(data, context=context)
         check_keys(
             data,
             required=('robot',),
             optional=(SCHEMA_VERSION_KEY, 'objects', 'known_locations'),
             context=context,
         )
-        check_schema_version(data, context=context)
         objects: tuple[SceneObject, ...] = ()
         if 'objects' in data:
             objects = tuple(

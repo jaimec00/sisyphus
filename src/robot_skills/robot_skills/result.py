@@ -183,13 +183,18 @@ class SkillResult(JsonSerializable):
         """Return whether the skill completed successfully."""
         return self.status is SkillStatus.OK
 
-    def grasped(self, side: Side) -> bool:
+    def did_grasp(self, side: Side) -> bool:
         """Return whether ``side``'s gripper holds a load after this skill (D19).
 
         The closed-loop answer to "did I get it?".  ``close_gripper`` on thin
         air *succeeds* and reports ``False`` here; an empty grip is information,
         not an error.  This reads through to the observation the result already
         carries rather than copying the flag, so the two can never disagree.
+
+        Named ``did_grasp`` rather than ``grasped`` deliberately: it takes a
+        side, and a method sharing a name with
+        :attr:`GripperObservation.grasped` would make the plausible-looking
+        ``if result.grasped:`` a bound method -- always true, never failing.
         """
         return self.observation.robot.gripper(side).grasped
 
@@ -241,13 +246,14 @@ class SkillResult(JsonSerializable):
         """Rebuild a :class:`SkillResult` from its dict form."""
         context = cls.__name__
         data = ensure_mapping(data, context=context)
+        # Version before keys: see the note in ``Observation.from_dict``.
+        check_schema_version(data, context=context)
         check_keys(
             data,
             required=('skill', 'status', 'observation'),
             optional=(SCHEMA_VERSION_KEY, 'reason', 'code'),
             context=context,
         )
-        check_schema_version(data, context=context)
         with parse_errors(context):
             return cls(
                 skill=Skill.from_dict(get_mapping(data, 'skill', context=context)),

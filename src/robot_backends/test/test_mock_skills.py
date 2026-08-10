@@ -96,7 +96,7 @@ def test_grasp_attaches_an_object_to_the_named_gripper(backend, side, object_id)
     assert gripper.state is GripperState.CLOSED
     assert gripper.held_object_id == object_id
     assert gripper.grasped is True
-    assert result.grasped(side) is True, 'the closed loop answers "did I get it?"'
+    assert result.did_grasp(side) is True, 'the closed loop answers "did I get it?"'
     item = result.observation.find_object(object_id)
     assert item.held_by is side
     assert item.pose == gripper.pose, 'a held object sits in the gripper'
@@ -282,13 +282,13 @@ def test_closing_on_nothing_succeeds_and_reports_no_grasp(backend):
 
     assert result.status is SkillStatus.OK
     assert result.code is None
-    assert result.grasped(Side.LEFT) is False
+    assert result.did_grasp(Side.LEFT) is False
     assert result.observation.robot.gripper(Side.LEFT).state is GripperState.CLOSED
 
     # Closing an already-closed, still-empty gripper stays a success too.
     again = backend.execute(CloseGripper(Side.LEFT))
     assert again.status is SkillStatus.OK
-    assert again.grasped(Side.LEFT) is False
+    assert again.did_grasp(Side.LEFT) is False
 
 
 def test_closing_on_a_held_object_keeps_reporting_the_grasp(backend):
@@ -298,9 +298,9 @@ def test_closing_on_a_held_object_keeps_reporting_the_grasp(backend):
     result = backend.execute(CloseGripper(Side.LEFT))
 
     assert result.status is SkillStatus.OK
-    assert result.grasped(Side.LEFT) is True
+    assert result.did_grasp(Side.LEFT) is True
     assert result.observation.robot.gripper(Side.LEFT).held_object_id == 'mug_1'
-    assert result.grasped(Side.RIGHT) is False
+    assert result.did_grasp(Side.RIGHT) is False
 
 
 def test_open_gripper_on_an_open_gripper_is_an_idempotent_success(backend):
@@ -312,7 +312,7 @@ def test_open_gripper_on_an_open_gripper_is_an_idempotent_success(backend):
         assert result.status is SkillStatus.OK
         assert result.code is None
         assert 'already open' in result.reason
-        assert result.grasped(Side.RIGHT) is False
+        assert result.did_grasp(Side.RIGHT) is False
         assert result.observation.robot.gripper(Side.RIGHT).state is GripperState.OPEN
 
 

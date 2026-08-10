@@ -173,6 +173,30 @@ def test_a_foreign_schema_version_is_refused_rather_than_guessed_at():
         Observation.from_dict({**observation, 'schema_version': True})
 
 
+def test_a_foreign_version_is_diagnosed_before_the_keys_it_explains():
+    """The reason a v2 payload looks wrong is the version, not a typo'd key.
+
+    A future version most likely carries keys this build has never heard of, so
+    checking keys first would report ``unknown key(s): ...`` and send the reader
+    hunting an LLM typo instead of a schema mismatch.
+    """
+    from_the_future = {
+        **make_observation().to_dict(),
+        'schema_version': SCHEMA_VERSION + 1,
+        'ambient_temperature_c': 21.5,
+    }
+    with pytest.raises(SerializationError, match='unsupported schema version'):
+        Observation.from_dict(from_the_future)
+
+    result = {
+        **SkillResult.ok(NavigateTo('kitchen'), make_observation()).to_dict(),
+        'schema_version': SCHEMA_VERSION + 1,
+        'duration_s': 1.5,
+    }
+    with pytest.raises(SerializationError, match='unsupported schema version'):
+        SkillResult.from_dict(result)
+
+
 def test_check_keys_reports_missing_and_unknown():
     """Key validation names the offending keys, for actionable brain errors."""
     with pytest.raises(SerializationError, match='missing required key\\(s\\): b'):
