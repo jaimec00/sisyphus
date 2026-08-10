@@ -1,0 +1,58 @@
+# Status: mock-skill-api
+
+phase: done         # context | impl | redteam | fix | test | pr | done
+round: 2            # red-team ↔ fix rounds (cap: 2)
+owner_agent: worktree manager
+blockers: none      # or: "escalation needed — <describe>"
+pr: https://github.com/jaimec00/sisyphus/pull/4
+last_update: 2026-08-10
+
+## Log
+- 2026-08-10 created; branch `feat/mock-skill-api` cut from main @ bc0ff54
+- 2026-08-10 brief.md verified present (acceptance criteria + owned paths)
+- 2026-08-10 phase=context — dispatching context-explorer
+- 2026-08-10 context.md written (317 lines) by context-explorer; phase=impl
+- 2026-08-10 impl: robot_skills — skill/observation/result types + 55 tests (commit b435acf)
+- 2026-08-10 impl: robot_backends — RobotBackend + MockBackend + 52 tests (commit 408df14)
+- 2026-08-10 impl: setup.py extras_require + package-local pytest.ini so `colcon test`
+  runs pytest at all (modern setuptools drops `tests_require`; env's launch_testing
+  plugin is incompatible with pytest 9) — both inside owned paths
+- 2026-08-10 impl: `pixi run build` green; `colcon test` on the two owned packages
+  green — 107 tests, 0 errors, 0 failures, 0 skipped
+- 2026-08-10 impl: implementation.md written; all 6 acceptance criteria covered
+- 2026-08-10 NOTE for manager (outside owned paths, NOT fixed): whole-workspace
+  `pixi run test` still fails for the 5 empty skeleton packages (robot_brain,
+  robot_bringup, robot_description, robot_perception, robot_safety) — they have no
+  tests, so colcon falls back to `python -m unittest` and exits 5. Also a pre-existing
+  E501 in `src/robot_description/setup.py`.
+- 2026-08-10 red_team.md written (round 1): 0 BLOCK, 11 NOTE; verdict READY
+- 2026-08-10 phase=fix (voluntary round for NOTE 2,3,4,5,6,11-typing); rest → issues
+- 2026-08-10 fix round 1 done (commit 3bdb6c7): all 6 items addressed, none refused —
+  AST-based rclpy detector + a test for the detector; Observation enforces the
+  held-object invariant both directions; implicit-side Grasp is reach-aware;
+  pose assertions use a tolerance helper + a badly-scaled case (implementation
+  unchanged); wire-format compatibility policy documented; typing nit fixed
+- 2026-08-10 fix: `pixi run build` green; `colcon test` on the two owned packages
+  green — 116 tests (58 + 58), 0 errors, 0 failures, 0 skipped
+- 2026-08-10 fix: implementation.md gained a "Round 1 fixes" section
+- 2026-08-10 round-1 fixes landed (3bdb6c7, 722f8fc): all 6 NOTEs done, none refused; 107 -> 116 tests
+- 2026-08-10 phase=redteam round 2 (delta-only) + test-runner dispatched in parallel
+- 2026-08-10 test-runner PASS: 116 tests (58+58), 0 failures; whole-workspace baseline = 5 empty skeleton pkgs (pre-existing)
+- 2026-08-10 red_team_round2.md: 1 BLOCK + 6 NOTE; phase=fix round 2 (cap reached — last fix round)
+- 2026-08-10 fix round 2 done (commits 19799e8, 1ab6bbf, 4d90962, 8c6296d): BLOCK 1 +
+  NOTEs A-F all addressed, none refused — left-preference test now uses plate_1 and
+  provably fails under nearest-arm selection (verified by injecting it); rclpy scan is
+  recursive, asserts what it visited, and catches the import_module kwarg form; exact
+  assertions restored for placed-object poses; Place/Grasp asymmetry documented;
+  from_dict now raises only SerializationError
+- 2026-08-10 fix: `pixi run build` green; `colcon test` on the two owned packages
+  green — 117 tests (59 + 58), 0 errors, 0 failures, 0 skipped
+- 2026-08-10 fix: implementation.md gained a "Round 2 fixes" section; §9 records the
+  deliberate Place/Grasp asymmetry. Round cap reached — next gate is the test-runner.
+- 2026-08-10 round-2 fixes landed (19799e8..8849b07): BLOCK 1 + NOTEs A-F, none refused; 116 -> 117 tests
+- 2026-08-10 BLOCK 1 fix verified by regression injection: new test is the only one that catches nearest-arm selection
+- 2026-08-10 main moved (b17c055, 2 ops PRs) — rules changed: NOTEs now proposed in retro.md, Sisyphus files issues
+- 2026-08-10 rebased onto origin/main b17c055; clean, no conflicts, scope still owned-paths-only
+- 2026-08-10 re-green after rebase: 117 tests (59+58), 0 failures, clean rebuild — green against CURRENT main
+- 2026-08-10 retro.md written (9 proposed follow-ups); phase=pr
+- 2026-08-10 PR #4 opened (squash-merge); retro pointer comment posted; phase=done — READY, awaiting Sisyphus merge
