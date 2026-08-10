@@ -253,7 +253,11 @@ class MockBackend(RobotBackend):
         side = self._resolve_holding_side(skill.side)
         gripper = self._grippers[side]
         held_id = gripper.held_object_id
-        assert held_id is not None  # guaranteed by _resolve_holding_side
+        if held_id is None:  # unreachable: _resolve_holding_side guarantees a load
+            raise _SkillRefused(
+                FailureCode.GRIPPER_EMPTY,
+                f'the {side.value} gripper is empty, there is nothing to place',
+            )
         item = self._objects[held_id]
         offset = self._require_reachable(side, skill.pose, f'place {held_id!r}')
 
