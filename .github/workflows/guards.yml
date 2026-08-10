@@ -1,0 +1,20 @@
+name: guards
+
+on:
+  pull_request:
+
+jobs:
+  docs-clean:
+    name: no lingering feature docs
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: docs/features must be empty (ephemeral docs deleted before merge)
+        run: |
+          files="$(git ls-files 'docs/features/*' || true)"
+          if [ -n "$files" ]; then
+            echo "::error::Ephemeral feature docs still present — delete docs/features/<slug>/ before merge."
+            echo "$files"
+            exit 1
+          fi
+          echo "docs/features/ is clean."
