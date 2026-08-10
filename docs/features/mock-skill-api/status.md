@@ -1,10 +1,10 @@
 # Status: mock-skill-api
 
-phase: pr           # context | impl | redteam | fix | test | pr | done
+phase: done         # context | impl | redteam | fix | test | pr | done
 round: 2            # red-team ↔ fix rounds (cap: 2)
 owner_agent: worktree manager
 blockers: none      # or: "escalation needed — <describe>"
-pr: -
+pr: https://github.com/jaimec00/sisyphus/pull/4
 last_update: 2026-08-10
 
 ## Log
@@ -55,3 +55,4 @@ last_update: 2026-08-10
 - 2026-08-10 rebased onto origin/main b17c055; clean, no conflicts, scope still owned-paths-only
 - 2026-08-10 re-green after rebase: 117 tests (59+58), 0 failures, clean rebuild — green against CURRENT main
 - 2026-08-10 retro.md written (9 proposed follow-ups); phase=pr
+- 2026-08-10 PR #4 opened (squash-merge); retro pointer comment posted; phase=done — READY, awaiting Sisyphus merge
