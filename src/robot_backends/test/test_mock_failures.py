@@ -14,6 +14,7 @@ on the returned status.
 from mock_backend_fixtures import assert_refused, run, snapshot
 from robot_backends import MockBackend, MockWorld, ObjectSpec, RobotModel
 from robot_skills import (
+    BACKEND_REFUSAL_CODES,
     ExtendColumn,
     FailureCode,
     Grasp,
@@ -207,6 +208,34 @@ def test_a_long_run_of_failures_leaves_the_world_pristine(backend):
         assert_refused(backend, skill, code)
 
     assert snapshot(backend) == before
+
+
+def test_every_mock_refusal_is_owned_by_the_backend_not_the_safety_layer(backend):
+    """D17: the mock only ever says "can't be done"; it never clamps or aborts.
+
+    The mock has no dynamic-safety behaviour, so a safety-event code coming out
+    of it would mean a code was misclassified or a refusal was mislabelled.
+    """
+    run(backend, NavigateTo('kitchen'), Grasp('mug_1', Side.LEFT))
+    refusals = (
+        (NavigateTo('mars'), FailureCode.UNKNOWN_LOCATION),
+        (Grasp('ghost_1'), FailureCode.UNKNOWN_OBJECT),
+        (Grasp('counter_1'), FailureCode.NOT_GRASPABLE),
+        (Grasp('mug_1'), FailureCode.OBJECT_ALREADY_HELD),
+        (Grasp('plate_1', Side.LEFT), FailureCode.GRIPPER_OCCUPIED),
+        (Place(Pose.from_xyz(2.3, -0.1, 0.9), Side.RIGHT), FailureCode.GRIPPER_EMPTY),
+        (ExtendColumn(9.0), FailureCode.OUT_OF_RANGE),
+        (MoveGripper(Side.RIGHT, Pose.from_xyz(9.0, 9.0, 9.0)), FailureCode.OUT_OF_REACH),
+    )
+    for skill, code in refusals:
+        result = assert_refused(backend, skill, code)
+        assert result.code.is_backend_refusal is True, (
+            f'{skill!r} reported {result.code} as a safety event')
+        assert result.code.is_safety_event is False
+
+    covered = {code for _, code in refusals}
+    assert covered | {FailureCode.UNSUPPORTED_SKILL} == BACKEND_REFUSAL_CODES, (
+        'a backend-refusal code exists that no mock path here exercises')
 
 
 def test_failure_rules_come_from_the_world_not_from_hard_coded_names():

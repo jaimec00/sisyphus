@@ -97,6 +97,7 @@ def test_execute_is_total_over_unknown_skills(backend):
     result = backend.execute(_SingSkill())
     assert result.status is SkillStatus.FAILED
     assert result.code is FailureCode.UNSUPPORTED_SKILL
+    assert result.code.is_backend_refusal is True, 'the backend refused; nothing moved (D17)'
     assert 'sing' in result.reason
     assert result.observation == before
 

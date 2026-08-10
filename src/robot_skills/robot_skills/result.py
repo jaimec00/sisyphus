@@ -15,6 +15,11 @@ Failures carry both a machine-readable :class:`FailureCode` (so a planner or a
 test can branch without string matching) and a human-readable ``reason`` (so
 the LLM and the logs get the specifics: which object, which gripper, how far
 out of reach).
+
+Every failure code is additionally attributed to the layer that owns it (D17):
+:data:`BACKEND_REFUSAL_CODES` versus :data:`SAFETY_EVENT_CODES`.  The split is
+data, not behaviour -- it lets the brain, the backends and the safety layer
+branch on *who said no* without string-matching a reason.
 """
 
 from dataclasses import dataclass
@@ -35,7 +40,13 @@ from robot_skills.serialization import (
 )
 from robot_skills.skills import Skill
 
-__all__ = ['FailureCode', 'SkillResult', 'SkillStatus']
+__all__ = [
+    'BACKEND_REFUSAL_CODES',
+    'SAFETY_EVENT_CODES',
+    'FailureCode',
+    'SkillResult',
+    'SkillStatus',
+]
 
 
 @unique
@@ -50,8 +61,28 @@ class SkillStatus(Enum):
 class FailureCode(Enum):
     """Machine-readable reason a skill was refused or could not complete.
 
-    Backends must reuse these codes rather than inventing prose categories; a
-    later safety layer reports its rejections as :attr:`REJECTED`.
+    Backends must reuse these codes rather than inventing prose categories.
+
+    **Ownership (D17).**  Every code belongs to exactly one layer, split by the
+    *kind* of limit it reports, not by the component that happens to notice it:
+
+    * **backend refusal** -- *"can't be done"*.  The backend inspects the goal
+      against the world and its own kinematics/workspace and refuses the skill
+      up front, before any motion; nothing has moved.  Membership:
+      :data:`BACKEND_REFUSAL_CODES`, queryable as :attr:`is_backend_refusal`.
+    * **safety-layer clamp/abort** -- *"unsafe to continue"*.  The safety layer
+      (D4) sits between brain-issued skills and the backend and clamps or
+      aborts them, in flight if need be, reporting a safety event.  Membership:
+      :data:`SAFETY_EVENT_CODES`, queryable as :attr:`is_safety_event`.
+
+    The distinction is what the brain needs to decide what to do next: a
+    refusal means *pick a different goal*, a safety event means *the motion was
+    stopped mid-way, re-observe before assuming anything*.
+
+    Every member is in exactly one of the two sets (tested), so classifying a
+    new code is a decision the author has to make rather than one they can
+    forget.  Over-force while closing a gripper, for example, is a safety event
+    -- not a ``gripper_empty`` refusal (D19).
     """
 
     UNKNOWN_LOCATION = 'unknown_location'
@@ -64,6 +95,42 @@ class FailureCode(Enum):
     OUT_OF_RANGE = 'out_of_range'
     UNSUPPORTED_SKILL = 'unsupported_skill'
     REJECTED = 'rejected'
+
+    @property
+    def is_backend_refusal(self) -> bool:
+        """Return whether a backend owns this code ("can't be done")."""
+        return self in BACKEND_REFUSAL_CODES
+
+    @property
+    def is_safety_event(self) -> bool:
+        """Return whether the safety layer owns this code ("unsafe to continue")."""
+        return self in SAFETY_EVENT_CODES
+
+
+#: Codes a backend raises to refuse a skill up front, before anything moves.
+#:
+#: ``GRIPPER_EMPTY`` is here deliberately: placing with nothing held is a
+#: precondition the backend checks before motion, not an in-flight abort.
+BACKEND_REFUSAL_CODES: frozenset[FailureCode] = frozenset({
+    FailureCode.UNKNOWN_LOCATION,
+    FailureCode.UNKNOWN_OBJECT,
+    FailureCode.NOT_GRASPABLE,
+    FailureCode.OBJECT_ALREADY_HELD,
+    FailureCode.GRIPPER_OCCUPIED,
+    FailureCode.GRIPPER_EMPTY,
+    FailureCode.OUT_OF_REACH,
+    FailureCode.OUT_OF_RANGE,
+    FailureCode.UNSUPPORTED_SKILL,
+})
+
+#: Codes the safety layer reports when it clamps or aborts a skill (D4/D17).
+#:
+#: Listed explicitly rather than derived as "everything else", so that adding a
+#: dynamic-safety code (e-stop, collision abort, gripper over-force) is a
+#: deliberate classification and not a silent default.
+SAFETY_EVENT_CODES: frozenset[FailureCode] = frozenset({
+    FailureCode.REJECTED,
+})
 
 
 @dataclass(frozen=True)
