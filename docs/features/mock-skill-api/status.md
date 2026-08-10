@@ -1,8 +1,8 @@
 # Status: mock-skill-api
 
-phase: fix         # context | impl | redteam | fix | test | pr | done
+phase: redteam      # context | impl | redteam | fix | test | pr | done
 round: 1            # red-team ↔ fix rounds (cap: 2)
-owner_agent: implementer
+owner_agent: red-team (round 2, delta-only) + test-runner
 blockers: none      # or: "escalation needed — <describe>"
 pr: -
 last_update: 2026-08-10
@@ -35,3 +35,5 @@ last_update: 2026-08-10
 - 2026-08-10 fix: `pixi run build` green; `colcon test` on the two owned packages
   green — 116 tests (58 + 58), 0 errors, 0 failures, 0 skipped
 - 2026-08-10 fix: implementation.md gained a "Round 1 fixes" section
+- 2026-08-10 round-1 fixes landed (3bdb6c7, 722f8fc): all 6 NOTEs done, none refused; 107 -> 116 tests
+- 2026-08-10 phase=redteam round 2 (delta-only) + test-runner dispatched in parallel
