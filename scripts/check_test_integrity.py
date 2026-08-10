@@ -375,19 +375,21 @@ def format_age(seconds):
 def format_report(audits, *, notes=(), show_age=False):
     """Render the per-package summary printed on both success and failure."""
     width = max([len(a.name) for a in audits] + [len('package')])
+    status_width = max([len(a.status) for a in audits] + [len('status')])
     header = (f'{"package".ljust(width)}  tests  skipped  errors  failures'
-              f'  status')
+              f'  {"status".ljust(status_width)}')
     if show_age:
-        header += '     age'
+        header += f'  {"age":>6}'
     lines = [
         '',
         '=== test integrity audit ' + '=' * max(0, len(header) - 25),
-        header,
+        header.rstrip(),
     ]
     now = time.time()
     for a in sorted(audits, key=lambda a: a.name):
         row = (f'{a.name.ljust(width)}  {a.tests:5d}  {a.skipped:7d}  '
-               f'{a.errors:6d}  {a.failures:8d}  {a.status.ljust(6)}')
+               f'{a.errors:6d}  {a.failures:8d}  '
+               f'{a.status.ljust(status_width)}')
         if show_age:
             age = ('-' if a.newest_mtime is None
                    else format_age(now - a.newest_mtime))

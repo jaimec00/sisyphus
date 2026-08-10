@@ -494,11 +494,20 @@ def test_outside_a_git_work_tree_every_package_is_expected(workspace):
 
 
 def test_the_real_workspace_manifests_are_tracked():
-    """This repo's own packages must be seen as owned, not as vendored."""
+    """This repo's own packages must be seen as owned, not as vendored.
+
+    Deliberately says nothing about *other* directories under ``src/``: a
+    vcs-imported dependency (or a package someone has not ``git add``-ed
+    yet) must not turn this suite -- and therefore ``pixi run test`` -- red.
+    The report's "not tracked" note is the signal for those.
+    """
     expected, unowned = guard.discover_packages(REPO_ROOT / 'src')
 
-    assert 'robot_safety' in expected
-    assert unowned == []
+    ours = {'robot_backends', 'robot_brain', 'robot_bringup',
+            'robot_description', 'robot_perception', 'robot_safety',
+            'robot_skills'}
+    assert ours <= set(expected)
+    assert not ours & set(unowned)
 
 
 def test_an_empty_source_dir_is_an_error(workspace, capsys):

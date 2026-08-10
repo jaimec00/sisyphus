@@ -28,9 +28,12 @@ pixi run test    # colcon test + results + zero-test guard
 `pixi run test` runs the workspace suite through
 [`scripts/check_test_integrity.py`](scripts/check_test_integrity.py), which
 prints a per-package table of collected tests and **fails** if any package
-produced no tests — `colcon test` alone reports a package that collected zero
-tests as green. Use `pixi run test-audit` to re-read the last run's results
-without re-running anything.
+produced no result file, collected zero tests, or skipped every test it
+collected — `colcon test` alone reports all three as green. Every package
+whose `package.xml` this repo tracks is audited (`COLCON_IGNORE` grants no
+exemption); packages imported into `src/` from elsewhere are listed but not
+required to have tests. Use `pixi run test-audit` to re-read the last run's
+results, with their age, without re-running anything.
 
 ## Development
 Built by a hierarchy of coding agents (context → implement → red-team → test →
