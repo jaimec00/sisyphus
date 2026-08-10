@@ -29,6 +29,7 @@ from typing import Any, Mapping, Self
 from robot_skills.observation import Observation
 from robot_skills.serialization import (
     check_keys,
+    check_schema_version,
     ensure_mapping,
     get_enum,
     get_mapping,
@@ -37,6 +38,8 @@ from robot_skills.serialization import (
     JsonDict,
     JsonSerializable,
     parse_errors,
+    SCHEMA_VERSION,
+    SCHEMA_VERSION_KEY,
 )
 from robot_skills.skills import Side, Skill
 
@@ -218,8 +221,14 @@ class SkillResult(JsonSerializable):
         )
 
     def to_dict(self) -> JsonDict:
-        """Return the result's JSON-safe dict form."""
+        """Return the result's JSON-safe dict form, version stamped (D18).
+
+        The nested ``observation`` carries its own stamp as well: each type
+        stamps its own wire form, so an observation lifted out of a result and
+        published alone stays self-describing.  The two are the same constant.
+        """
         return {
+            SCHEMA_VERSION_KEY: SCHEMA_VERSION,
             'skill': self.skill.to_dict(),
             'status': self.status.value,
             'reason': self.reason,
@@ -235,9 +244,10 @@ class SkillResult(JsonSerializable):
         check_keys(
             data,
             required=('skill', 'status', 'observation'),
-            optional=('reason', 'code'),
+            optional=(SCHEMA_VERSION_KEY, 'reason', 'code'),
             context=context,
         )
+        check_schema_version(data, context=context)
         with parse_errors(context):
             return cls(
                 skill=Skill.from_dict(get_mapping(data, 'skill', context=context)),

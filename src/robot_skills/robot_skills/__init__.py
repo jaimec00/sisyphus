@@ -18,7 +18,10 @@ The contract has three halves:
   observation taken after the attempt.
 
 Everything round-trips through plain JSON-safe dicts, so the same objects serve
-an in-process Mock backend today and a ROS 2 action transport later.
+an in-process Mock backend today and a ROS 2 action transport later.  The two
+machine-to-machine types stamp :data:`SCHEMA_VERSION` into that dict form; the
+compat rule and its golden-fixture enforcement live in
+:mod:`robot_skills.serialization`.
 
 Example::
 
@@ -47,7 +50,13 @@ from robot_skills.result import (
     SkillResult,
     SkillStatus,
 )
-from robot_skills.serialization import JsonDict, JsonSerializable, SerializationError
+from robot_skills.serialization import (
+    JsonDict,
+    JsonSerializable,
+    SCHEMA_VERSION,
+    SCHEMA_VERSION_KEY,
+    SerializationError,
+)
 from robot_skills.skills import (
     CloseGripper,
     ExtendColumn,
@@ -67,6 +76,8 @@ from robot_skills.skills import (
 __all__ = [
     'BACKEND_REFUSAL_CODES',
     'SAFETY_EVENT_CODES',
+    'SCHEMA_VERSION',
+    'SCHEMA_VERSION_KEY',
     'SIDE_ORDER',
     'SKILL_KEY',
     'SKILL_TYPES',

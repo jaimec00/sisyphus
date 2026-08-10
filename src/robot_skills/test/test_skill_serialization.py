@@ -16,6 +16,7 @@ from robot_skills import (
     NavigateTo,
     Observation,
     Pose,
+    SCHEMA_VERSION,
     SkillResult,
 )
 from robot_skills.serialization import (
@@ -106,6 +107,62 @@ def test_from_dict_raises_only_serialization_error():
     # A skill argument the type refuses (blank identifier) surfaces the same way.
     with pytest.raises(SerializationError, match='non-empty'):
         NavigateTo.from_dict({'skill': 'navigate_to', 'location': '  '})
+
+
+def test_the_machine_to_machine_types_stamp_the_schema_version():
+    """D18: an Observation/SkillResult dict says which schema it was written to.
+
+    Both nesting depths are stamped on purpose: an observation lifted out of a
+    result and published alone must still be self-describing.
+    """
+    observation = make_observation()
+    result = SkillResult.ok(NavigateTo('kitchen'), observation)
+
+    assert observation.to_dict()['schema_version'] == SCHEMA_VERSION
+    as_dict = result.to_dict()
+    assert as_dict['schema_version'] == SCHEMA_VERSION
+    assert as_dict['observation']['schema_version'] == SCHEMA_VERSION
+    assert isinstance(SCHEMA_VERSION, int) and not isinstance(SCHEMA_VERSION, bool)
+
+    # A skill is written by an LLM by hand; it carries no bookkeeping key.
+    assert 'schema_version' not in as_dict['skill']
+    assert 'schema_version' not in observation.robot.to_dict()
+
+
+def test_the_stamp_survives_the_round_trip_and_is_optional_on_parse(round_trip):
+    """An added optional field is non-breaking, so an unstamped dict still parses."""
+    observation = make_observation()
+    result = SkillResult.failure(
+        Grasp('mug_1'), observation, FailureCode.OUT_OF_REACH, 'too far')
+    round_trip(observation)
+    round_trip(result)
+
+    unstamped = {key: value for key, value in observation.to_dict().items()
+                 if key != 'schema_version'}
+    assert Observation.from_dict(unstamped) == observation
+
+    partly_stamped = {key: value for key, value in result.to_dict().items()
+                      if key != 'schema_version'}
+    assert SkillResult.from_dict(partly_stamped) == result
+
+
+def test_a_foreign_schema_version_is_refused_rather_than_guessed_at():
+    """D18 grants no multi-version support: a stamp we do not speak is an error."""
+    observation = make_observation().to_dict()
+    result = SkillResult.ok(NavigateTo('kitchen'), make_observation()).to_dict()
+
+    with pytest.raises(SerializationError, match='unsupported schema version 2'):
+        Observation.from_dict({**observation, 'schema_version': SCHEMA_VERSION + 1})
+    with pytest.raises(SerializationError, match='unsupported schema version'):
+        SkillResult.from_dict({**result, 'schema_version': 99})
+    # ...including one hidden in the nested observation.
+    with pytest.raises(SerializationError, match='unsupported schema version'):
+        SkillResult.from_dict(
+            {**result, 'observation': {**observation, 'schema_version': 0}})
+    with pytest.raises(SerializationError, match='expected an integer'):
+        Observation.from_dict({**observation, 'schema_version': '1'})
+    with pytest.raises(SerializationError, match='expected an integer'):
+        Observation.from_dict({**observation, 'schema_version': True})
 
 
 def test_check_keys_reports_missing_and_unknown():

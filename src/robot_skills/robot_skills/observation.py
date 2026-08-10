@@ -24,6 +24,7 @@ from typing import Any, Mapping, Self
 from robot_skills.geometry import Pose
 from robot_skills.serialization import (
     check_keys,
+    check_schema_version,
     ensure_mapping,
     get_bool,
     get_enum,
@@ -36,6 +37,8 @@ from robot_skills.serialization import (
     JsonDict,
     JsonSerializable,
     parse_errors,
+    SCHEMA_VERSION,
+    SCHEMA_VERSION_KEY,
     SerializationError,
 )
 from robot_skills.skills import Side, SIDE_ORDER
@@ -390,8 +393,15 @@ class Observation(JsonSerializable):
         return tuple(item for item in self.objects if item.is_held)
 
     def to_dict(self) -> JsonDict:
-        """Return the observation's JSON-safe dict form."""
+        """Return the observation's JSON-safe dict form, version stamp included.
+
+        The stamp travels with the type, not with an envelope, so an
+        observation nested in a :class:`~robot_skills.result.SkillResult` still
+        carries it (see the wire-format policy in
+        :mod:`robot_skills.serialization`).
+        """
         return {
+            SCHEMA_VERSION_KEY: SCHEMA_VERSION,
             'robot': self.robot.to_dict(),
             'objects': [item.to_dict() for item in self.objects],
             'known_locations': list(self.known_locations),
@@ -405,9 +415,10 @@ class Observation(JsonSerializable):
         check_keys(
             data,
             required=('robot',),
-            optional=('objects', 'known_locations'),
+            optional=(SCHEMA_VERSION_KEY, 'objects', 'known_locations'),
             context=context,
         )
+        check_schema_version(data, context=context)
         objects: tuple[SceneObject, ...] = ()
         if 'objects' in data:
             objects = tuple(
