@@ -31,6 +31,7 @@ from robot_skills.serialization import (
     get_optional_str,
     JsonDict,
     JsonSerializable,
+    parse_errors,
 )
 from robot_skills.skills import Skill
 
@@ -160,11 +161,12 @@ class SkillResult(JsonSerializable):
             optional=('reason', 'code'),
             context=context,
         )
-        return cls(
-            skill=Skill.from_dict(get_mapping(data, 'skill', context=context)),
-            status=get_enum(data, 'status', SkillStatus, context=context),
-            observation=Observation.from_dict(
-                get_mapping(data, 'observation', context=context)),
-            reason=get_optional_str(data, 'reason', context=context),
-            code=get_optional_enum(data, 'code', FailureCode, context=context),
-        )
+        with parse_errors(context):
+            return cls(
+                skill=Skill.from_dict(get_mapping(data, 'skill', context=context)),
+                status=get_enum(data, 'status', SkillStatus, context=context),
+                observation=Observation.from_dict(
+                    get_mapping(data, 'observation', context=context)),
+                reason=get_optional_str(data, 'reason', context=context),
+                code=get_optional_enum(data, 'code', FailureCode, context=context),
+            )

@@ -35,6 +35,7 @@ from robot_skills.serialization import (
     get_str,
     JsonDict,
     JsonSerializable,
+    parse_errors,
     SerializationError,
 )
 from robot_skills.skills import Side, SIDE_ORDER
@@ -116,13 +117,14 @@ class SceneObject(JsonSerializable):
         graspable = True
         if 'graspable' in data:
             graspable = get_bool(data, 'graspable', context=context)
-        return cls(
-            object_id=get_str(data, 'object_id', context=context),
-            label=get_str(data, 'label', context=context),
-            pose=Pose.from_dict(get_mapping(data, 'pose', context=context)),
-            graspable=graspable,
-            held_by=get_optional_enum(data, 'held_by', Side, context=context),
-        )
+        with parse_errors(context):
+            return cls(
+                object_id=get_str(data, 'object_id', context=context),
+                label=get_str(data, 'label', context=context),
+                pose=Pose.from_dict(get_mapping(data, 'pose', context=context)),
+                graspable=graspable,
+                held_by=get_optional_enum(data, 'held_by', Side, context=context),
+            )
 
 
 @dataclass(frozen=True)
@@ -177,12 +179,13 @@ class GripperObservation(JsonSerializable):
             optional=('held_object_id',),
             context=context,
         )
-        return cls(
-            side=get_enum(data, 'side', Side, context=context),
-            state=get_enum(data, 'state', GripperState, context=context),
-            pose=Pose.from_dict(get_mapping(data, 'pose', context=context)),
-            held_object_id=get_optional_str(data, 'held_object_id', context=context),
-        )
+        with parse_errors(context):
+            return cls(
+                side=get_enum(data, 'side', Side, context=context),
+                state=get_enum(data, 'state', GripperState, context=context),
+                pose=Pose.from_dict(get_mapping(data, 'pose', context=context)),
+                held_object_id=get_optional_str(data, 'held_object_id', context=context),
+            )
 
 
 @dataclass(frozen=True)
@@ -254,12 +257,13 @@ class RobotState(JsonSerializable):
             GripperObservation.from_dict(ensure_mapping(item, context=f'{context}.grippers'))
             for item in get_sequence(data, 'grippers', context=context)
         )
-        return cls(
-            pose=Pose.from_dict(get_mapping(data, 'pose', context=context)),
-            column_height=get_float(data, 'column_height', context=context),
-            grippers=grippers,
-            location=get_optional_str(data, 'location', context=context),
-        )
+        with parse_errors(context):
+            return cls(
+                pose=Pose.from_dict(get_mapping(data, 'pose', context=context)),
+                column_height=get_float(data, 'column_height', context=context),
+                grippers=grippers,
+                location=get_optional_str(data, 'location', context=context),
+            )
 
 
 @dataclass(frozen=True)
@@ -383,11 +387,12 @@ class Observation(JsonSerializable):
                 _as_location_name(item, context=context)
                 for item in get_sequence(data, 'known_locations', context=context)
             )
-        return cls(
-            robot=RobotState.from_dict(get_mapping(data, 'robot', context=context)),
-            objects=objects,
-            known_locations=locations,
-        )
+        with parse_errors(context):
+            return cls(
+                robot=RobotState.from_dict(get_mapping(data, 'robot', context=context)),
+                objects=objects,
+                known_locations=locations,
+            )
 
 
 def _as_location_name(value: Any, *, context: str) -> str:

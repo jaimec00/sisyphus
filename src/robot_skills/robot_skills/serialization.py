@@ -19,6 +19,12 @@ types all raise :class:`SerializationError` instead of silently producing a
 half-populated object.  A malformed command from the brain must be a loud,
 attributable failure, not a corrupted world model.
 
+``from_dict`` raises **only** :class:`SerializationError`: constructor-level
+``TypeError``/``ValueError`` (a violated invariant such as two grippers
+disagreeing about which object they hold) are translated at the parse boundary
+by :func:`parse_errors`, so a caller turning a bad payload into a clean refusal
+catches one exception type and cannot miss a case.
+
 Wire-format compatibility policy
 --------------------------------
 Strictness includes rejecting *unknown* keys, which trades forward
@@ -45,9 +51,10 @@ strict.  Until then, no such escape hatch exists, on purpose.
 """
 
 from abc import ABC, abstractmethod
+from contextlib import contextmanager
 from enum import Enum
 import json
-from typing import Any, Mapping, Self, Sequence, TypeVar
+from typing import Any, Iterator, Mapping, Self, Sequence, TypeVar
 
 __all__ = [
     'JsonDict',
@@ -63,6 +70,7 @@ __all__ = [
     'get_optional_str',
     'get_sequence',
     'get_str',
+    'parse_errors',
 ]
 
 #: A plain, JSON-safe mapping as produced by ``to_dict()``.
@@ -92,7 +100,12 @@ class JsonSerializable(ABC):
     @classmethod
     @abstractmethod
     def from_dict(cls, data: Mapping[str, Any]) -> Self:
-        """Rebuild an object from the output of :meth:`to_dict`."""
+        """Rebuild an object from the output of :meth:`to_dict`.
+
+        Raises :class:`SerializationError` -- and nothing else -- for any
+        malformed input, including one that only violates an invariant the
+        constructor checks (see :func:`parse_errors`).
+        """
         raise NotImplementedError
 
     def to_json(self, **kwargs: Any) -> str:
@@ -107,6 +120,25 @@ class JsonSerializable(ABC):
         except json.JSONDecodeError as exc:  # pragma: no cover - thin wrapper
             raise SerializationError(f'{cls.__name__}: invalid JSON: {exc}') from exc
         return cls.from_dict(ensure_mapping(data, context=cls.__name__))
+
+
+@contextmanager
+def parse_errors(context: str) -> Iterator[None]:
+    """Translate constructor-level validation errors into a parse error.
+
+    Wrap the object construction at the end of a ``from_dict`` in this: a
+    dataclass rejecting its arguments (``TypeError``) or violating one of its
+    invariants (``ValueError``) is, at a parse boundary, a malformed payload,
+    and callers must be able to catch exactly one exception type there.  A
+    :class:`SerializationError` raised deeper in the parse passes through
+    unchanged, so nested messages are not double-wrapped.
+    """
+    try:
+        yield
+    except SerializationError:
+        raise
+    except (TypeError, ValueError) as exc:
+        raise SerializationError(f'{context}: {exc}') from exc
 
 
 def ensure_mapping(data: Any, *, context: str) -> Mapping[str, Any]:

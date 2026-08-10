@@ -131,9 +131,12 @@ def test_the_held_object_invariant_survives_a_round_trip():
     )
     assert Observation.from_dict(consistent.to_dict()) == consistent
 
+    # A doctored payload is caught on parse, and -- because a caller at a
+    # transport boundary catches one exception type -- as a SerializationError,
+    # not as the bare ValueError the constructor raises.
     doctored = consistent.to_dict()
     doctored['objects'][0]['held_by'] = None
-    with pytest.raises(ValueError, match='held_by=None'):
+    with pytest.raises(SerializationError, match='held_by=None'):
         Observation.from_dict(doctored)
 
 

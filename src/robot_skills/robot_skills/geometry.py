@@ -26,6 +26,7 @@ from robot_skills.serialization import (
     get_mapping,
     JsonDict,
     JsonSerializable,
+    parse_errors,
 )
 from robot_skills.validation import as_finite_float
 
@@ -74,11 +75,12 @@ class Point(JsonSerializable):
         """Rebuild a :class:`Point` from its dict form."""
         data = ensure_mapping(data, context='Point')
         check_keys(data, required=('x', 'y', 'z'), context='Point')
-        return cls(
-            x=get_float(data, 'x', context='Point'),
-            y=get_float(data, 'y', context='Point'),
-            z=get_float(data, 'z', context='Point'),
-        )
+        with parse_errors('Point'):
+            return cls(
+                x=get_float(data, 'x', context='Point'),
+                y=get_float(data, 'y', context='Point'),
+                z=get_float(data, 'z', context='Point'),
+            )
 
 
 @dataclass(frozen=True)
@@ -115,12 +117,13 @@ class Quaternion(JsonSerializable):
         """Rebuild a :class:`Quaternion` from its dict form."""
         data = ensure_mapping(data, context='Quaternion')
         check_keys(data, required=('x', 'y', 'z', 'w'), context='Quaternion')
-        return cls(
-            x=get_float(data, 'x', context='Quaternion'),
-            y=get_float(data, 'y', context='Quaternion'),
-            z=get_float(data, 'z', context='Quaternion'),
-            w=get_float(data, 'w', context='Quaternion'),
-        )
+        with parse_errors('Quaternion'):
+            return cls(
+                x=get_float(data, 'x', context='Quaternion'),
+                y=get_float(data, 'y', context='Quaternion'),
+                z=get_float(data, 'z', context='Quaternion'),
+                w=get_float(data, 'w', context='Quaternion'),
+            )
 
 
 @dataclass(frozen=True)
@@ -177,4 +180,5 @@ class Pose(JsonSerializable):
             orientation = Quaternion.from_dict(
                 get_mapping(data, 'orientation', context='Pose'))
         position = Point.from_dict(get_mapping(data, 'position', context='Pose'))
-        return cls(position=position, orientation=orientation)
+        with parse_errors('Pose'):
+            return cls(position=position, orientation=orientation)

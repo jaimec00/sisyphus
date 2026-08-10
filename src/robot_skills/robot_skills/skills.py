@@ -43,6 +43,7 @@ from robot_skills.serialization import (
     get_str,
     JsonDict,
     JsonSerializable,
+    parse_errors,
     SerializationError,
 )
 from robot_skills.validation import as_enum, as_finite_float, as_identifier, as_optional_enum
@@ -140,7 +141,8 @@ class Skill(JsonSerializable):
         if cls is not Skill and target is not cls:
             raise SerializationError(
                 f'{cls.__name__}.from_dict got skill {wire_name!r}')
-        return target._from_payload(data)
+        with parse_errors(target.__name__):
+            return target._from_payload(data)
 
 
 def skill_from_dict(data: Mapping[str, Any]) -> Skill:

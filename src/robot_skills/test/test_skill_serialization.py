@@ -14,6 +14,8 @@ from robot_skills import (
     Grasp,
     JsonSerializable,
     NavigateTo,
+    Observation,
+    Pose,
     SkillResult,
 )
 from robot_skills.serialization import (
@@ -69,6 +71,41 @@ def test_json_serializable_subclasses_must_implement_the_contract():
 
     with pytest.raises(TypeError):
         Incomplete()
+
+
+def test_from_dict_raises_only_serialization_error():
+    """A parse boundary has one exception type, invariant violations included.
+
+    Callers turning a bad LLM or transport payload into a clean refusal write
+    ``except SerializationError``; a constructor-level ``ValueError``/
+    ``TypeError`` leaking through would silently bypass that handler.
+    """
+    observation = make_observation()
+    good = observation.to_dict()
+
+    # An invariant checked by __post_init__, not by the key/type getters.
+    duplicated = {**good, 'objects': [good['objects'][0], good['objects'][0]]}
+    with pytest.raises(SerializationError, match='duplicate object_id'):
+        Observation.from_dict(duplicated)
+
+    # One gripper per side is likewise a constructor invariant.
+    one_armed = {**good}
+    one_armed['robot'] = {**good['robot'], 'grippers': [good['robot']['grippers'][0]]}
+    with pytest.raises(SerializationError, match='one entry per side'):
+        Observation.from_dict(one_armed)
+
+    # And so is the status/code agreement on a result.
+    result = SkillResult.ok(NavigateTo('kitchen'), observation).to_dict()
+    with pytest.raises(SerializationError, match='must carry a FailureCode'):
+        SkillResult.from_dict({**result, 'status': 'failed', 'reason': 'nope'})
+
+    # Non-finite geometry is rejected by the dataclass, not by get_float.
+    with pytest.raises(SerializationError, match='must be finite'):
+        Pose.from_dict({'position': {'x': float('nan'), 'y': 0.0, 'z': 0.0}})
+
+    # A skill argument the type refuses (blank identifier) surfaces the same way.
+    with pytest.raises(SerializationError, match='non-empty'):
+        NavigateTo.from_dict({'skill': 'navigate_to', 'location': '  '})
 
 
 def test_check_keys_reports_missing_and_unknown():
