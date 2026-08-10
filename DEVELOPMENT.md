@@ -43,7 +43,7 @@ state substrate and the trigger.
    the manager posts a **retro comment on the PR**.
 9. **Merge** — when green, Sisyphus **deletes the ephemeral `docs/features/<slug>/`
    docs** (the CI "docs clean" gate then passes), picks order, and squash-merges
-   (no manual approval gate — green is the gate). Other open worktrees then rebase
+   (no manual approval gate — green is the gate; Sisyphus merges on its own judgment and asks Jaime only when a merge is genuinely tricky). Other open worktrees then rebase
    on main, re-green, and take their turn.
 
 `status.md` tracks phase/round/blockers so any agent (or a restart) resumes
@@ -78,7 +78,7 @@ merges, then pruned. The nightly job cleans stragglers.
   (ephemeral docs must be deleted at merge). Heavy tests run on the laptop.
 - **Laptop nightly cron:** runs the full suite on `main`, reports regressions.
 - **Sisyphus (Pi) cron:** polls open PR statuses + manager comments (escalations,
-  follow-ups, retros), squash-merges green PRs, answers escalations.
+  follow-ups, retros), squash-merges green PRs (escalating to Jaime only when a merge is genuinely tricky), answers escalations.
 
 ## Budgets & safety
 Per-feature agent/token caps. Merges require green checks (tests + red-team + CI);
