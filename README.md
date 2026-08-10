@@ -22,8 +22,15 @@ Requires [pixi](https://pixi.sh). ROS 2 Jazzy is provided via RoboStack.
 ```bash
 pixi install
 pixi run build   # colcon build --symlink-install
-pixi run test    # colcon test + results
+pixi run test    # colcon test + results + zero-test guard
 ```
+
+`pixi run test` runs the workspace suite through
+[`scripts/check_test_integrity.py`](scripts/check_test_integrity.py), which
+prints a per-package table of collected tests and **fails** if any package
+produced no tests — `colcon test` alone reports a package that collected zero
+tests as green. Use `pixi run test-audit` to re-read the last run's results
+without re-running anything.
 
 ## Development
 Built by a hierarchy of coding agents (context → implement → red-team → test →
