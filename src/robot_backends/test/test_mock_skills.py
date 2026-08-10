@@ -139,11 +139,38 @@ def test_grasp_without_a_side_prefers_a_gripper_that_can_actually_reach():
     assert result.observation.find_object('cube_1').held_by is Side.RIGHT
 
 
-def test_implicit_side_still_prefers_the_left_arm_when_both_can_reach(backend):
-    """Preference order is unchanged where reach does not decide it."""
+def test_implicit_side_prefers_the_left_arm_even_when_the_right_is_nearer(backend, world):
+    """SIDE_ORDER preference, not proximity, decides which arm grasps.
+
+    `plate_1` is strictly nearer the right shoulder and comfortably inside both
+    arms' reach, so a 'nearest reachable arm' rule would pick the right one.
+    Only left-preference explains the left gripper ending up with it — which is
+    what makes this test able to fail if that rule is ever swapped in.
+    """
     run(backend, NavigateTo('kitchen'))
-    result = backend.execute(Grasp('bowl_1'))
-    assert result.observation.robot.gripper(Side.LEFT).held_object_id == 'bowl_1'
+    observation = backend.get_observation()
+    model = world.robot
+    plate = observation.find_object('plate_1').pose.position
+    distance = {
+        side: plate.distance_to(
+            model.shoulder(observation.robot.pose, observation.robot.column_height, side))
+        for side in (Side.LEFT, Side.RIGHT)
+    }
+    # Guard the premise: the case only discriminates while both arms can reach
+    # and the right one is strictly nearer.
+    assert max(distance.values()) < model.reach_radius, distance
+    assert distance[Side.RIGHT] < distance[Side.LEFT], distance
+
+    result = backend.execute(Grasp('plate_1'))
+
+    assert result.status is SkillStatus.OK, result.reason
+    assert result.observation.robot.gripper(Side.LEFT).held_object_id == 'plate_1'
+    assert result.observation.robot.gripper(Side.RIGHT).held_object_id is None
+
+    # ...and the nearer arm genuinely could have taken it.
+    fresh = MockBackend(world)
+    run(fresh, NavigateTo('kitchen'))
+    assert fresh.execute(Grasp('plate_1', Side.RIGHT)).status is SkillStatus.OK
 
 
 def test_a_held_object_travels_with_the_robot(backend, world):
