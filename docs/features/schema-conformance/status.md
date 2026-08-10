@@ -15,7 +15,14 @@ golden-fixture guard, `grasped` flag, FailureCode limit-split.
 | 5. Fix (round 1) | done — 4 commits, `pixi run test` 252 tests / 0 failures |
 | 5b. Red-team (round 2) | done — both BLOCKs closed, no new BLOCK (`red_team_round2.md`) |
 | 6. Test-runner | done — build 7/7; 252 tests, 0 failures, 0 skipped, AUDIT PASSED |
-| 7. PR + ready | in progress |
+| 7. PR + ready | **done — PR #34, ready for Sisyphus** |
+
+**PR:** https://github.com/jaimec00/sisyphus/pull/34 (rebased on `origin/main`
+@ `0a66386`; main had not moved, so green is green against current main)
+**Follow-ups** → comment on issue #33 (3 items; Sisyphus files them)
+**Retro** → comment on PR #34
+**Note for merge:** the `docs/features/` CI check reads as failing by design —
+these docs stay for review; Sisyphus deletes them at merge.
 
 **Round:** —
 **Blockers:** none
