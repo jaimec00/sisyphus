@@ -333,3 +333,5 @@ typing nit. Deferred to GitHub issues / Sisyphus: NOTE 1 (needs a
 `decisions.md` entry — outside owned paths), NOTE 8a (workspace-level pytest
 config), NOTE 9 (brief-author confirmation), NOTE 10 (workspace suite red for
 empty skeleton packages), NOTE 11 `pixi.lock` (Sisyphus's call).
+
+> **Round 2 (delta-only) is in [red_team_round2.md](red_team_round2.md)** — 1 BLOCK (a test that cannot fail), 6 NOTEs; both manager-requested rulings resolved in the implementation's favour.

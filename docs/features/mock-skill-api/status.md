@@ -1,8 +1,8 @@
 # Status: mock-skill-api
 
-phase: redteam      # context | impl | redteam | fix | test | pr | done
-round: 1            # red-team ↔ fix rounds (cap: 2)
-owner_agent: red-team (round 2, delta-only) + test-runner
+phase: fix         # context | impl | redteam | fix | test | pr | done
+round: 2            # red-team ↔ fix rounds (cap: 2)
+owner_agent: implementer (round 2 fix)
 blockers: none      # or: "escalation needed — <describe>"
 pr: -
 last_update: 2026-08-10
@@ -37,3 +37,5 @@ last_update: 2026-08-10
 - 2026-08-10 fix: implementation.md gained a "Round 1 fixes" section
 - 2026-08-10 round-1 fixes landed (3bdb6c7, 722f8fc): all 6 NOTEs done, none refused; 107 -> 116 tests
 - 2026-08-10 phase=redteam round 2 (delta-only) + test-runner dispatched in parallel
+- 2026-08-10 test-runner PASS: 116 tests (58+58), 0 failures; whole-workspace baseline = 5 empty skeleton pkgs (pre-existing)
+- 2026-08-10 red_team_round2.md: 1 BLOCK + 6 NOTE; phase=fix round 2 (cap reached — last fix round)
