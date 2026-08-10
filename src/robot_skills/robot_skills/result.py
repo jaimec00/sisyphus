@@ -38,7 +38,7 @@ from robot_skills.serialization import (
     JsonSerializable,
     parse_errors,
 )
-from robot_skills.skills import Skill
+from robot_skills.skills import Side, Skill
 
 __all__ = [
     'BACKEND_REFUSAL_CODES',
@@ -179,6 +179,16 @@ class SkillResult(JsonSerializable):
     def succeeded(self) -> bool:
         """Return whether the skill completed successfully."""
         return self.status is SkillStatus.OK
+
+    def grasped(self, side: Side) -> bool:
+        """Return whether ``side``'s gripper holds a load after this skill (D19).
+
+        The closed-loop answer to "did I get it?".  ``close_gripper`` on thin
+        air *succeeds* and reports ``False`` here; an empty grip is information,
+        not an error.  This reads through to the observation the result already
+        carries rather than copying the flag, so the two can never disagree.
+        """
+        return self.observation.robot.gripper(side).grasped
 
     @classmethod
     def ok(

@@ -38,6 +38,7 @@ def test_initial_observation_matches_the_seed_world(backend, world):
     for gripper in observation.robot.grippers:
         assert gripper.state is GripperState.OPEN
         assert gripper.held_object_id is None
+        assert gripper.grasped is False
     assert observation.held_objects() == ()
 
 
@@ -94,6 +95,8 @@ def test_grasp_attaches_an_object_to_the_named_gripper(backend, side, object_id)
     gripper = result.observation.robot.gripper(side)
     assert gripper.state is GripperState.CLOSED
     assert gripper.held_object_id == object_id
+    assert gripper.grasped is True
+    assert result.grasped(side) is True, 'the closed loop answers "did I get it?"'
     item = result.observation.find_object(object_id)
     assert item.held_by is side
     assert item.pose == gripper.pose, 'a held object sits in the gripper'
@@ -266,6 +269,53 @@ def test_close_gripper_on_thin_air_picks_nothing_up(backend):
     assert result.observation.to_dict()['objects'] == before['objects']
 
 
+def test_closing_on_nothing_succeeds_and_reports_no_grasp(backend):
+    """D19: an empty grip is reported, not raised.
+
+    The brain learns "I caught nothing" from ``grasped`` in the returned
+    observation; failing here instead would push a routine, expected outcome
+    onto the error path reserved for "couldn't run".
+    """
+    run(backend, NavigateTo('kitchen'))
+
+    result = backend.execute(CloseGripper(Side.LEFT))
+
+    assert result.status is SkillStatus.OK
+    assert result.code is None
+    assert result.grasped(Side.LEFT) is False
+    assert result.observation.robot.gripper(Side.LEFT).state is GripperState.CLOSED
+
+    # Closing an already-closed, still-empty gripper stays a success too.
+    again = backend.execute(CloseGripper(Side.LEFT))
+    assert again.status is SkillStatus.OK
+    assert again.grasped(Side.LEFT) is False
+
+
+def test_closing_on_a_held_object_keeps_reporting_the_grasp(backend):
+    """A close that changes nothing must not report the load away."""
+    run(backend, NavigateTo('kitchen'), Grasp('mug_1', Side.LEFT))
+
+    result = backend.execute(CloseGripper(Side.LEFT))
+
+    assert result.status is SkillStatus.OK
+    assert result.grasped(Side.LEFT) is True
+    assert result.observation.robot.gripper(Side.LEFT).held_object_id == 'mug_1'
+    assert result.grasped(Side.RIGHT) is False
+
+
+def test_open_gripper_on_an_open_gripper_is_an_idempotent_success(backend):
+    """D19: a no-op open reports itself instead of failing."""
+    first = backend.execute(OpenGripper(Side.RIGHT))
+    second = backend.execute(OpenGripper(Side.RIGHT))
+
+    for result in (first, second):
+        assert result.status is SkillStatus.OK
+        assert result.code is None
+        assert 'already open' in result.reason
+        assert result.grasped(Side.RIGHT) is False
+        assert result.observation.robot.gripper(Side.RIGHT).state is GripperState.OPEN
+
+
 def test_open_gripper_opens_and_drops_what_it_holds(backend):
     """open_gripper: an empty gripper just opens; a full one drops its load."""
     idle = backend.execute(OpenGripper(Side.LEFT))
@@ -282,6 +332,7 @@ def test_open_gripper_opens_and_drops_what_it_holds(backend):
     gripper = result.observation.robot.gripper(Side.LEFT)
     assert gripper.state is GripperState.OPEN
     assert gripper.held_object_id is None
+    assert gripper.grasped is False, 'releasing a load clears the grasp flag too'
     dropped = result.observation.find_object('mug_1')
     assert dropped.held_by is None
     assert dropped.pose == gripper_pose, 'the object is dropped where the gripper was'

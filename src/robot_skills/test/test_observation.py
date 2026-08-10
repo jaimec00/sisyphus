@@ -71,6 +71,55 @@ def test_held_object_is_visible_from_both_sides():
     assert observation.find_object('mug_1').is_held is True
 
 
+def test_grasped_is_a_sensed_load_not_an_alias_of_held_object_id():
+    """D19: "something is in the jaws" and "which object" are separate facts.
+
+    A real gripper feels a load it cannot identify, so the two must be able to
+    disagree in that direction -- otherwise a backend with force sensing has
+    nowhere to report an unidentified grasp.
+    """
+    empty = make_gripper(Side.LEFT)
+    assert (empty.grasped, empty.is_holding) == (False, False)
+
+    unidentified = make_gripper(Side.LEFT, GripperState.CLOSED, grasped=True)
+    assert unidentified.grasped is True
+    assert unidentified.is_holding is False
+    assert unidentified.held_object_id is None
+
+    holding = make_gripper(Side.LEFT, GripperState.CLOSED, 'mug_1')
+    assert (holding.grasped, holding.is_holding) == (True, True)
+
+
+def test_a_gripper_cannot_carry_an_object_it_reports_not_gripping():
+    """The impossible direction is rejected: carried implies gripped."""
+    with pytest.raises(ValueError, match='while grasped=False'):
+        GripperObservation(
+            side=Side.LEFT,
+            state=GripperState.CLOSED,
+            pose=Pose(),
+            held_object_id='mug_1',
+            grasped=False,
+        )
+
+
+def test_a_payload_without_grasped_infers_it_from_the_load():
+    """An additive field must not silently flip the meaning of an older payload.
+
+    Dropping ``grasped`` from a dict that reports carrying an object must not
+    parse as "empty jaws holding a mug"; the world-model fact still implies it.
+    """
+    holding = make_gripper(Side.LEFT, GripperState.CLOSED, 'mug_1').to_dict()
+    del holding['grasped']
+    assert GripperObservation.from_dict(holding).grasped is True
+
+    empty = make_gripper(Side.RIGHT).to_dict()
+    del empty['grasped']
+    assert GripperObservation.from_dict(empty).grasped is False
+
+    with pytest.raises(SerializationError, match='expected a boolean'):
+        GripperObservation.from_dict({**empty, 'grasped': 'yes'})
+
+
 def test_a_gripper_holding_an_object_the_scene_disagrees_about_is_rejected():
     """Direction 1: the gripper claims a load the object list does not confirm."""
     holding_left = make_robot_state(
@@ -177,6 +226,9 @@ def test_member_type_validation():
         GripperObservation(side='left', state=GripperState.OPEN, pose=Pose())
     with pytest.raises(TypeError):
         GripperObservation(side=Side.LEFT, state='open', pose=Pose())
+    with pytest.raises(TypeError):
+        GripperObservation(
+            side=Side.LEFT, state=GripperState.OPEN, pose=Pose(), grasped='yes')
 
 
 def test_observation_round_trip(round_trip, observation):
@@ -185,6 +237,7 @@ def test_observation_round_trip(round_trip, observation):
     round_trip(observation.robot)
     round_trip(observation.robot.gripper(Side.RIGHT))
     round_trip(observation.find_object('counter_1'))
+    round_trip(make_gripper(Side.LEFT, GripperState.CLOSED, grasped=True))
 
 
 def test_observation_round_trip_preserves_every_field(observation):
