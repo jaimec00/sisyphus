@@ -50,16 +50,37 @@ Full narrative in `DEVELOPMENT.md`; orchestration in `.claude/commands/run-featu
   speculative generality.
 Be rigorous, **not** nitpicky. Quality + extensibility is the goal.
 
-## Escalation
-Solve at your scope. Escalate to the parent **only** for a real blocker or a
-genuine design fork (not ordinary difficulty). Record it in `status.md`.
-Chain: worker → worktree manager → Sisyphus (Pi) → Jaime.
+## Change management — everything via PRs
+Every change to `main` goes through a PR; **no direct pushes to main** (including
+Sisyphus's). There is **no manual approval gate** — green checks (tests +
+red-team + CI) are the gate; a green PR is mergeable. Two kinds:
+- **Feature PRs** run the full loop (context → implement → red-team → test).
+- **Operational/meta PRs** — briefs, docs, agent-rule / `.claude` tweaks, ops
+  tooling — are authored and **self-merged by Sisyphus** without the full loop.
+
+## Staying current with `main`
+`main` moves as PRs merge, so worktrees fall behind. Never build on stale main:
+- Create each worktree from the latest `origin/main`; `git fetch origin` before
+  starting.
+- The manager runs `git fetch origin && git rebase origin/main` **before opening
+  its PR**, so "green" means green against **current** main.
+- After Sisyphus merges any PR, every other open worktree **must**
+  `git fetch && git rebase origin/main` and re-green before its turn.
+
+## Escalation & conversation
+Solve at your scope; escalate **only** for a real blocker or a genuine design
+fork. Workers escalate **in-process to their worktree manager** (same session).
+**Only the worktree manager converses outward** — it posts a comment on its
+PR/issue describing the question and pauses. Sisyphus (polling via cron) reads
+it, replies via comment (relaying genuine design forks to Jaime), and the
+manager **resumes on the reply**. Record escalations in `status.md`; keep them
+rare. Chain: worker → worktree manager → Sisyphus (Pi) → Jaime.
 
 ## Merge governance
-The worktree manager signals "ready" (green against **current** main).
-**Sisyphus owns the merge** and chooses order; other worktrees then rebase on
-main and re-green before their turn. PRs are **squash-merged**. Never
-force-push main; never delete branches others depend on.
+The worktree manager opens the PR and signals "ready" (green against **current**
+main) — it does **not** merge. **Sisyphus owns the merge** and chooses order;
+other open worktrees then rebase on main and re-green before their turn. PRs are
+**squash-merged**. Never force-push main; never delete branches others depend on.
 
 ## Coding standards
 - Match surrounding style; keep each package cohesive per its README.

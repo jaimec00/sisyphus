@@ -8,6 +8,9 @@ Drive the loop in `DEVELOPMENT.md`, honoring `CLAUDE.md`. Maintain
 `docs/features/<slug>/status.md` (phase / round / blockers) after every step so
 the run is resumable.
 
+0. **Sync:** work in a worktree branched from the latest `origin/main`
+   (`git fetch origin`). Re-`git fetch origin && git rebase origin/main` before
+   opening the PR so "green" is green against current main.
 1. Ensure `brief.md` exists (acceptance criteria + owned paths). If missing,
    stop and escalate to Sisyphus.
 2. Dispatch **context-explorer** → `context.md`.
@@ -21,5 +24,8 @@ the run is resumable.
    CI + the full local suite pass, and report "ready" to Sisyphus with the PR
    link. **Do NOT merge** — Sisyphus owns merges.
 
-Escalate to Sisyphus only for a real blocker or a genuine design fork; otherwise
-use best judgment. Stay within the brief's owned paths.
+Escalate to Sisyphus only for a real blocker or a genuine design fork. As the
+worktree manager, **you are the only one who converses outward** — post a comment
+on the PR/issue, pause, and resume when Sisyphus replies. Your worker subagents
+escalate to you in-process; they do not post outward. Otherwise use best
+judgment. Stay within the brief's owned paths.
