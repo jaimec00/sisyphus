@@ -197,9 +197,13 @@ def test_place_drops_the_held_object_at_the_requested_pose(backend):
     assert result.status is SkillStatus.OK
     assert 'mug_1' in result.reason
     mug = result.observation.find_object('mug_1')
-    assert_pose_close(mug.pose, target)
+    # Exact: place assigns the commanded pose to the object verbatim, with no
+    # shoulder round trip, so a tolerance here would hide a refactor that
+    # started deriving the object's pose from the gripper.
+    assert mug.pose == target
     assert mug.held_by is None
     gripper = result.observation.robot.gripper(Side.LEFT)
+    # Approximate: the gripper pose *is* reconstructed from the shoulder.
     assert_pose_close(gripper.pose, target)
     assert gripper.held_object_id is None
     assert gripper.state is GripperState.OPEN
@@ -213,7 +217,7 @@ def test_place_can_name_the_gripper_that_releases(backend):
     result = backend.execute(Place(target, Side.RIGHT))
 
     assert result.status is SkillStatus.OK
-    assert_pose_close(result.observation.find_object('plate_1').pose, target)
+    assert result.observation.find_object('plate_1').pose == target  # exact: assigned
     assert result.observation.robot.gripper(Side.RIGHT).held_object_id is None
     assert result.observation.robot.gripper(Side.LEFT).held_object_id == 'mug_1'
 

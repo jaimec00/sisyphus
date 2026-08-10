@@ -412,7 +412,20 @@ class MockBackend(RobotBackend):
             FailureCode.GRIPPER_OCCUPIED, f'both grippers are occupied ({holdings})')
 
     def _resolve_holding_side(self, requested: Side | None) -> Side:
-        """Pick which gripper releases, or refuse if none holds anything."""
+        """Pick which gripper releases, or refuse if none holds anything.
+
+        Deliberately *not* reach-aware, unlike :meth:`_resolve_grasping_side`:
+        with both hands full the two arms hold different objects, so letting
+        geometry pick the side would silently decide *which object gets put
+        down* -- a surprising choice to make on the brain's behalf.  Grasp has
+        no such hazard (either free arm ends up holding the same object), and
+        unlike grasp the brain can already tell which side to name without
+        parsing a failure reason: ``Observation.held_objects()`` and
+        ``RobotState.gripper(side).held_object_id`` report it directly.  So a
+        two-handed ``Place`` with no side named can still fail ``out_of_reach``
+        for the left arm when the right could reach; naming the side is the
+        documented answer.
+        """
         if requested is not None:
             if self._grippers[requested].held_object_id is None:
                 raise _SkillRefused(
