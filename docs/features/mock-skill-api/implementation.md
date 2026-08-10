@@ -191,9 +191,9 @@ inside the owned packages, both flagged here):
   load. Neither package uses launch testing. The file documents itself and
   should be deleted once the environment ships a compatible `launch_testing`.
 
-## Test inventory (107 tests, all green)
+## Test inventory (107 tests at round 0; 116 after the round 1 fixes below)
 
-### `robot_skills` — 55 tests
+### `robot_skills` — 55 tests (58 after round 1)
 | file | covers |
 |---|---|
 | `test_geometry.py` (7) | Point/Quaternion/Pose arithmetic, finite/type validation, immutability, round trips, strict parsing |
@@ -204,7 +204,7 @@ inside the owned packages, both flagged here):
 | lint stubs (3) | flake8, pep257, copyright |
 | `skill_api_fixtures.py`, `conftest.py` | shared builders + the `round_trip` assertion (dict round trip **and** JSON text round trip **and** dict-form stability) |
 
-### `robot_backends` — 52 tests
+### `robot_backends` — 52 tests (58 after round 1)
 | file | covers |
 |---|---|
 | `test_backend_interface.py` (6) | AC3: the three methods; `RobotBackend` and partial subclasses cannot be instantiated; a second stub backend satisfies the same seam with nothing extra (proves Sim/Real can drop in); `execute` is total over unknown skills; non-`Skill` input raises |
@@ -257,6 +257,90 @@ unrelated to this feature; it needs either a test per package, the same
 `extras_require` change, or a `--packages-select` in the pixi task. Because
 `pixi run test` is `colcon test && colcon test-result`, those failures also stop
 the results summary from printing.
+
+## Round 1 fixes (post red-team)
+
+Red team returned **READY TO MERGE, zero BLOCKs**; the manager called one
+voluntary round for six in-scope items. All six done, no reasoned refusals.
+Test count went 107 → **116** (58 per package).
+
+**NOTE 2 — the rclpy scan had the hole it claimed to close.**
+`test_no_ros_runtime.py` grepped the literal `'import rclpy'`, so a lazy
+`from rclpy.node import Node`, an `import rclpy.qos`, or an
+`importlib.import_module('rclpy')` all slipped through. Replaced with
+`find_forbidden_imports()`, an AST walk over `Import`/`ImportFrom` nodes plus
+`import_module`/`__import__` calls with a literal string argument, matching on
+the *root module token* so a lookalike (`rclpy_stub_that_is_not_rclpy`) and the
+word in prose do not fire. The detector is now itself tested
+(`test_the_import_detector_catches_every_form_it_claims_to`) against a sample
+containing all three forms and against a clean sample — otherwise the hole just
+moves. The package scan also asserts it actually visited ≥10 files, so it cannot
+pass by scanning nothing.
+
+**NOTE 3 — `Observation` now enforces the invariant it documents.**
+`Observation._check_held_objects_agree()` validates both directions: every
+gripper's `held_object_id` must name a perceived object whose `held_by` is that
+gripper's side, and every object with `held_by == s` must be the object gripper
+`s` reports. The failure scenario was real: a `SimBackend` reading gripper state
+from joints and attachment from a weld constraint could hand the brain a scene
+that contradicts itself, and it would construct and round-trip happily. Tests:
+`test_a_gripper_holding_an_object_the_scene_disagrees_about_is_rejected` (three
+sub-cases: object absent, object says nobody, object says the other arm),
+`test_an_object_claiming_a_holder_that_holds_nothing_is_rejected` (two
+sub-cases), and `test_the_held_object_invariant_survives_a_round_trip` (a
+doctored dict is caught on parse, not just on construction).
+
+**NOTE 4 — implicit-side `Grasp` is now reach-aware.**
+`_resolve_grasping_side()` replaces "first free arm, then check reach". With no
+side named it returns the first side in `SIDE_ORDER` that is *both* free and
+within reach; with a side named, behaviour is unchanged (that arm must be free
+and able to reach). When no free arm can reach, it falls back to the preferred
+free arm's existing `out_of_reach` message, and with no free arm at all to the
+existing `gripper_occupied` message. Still fully deterministic — fixed order, no
+distance tie-breaking. Refactor: `_require_reachable` now sits on a predicate
+`_reach_offset`, and the two refusal helpers (`_require_free_gripper`,
+`_refuse_both_grippers_occupied`) are split out. Tests:
+`test_grasp_without_a_side_prefers_a_gripper_that_can_actually_reach` (object
+0.62 m from the right shoulder, 0.98 m from the left),
+`test_implicit_side_still_prefers_the_left_arm_when_both_can_reach` (preference
+order unchanged where reach does not decide),
+`test_naming_an_arm_that_cannot_reach_is_still_refused`, and
+`test_implicit_side_reports_out_of_reach_when_no_free_arm_can_reach`.
+
+**NOTE 5 — float comparisons state the real contract.**
+`assert_pose_close()` (tolerance 1e-9 on position, exact on orientation) replaces
+`==` wherever a *commanded* pose is compared to a *reported* one, and
+`test_move_gripper_puts_that_gripper_at_the_requested_pose` is parametrized with
+a `badly_scaled` case (`z=0.1` against a shoulder at `z=0.8`, where
+`0.1 - 0.8 + 0.8 == 0.09999999999999987`) that the old bit-exact assertion would
+have failed. **The implementation is unchanged** — offset-from-shoulder is what
+makes the arm ride the base and the column. Pose-vs-pose comparisons where both
+sides come from the *same* reconstruction (a held object sitting in its gripper)
+stay exact, because there the equality is meaningful.
+
+**NOTE 6 — wire-format policy written down.** `serialization.py`'s module
+docstring now states the stance explicitly: these dicts are an internal,
+versioned-together format; adding/renaming/removing a field is a coordinated
+breaking change across the repo. Rationale recorded too — the likeliest producer
+of a malformed dict is an LLM, and silently ignoring an invented key
+(`"objct_id"`, `"height_cm"`) turns a typo into a wrong action instead of a clean
+refusal. The documented migration if independently versioned peers ever appear is
+a reserved, ignored `extensions` sub-object on `Observation`/`SkillResult` only,
+keeping `Skill` (the type an LLM writes) strict — *not* relaxing `check_keys`
+globally. No behaviour change.
+
+**NOTE 11 typing nit.** `assert_refused(..., reason_contains: str | None)`.
+
+Not done, by the manager's instruction (now GitHub issues / Sisyphus's call):
+NOTE 1 (`decisions.md` entry — outside owned paths), NOTE 7, NOTE 8a
+(workspace-level pytest config), NOTE 9 (brief-author confirmation on
+close-gripper-empty), NOTE 10 (workspace suite red for the five empty skeleton
+packages), and NOTE 11's other bullets.
+
+Re-verified after the fixes: `pixi run build` green (7 packages);
+`colcon test --packages-select robot_skills robot_backends` + `test-result
+--verbose` → **116 tests, 0 errors, 0 failures, 0 skipped**; direct pytest per
+package → 58 passed each; the no-ROS subprocess check still passes.
 
 ## Deliberately left out (per the brief's non-goals)
 

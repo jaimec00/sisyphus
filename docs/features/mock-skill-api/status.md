@@ -27,3 +27,11 @@ last_update: 2026-08-10
   E501 in `src/robot_description/setup.py`.
 - 2026-08-10 red_team.md written (round 1): 0 BLOCK, 11 NOTE; verdict READY
 - 2026-08-10 phase=fix (voluntary round for NOTE 2,3,4,5,6,11-typing); rest → issues
+- 2026-08-10 fix round 1 done (commit 3bdb6c7): all 6 items addressed, none refused —
+  AST-based rclpy detector + a test for the detector; Observation enforces the
+  held-object invariant both directions; implicit-side Grasp is reach-aware;
+  pose assertions use a tolerance helper + a badly-scaled case (implementation
+  unchanged); wire-format compatibility policy documented; typing nit fixed
+- 2026-08-10 fix: `pixi run build` green; `colcon test` on the two owned packages
+  green — 116 tests (58 + 58), 0 errors, 0 failures, 0 skipped
+- 2026-08-10 fix: implementation.md gained a "Round 1 fixes" section
