@@ -1,0 +1,19 @@
+{
+  "graspable": true,
+  "held_by": "left",
+  "label": "mug",
+  "object_id": "mug_1",
+  "pose": {
+    "orientation": {
+      "w": 1.0,
+      "x": 0.0,
+      "y": 0.0,
+      "z": 0.0
+    },
+    "position": {
+      "x": 1.3,
+      "y": 0.2,
+      "z": 0.9
+    }
+  }
+}

@@ -15,6 +15,11 @@ Failures carry both a machine-readable :class:`FailureCode` (so a planner or a
 test can branch without string matching) and a human-readable ``reason`` (so
 the LLM and the logs get the specifics: which object, which gripper, how far
 out of reach).
+
+Every failure code is additionally attributed to the layer that owns it (D17):
+:data:`BACKEND_REFUSAL_CODES` versus :data:`SAFETY_EVENT_CODES`.  The split is
+data, not behaviour -- it lets the brain, the backends and the safety layer
+branch on *who said no* without string-matching a reason.
 """
 
 from dataclasses import dataclass
@@ -24,6 +29,7 @@ from typing import Any, Mapping, Self
 from robot_skills.observation import Observation
 from robot_skills.serialization import (
     check_keys,
+    check_schema_version,
     ensure_mapping,
     get_enum,
     get_mapping,
@@ -32,10 +38,18 @@ from robot_skills.serialization import (
     JsonDict,
     JsonSerializable,
     parse_errors,
+    SCHEMA_VERSION,
+    SCHEMA_VERSION_KEY,
 )
-from robot_skills.skills import Skill
+from robot_skills.skills import Side, Skill
 
-__all__ = ['FailureCode', 'SkillResult', 'SkillStatus']
+__all__ = [
+    'BACKEND_REFUSAL_CODES',
+    'SAFETY_EVENT_CODES',
+    'FailureCode',
+    'SkillResult',
+    'SkillStatus',
+]
 
 
 @unique
@@ -50,8 +64,28 @@ class SkillStatus(Enum):
 class FailureCode(Enum):
     """Machine-readable reason a skill was refused or could not complete.
 
-    Backends must reuse these codes rather than inventing prose categories; a
-    later safety layer reports its rejections as :attr:`REJECTED`.
+    Backends must reuse these codes rather than inventing prose categories.
+
+    **Ownership (D17).**  Every code belongs to exactly one layer, split by the
+    *kind* of limit it reports, not by the component that happens to notice it:
+
+    * **backend refusal** -- *"can't be done"*.  The backend inspects the goal
+      against the world and its own kinematics/workspace and refuses the skill
+      up front, before any motion; nothing has moved.  Membership:
+      :data:`BACKEND_REFUSAL_CODES`, queryable as :attr:`is_backend_refusal`.
+    * **safety-layer clamp/abort** -- *"unsafe to continue"*.  The safety layer
+      (D4) sits between brain-issued skills and the backend and clamps or
+      aborts them, in flight if need be, reporting a safety event.  Membership:
+      :data:`SAFETY_EVENT_CODES`, queryable as :attr:`is_safety_event`.
+
+    The distinction is what the brain needs to decide what to do next: a
+    refusal means *pick a different goal*, a safety event means *the motion was
+    stopped mid-way, re-observe before assuming anything*.
+
+    Every member is in exactly one of the two sets (tested), so classifying a
+    new code is a decision the author has to make rather than one they can
+    forget.  Over-force while closing a gripper, for example, is a safety event
+    -- not a ``gripper_empty`` refusal (D19).
     """
 
     UNKNOWN_LOCATION = 'unknown_location'
@@ -64,6 +98,42 @@ class FailureCode(Enum):
     OUT_OF_RANGE = 'out_of_range'
     UNSUPPORTED_SKILL = 'unsupported_skill'
     REJECTED = 'rejected'
+
+    @property
+    def is_backend_refusal(self) -> bool:
+        """Return whether a backend owns this code ("can't be done")."""
+        return self in BACKEND_REFUSAL_CODES
+
+    @property
+    def is_safety_event(self) -> bool:
+        """Return whether the safety layer owns this code ("unsafe to continue")."""
+        return self in SAFETY_EVENT_CODES
+
+
+#: Codes a backend raises to refuse a skill up front, before anything moves.
+#:
+#: ``GRIPPER_EMPTY`` is here deliberately: placing with nothing held is a
+#: precondition the backend checks before motion, not an in-flight abort.
+BACKEND_REFUSAL_CODES: frozenset[FailureCode] = frozenset({
+    FailureCode.UNKNOWN_LOCATION,
+    FailureCode.UNKNOWN_OBJECT,
+    FailureCode.NOT_GRASPABLE,
+    FailureCode.OBJECT_ALREADY_HELD,
+    FailureCode.GRIPPER_OCCUPIED,
+    FailureCode.GRIPPER_EMPTY,
+    FailureCode.OUT_OF_REACH,
+    FailureCode.OUT_OF_RANGE,
+    FailureCode.UNSUPPORTED_SKILL,
+})
+
+#: Codes the safety layer reports when it clamps or aborts a skill (D4/D17).
+#:
+#: Listed explicitly rather than derived as "everything else", so that adding a
+#: dynamic-safety code (e-stop, collision abort, gripper over-force) is a
+#: deliberate classification and not a silent default.
+SAFETY_EVENT_CODES: frozenset[FailureCode] = frozenset({
+    FailureCode.REJECTED,
+})
 
 
 @dataclass(frozen=True)
@@ -113,6 +183,21 @@ class SkillResult(JsonSerializable):
         """Return whether the skill completed successfully."""
         return self.status is SkillStatus.OK
 
+    def did_grasp(self, side: Side) -> bool:
+        """Return whether ``side``'s gripper holds a load after this skill (D19).
+
+        The closed-loop answer to "did I get it?".  ``close_gripper`` on thin
+        air *succeeds* and reports ``False`` here; an empty grip is information,
+        not an error.  This reads through to the observation the result already
+        carries rather than copying the flag, so the two can never disagree.
+
+        Named ``did_grasp`` rather than ``grasped`` deliberately: it takes a
+        side, and a method sharing a name with
+        :attr:`GripperObservation.grasped` would make the plausible-looking
+        ``if result.grasped:`` a bound method -- always true, never failing.
+        """
+        return self.observation.robot.gripper(side).grasped
+
     @classmethod
     def ok(
         cls,
@@ -141,8 +226,14 @@ class SkillResult(JsonSerializable):
         )
 
     def to_dict(self) -> JsonDict:
-        """Return the result's JSON-safe dict form."""
+        """Return the result's JSON-safe dict form, version stamped (D18).
+
+        The nested ``observation`` carries its own stamp as well: each type
+        stamps its own wire form, so an observation lifted out of a result and
+        published alone stays self-describing.  The two are the same constant.
+        """
         return {
+            SCHEMA_VERSION_KEY: SCHEMA_VERSION,
             'skill': self.skill.to_dict(),
             'status': self.status.value,
             'reason': self.reason,
@@ -155,10 +246,12 @@ class SkillResult(JsonSerializable):
         """Rebuild a :class:`SkillResult` from its dict form."""
         context = cls.__name__
         data = ensure_mapping(data, context=context)
+        # Version before keys: see the note in ``Observation.from_dict``.
+        check_schema_version(data, context=context)
         check_keys(
             data,
             required=('skill', 'status', 'observation'),
-            optional=('reason', 'code'),
+            optional=(SCHEMA_VERSION_KEY, 'reason', 'code'),
             context=context,
         )
         with parse_errors(context):

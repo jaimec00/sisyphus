@@ -282,7 +282,11 @@ class MockBackend(RobotBackend):
         return None
 
     def _open_gripper(self, skill: OpenGripper) -> str | None:
-        """Open a gripper, releasing anything it holds where the gripper is."""
+        """Open a gripper, releasing anything it holds where the gripper is.
+
+        Idempotent (D19): opening an already-open gripper succeeds and says so
+        in an informational reason, rather than failing on a no-op.
+        """
         gripper = self._grippers[skill.side]
         released = gripper.held_object_id
         if released is not None:
@@ -297,7 +301,13 @@ class MockBackend(RobotBackend):
         return f'the {skill.side.value} gripper was already open' if was_open else None
 
     def _close_gripper(self, skill: CloseGripper) -> str | None:
-        """Close a gripper; closing on thin air grips nothing (use Grasp to pick up)."""
+        """Close a gripper; closing on thin air grips nothing (use Grasp to pick up).
+
+        Always succeeds, closed jaws included (D19): "I closed and caught
+        nothing" is a fact the observation reports via ``grasped``, not a
+        failure.  Errors here stay reserved for "couldn't run"; over-force while
+        closing is a safety event on D17's clamp path, not this handler's.
+        """
         gripper = self._grippers[skill.side]
         was_closed = gripper.state is GripperState.CLOSED
         gripper.state = GripperState.CLOSED
@@ -328,13 +338,23 @@ class MockBackend(RobotBackend):
         )
 
     def _gripper_observation(self, side: Side) -> GripperObservation:
-        """Return the reportable state of one gripper."""
+        """Return the reportable state of one gripper.
+
+        ``grasped`` is the sensed "the jaws have a load" flag (D19).  The mock
+        models no aperture and no contact force, so its only evidence of a grip
+        is its own book-keeping: it reports a grasp exactly when it carries an
+        object.  Closing on thin air therefore reports ``grasped=False``, which
+        is what the brain reads instead of catching an error.  A backend with
+        real sensing overrides this with the sensor, and may then report
+        ``grasped=True`` with no ``held_object_id`` (an unidentified load).
+        """
         gripper = self._grippers[side]
         return GripperObservation(
             side=side,
             state=gripper.state,
             pose=self._gripper_pose(side),
             held_object_id=gripper.held_object_id,
+            grasped=gripper.held_object_id is not None,
         )
 
     def _carry_held_objects(self) -> None:

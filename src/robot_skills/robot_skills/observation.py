@@ -24,6 +24,7 @@ from typing import Any, Mapping, Self
 from robot_skills.geometry import Pose
 from robot_skills.serialization import (
     check_keys,
+    check_schema_version,
     ensure_mapping,
     get_bool,
     get_enum,
@@ -36,6 +37,8 @@ from robot_skills.serialization import (
     JsonDict,
     JsonSerializable,
     parse_errors,
+    SCHEMA_VERSION,
+    SCHEMA_VERSION_KEY,
     SerializationError,
 )
 from robot_skills.skills import Side, SIDE_ORDER
@@ -129,12 +132,37 @@ class SceneObject(JsonSerializable):
 
 @dataclass(frozen=True)
 class GripperObservation(JsonSerializable):
-    """The state of one gripper: which side, open/closed, where, holding what."""
+    """The state of one gripper: which side, open/closed, where, holding what.
+
+    ``grasped`` and ``held_object_id`` answer two different questions on
+    purpose (D19).  ``held_object_id`` is a *world-model* fact -- **which**
+    known object this gripper carries -- while ``grasped`` is a *sensed* fact:
+    the jaws report a load (aperture short of closed, contact force present).
+    They diverge on a real robot, which can feel an unidentified object it
+    cannot name, so the brain gets both: ``grasped`` answers "did I get it?"
+    after a ``close_gripper``, ``held_object_id`` answers "get what?".
+
+    The one combination that cannot happen is holding a named object without
+    gripping it, and the constructor rejects it; the Mock, which has no force
+    sensing, derives ``grasped`` from what it holds.
+
+    **Contract for a backend with real sensing.**  That rejection makes "the
+    world model still thinks it carries ``mug_1``, but the jaws report empty" --
+    a dropped object -- unrepresentable, on purpose: a stale ``held_object_id``
+    is a lie the brain would plan against.  On a detected drop the backend must
+    therefore clear ``held_object_id`` (and the matching
+    :attr:`SceneObject.held_by`) in the *same* update that reports
+    ``grasped=False``, and place the object where it believes it fell.  It must
+    not build the observation from a half-updated world model: the constructor
+    raises a ``ValueError`` inside ``get_observation()``, where there is no
+    parse boundary to translate it.
+    """
 
     side: Side
     state: GripperState
     pose: Pose
     held_object_id: str | None = None
+    grasped: bool = False
 
     def __post_init__(self) -> None:
         if not isinstance(self.side, Side):
@@ -147,16 +175,25 @@ class GripperObservation(JsonSerializable):
         if not isinstance(self.pose, Pose):
             raise TypeError(
                 f'GripperObservation.pose must be a Pose, got {type(self.pose).__name__}')
+        if not isinstance(self.grasped, bool):
+            raise TypeError(
+                'GripperObservation.grasped must be a bool, '
+                f'got {type(self.grasped).__name__}')
         if self.held_object_id is not None:
             object.__setattr__(
                 self,
                 'held_object_id',
                 as_identifier(self.held_object_id, name='GripperObservation.held_object_id'),
             )
+            if not self.grasped:
+                raise ValueError(
+                    f'GripperObservation: the {self.side.value} gripper reports holding '
+                    f'{self.held_object_id!r} while grasped=False; a carried object is '
+                    'gripped by definition')
 
     @property
     def is_holding(self) -> bool:
-        """Return whether this gripper currently holds an object."""
+        """Return whether this gripper currently holds an *identified* object."""
         return self.held_object_id is not None
 
     def to_dict(self) -> JsonDict:
@@ -166,6 +203,7 @@ class GripperObservation(JsonSerializable):
             'state': self.state.value,
             'pose': self.pose.to_dict(),
             'held_object_id': self.held_object_id,
+            'grasped': self.grasped,
         }
 
     @classmethod
@@ -176,15 +214,24 @@ class GripperObservation(JsonSerializable):
         check_keys(
             data,
             required=('side', 'state', 'pose'),
-            optional=('held_object_id',),
+            optional=('held_object_id', 'grasped'),
             context=context,
         )
+        held_object_id = get_optional_str(data, 'held_object_id', context=context)
+        # ``grasped`` is an additive field (D18): a payload written before it
+        # existed still says whether the gripper has a load -- via the object it
+        # reports carrying -- so infer it rather than defaulting to "empty jaws"
+        # and contradicting the rest of the same dict.
+        grasped = held_object_id is not None
+        if 'grasped' in data:
+            grasped = get_bool(data, 'grasped', context=context)
         with parse_errors(context):
             return cls(
                 side=get_enum(data, 'side', Side, context=context),
                 state=get_enum(data, 'state', GripperState, context=context),
                 pose=Pose.from_dict(get_mapping(data, 'pose', context=context)),
-                held_object_id=get_optional_str(data, 'held_object_id', context=context),
+                held_object_id=held_object_id,
+                grasped=grasped,
             )
 
 
@@ -357,8 +404,15 @@ class Observation(JsonSerializable):
         return tuple(item for item in self.objects if item.is_held)
 
     def to_dict(self) -> JsonDict:
-        """Return the observation's JSON-safe dict form."""
+        """Return the observation's JSON-safe dict form, version stamp included.
+
+        The stamp travels with the type, not with an envelope, so an
+        observation nested in a :class:`~robot_skills.result.SkillResult` still
+        carries it (see the wire-format policy in
+        :mod:`robot_skills.serialization`).
+        """
         return {
+            SCHEMA_VERSION_KEY: SCHEMA_VERSION,
             'robot': self.robot.to_dict(),
             'objects': [item.to_dict() for item in self.objects],
             'known_locations': list(self.known_locations),
@@ -369,10 +423,14 @@ class Observation(JsonSerializable):
         """Rebuild an :class:`Observation` from its dict form."""
         context = cls.__name__
         data = ensure_mapping(data, context=context)
+        # Version first: a payload from another schema most likely trips
+        # check_keys on a key that version added, and "unknown key(s): ..."
+        # would send the reader hunting an LLM typo instead of a mismatch.
+        check_schema_version(data, context=context)
         check_keys(
             data,
             required=('robot',),
-            optional=('objects', 'known_locations'),
+            optional=(SCHEMA_VERSION_KEY, 'objects', 'known_locations'),
             context=context,
         )
         objects: tuple[SceneObject, ...] = ()

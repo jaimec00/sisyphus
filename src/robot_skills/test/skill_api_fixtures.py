@@ -67,14 +67,21 @@ def make_gripper(
     side: Side,
     state: GripperState = GripperState.OPEN,
     held_object_id: str | None = None,
+    grasped: bool | None = None,
 ) -> GripperObservation:
-    """Build a gripper observation with a deterministic pose."""
+    """Build a gripper observation with a deterministic pose.
+
+    ``grasped`` defaults to "whatever holding an object implies", which is what
+    a sensorless backend reports; pass it explicitly to build the sensed-load
+    cases (a grip on an unidentified object).
+    """
     offset = 0.2 if side is Side.LEFT else -0.2
     return GripperObservation(
         side=side,
         state=state,
         pose=Pose.from_xyz(0.3, offset, 0.8),
         held_object_id=held_object_id,
+        grasped=(held_object_id is not None) if grasped is None else grasped,
     )
 
 
