@@ -1,8 +1,8 @@
 # Status: mock-skill-api
 
-phase: fix         # context | impl | redteam | fix | test | pr | done
+phase: pr           # context | impl | redteam | fix | test | pr | done
 round: 2            # red-team ↔ fix rounds (cap: 2)
-owner_agent: implementer (round 2 fix)
+owner_agent: worktree manager
 blockers: none      # or: "escalation needed — <describe>"
 pr: -
 last_update: 2026-08-10
@@ -49,3 +49,9 @@ last_update: 2026-08-10
   green — 117 tests (59 + 58), 0 errors, 0 failures, 0 skipped
 - 2026-08-10 fix: implementation.md gained a "Round 2 fixes" section; §9 records the
   deliberate Place/Grasp asymmetry. Round cap reached — next gate is the test-runner.
+- 2026-08-10 round-2 fixes landed (19799e8..8849b07): BLOCK 1 + NOTEs A-F, none refused; 116 -> 117 tests
+- 2026-08-10 BLOCK 1 fix verified by regression injection: new test is the only one that catches nearest-arm selection
+- 2026-08-10 main moved (b17c055, 2 ops PRs) — rules changed: NOTEs now proposed in retro.md, Sisyphus files issues
+- 2026-08-10 rebased onto origin/main b17c055; clean, no conflicts, scope still owned-paths-only
+- 2026-08-10 re-green after rebase: 117 tests (59+58), 0 failures, clean rebuild — green against CURRENT main
+- 2026-08-10 retro.md written (9 proposed follow-ups); phase=pr
