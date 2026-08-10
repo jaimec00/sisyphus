@@ -144,6 +144,18 @@ occupied gripper gives `GRIPPER_OCCUPIED`; naming an empty one for a place gives
 naming both loads. Grasping an object someone is already holding has its own
 code, `OBJECT_ALREADY_HELD`.
 
+*Amended in round 1:* implicit-side `Grasp` picks the first side in `SIDE_ORDER`
+that is both free **and** within reach (see the round 1 section). *Deliberately
+not mirrored for `Place`:* with both hands full the two arms hold **different**
+objects, so choosing the side by geometry would silently decide *which object
+gets put down* — a surprising choice to make for the brain. `Grasp` has no such
+hazard (either free arm ends up holding the same object), and unlike `Grasp` the
+brain can name the side for a `Place` without parsing a failure reason, because
+`Observation.held_objects()` and `RobotState.gripper(side).held_object_id` report
+which arm holds what. So a two-handed `Place` with no side named can still fail
+`OUT_OF_REACH` for the left arm when the right could reach; naming the side is
+the intended answer. Recorded on `_resolve_holding_side`'s docstring too.
+
 **10. `close_gripper` on an empty gripper succeeds.** The brief's failure list
 mentions "place/close-drop with an empty gripper". Interpreted as *drop-like*
 actions: `Place` with an empty gripper fails (`GRIPPER_EMPTY`); closing an empty
@@ -191,9 +203,9 @@ inside the owned packages, both flagged here):
   load. Neither package uses launch testing. The file documents itself and
   should be deleted once the environment ships a compatible `launch_testing`.
 
-## Test inventory (107 tests at round 0; 116 after the round 1 fixes below)
+## Test inventory (107 tests at round 0; 116 after round 1, 117 after round 2)
 
-### `robot_skills` — 55 tests (58 after round 1)
+### `robot_skills` — 55 tests (58 after round 1, 59 after round 2)
 | file | covers |
 |---|---|
 | `test_geometry.py` (7) | Point/Quaternion/Pose arithmetic, finite/type validation, immutability, round trips, strict parsing |
@@ -341,6 +353,85 @@ Re-verified after the fixes: `pixi run build` green (7 packages);
 `colcon test --packages-select robot_skills robot_backends` + `test-result
 --verbose` → **116 tests, 0 errors, 0 failures, 0 skipped**; direct pytest per
 package → 58 passed each; the no-ROS subprocess check still passes.
+
+## Round 2 fixes (post delta review)
+
+Round 2 returned one BLOCK — on a test, not the implementation — plus six
+NOTEs. All seven done, none refused. Test count 116 → **117** (59 + 58); the
+count barely moves because most of this round *strengthened* existing tests
+rather than adding them.
+
+**BLOCK 1 — the left-preference test could not fail.** `bowl_1` sits at
+`(2.25, 0.00, 0.92)`, on the sagittal plane: I confirmed both shoulders are at
+0.3306 m, bit-identical, so replacing the `SIDE_ORDER` loop with
+`min(reachable, key=norm)` left the entire suite green. Rewritten to use
+`plate_1` (measured: **left 0.4224 m, right 0.3262 m**, both inside the 0.85 m
+reach), so left-preference is the only explanation for the left gripper getting
+it. The test also guards its own premise — asserting both arms can reach *and*
+the right is strictly nearer, computed from `RobotModel.shoulder()` rather than
+hardcoded — so a future reach-model change turns it red instead of quietly
+turning it into a non-discriminating case, and asserts the nearer arm genuinely
+could have taken the plate. Renamed to
+`test_implicit_side_prefers_the_left_arm_even_when_the_right_is_nearer`.
+Verified by injecting the exact `min`-by-distance regression the reviewer
+described: this test is the **only** one that fails.
+
+**NOTE A — the source scan is now recursive.** `os.listdir` → `os.walk`
+(skipping `__pycache__`), so a future `robot_backends/sim/kinematics.py` is
+scanned. Verified by planting exactly that file with a lazy
+`from rclpy.qos import QoSProfile` and confirming the test fails on it; the
+old non-recursive version would not have seen it.
+
+**NOTE B — the scan asserts what it visited, not how many.** The global
+`scanned >= 10` (real count 11, so a margin of one, and a message a global
+count could not back up) is replaced by per-package filename-set assertions:
+`robot_skills` must have included `__init__.py`/`skills.py`/`observation.py`/
+`result.py`, `robot_backends` `__init__.py`/`interface.py`/`mock_backend.py`.
+It still cannot pass by scanning nothing, and no longer fails spuriously when
+modules are consolidated.
+
+**NOTE C — kwarg dynamic imports, and an honest docstring.**
+`import_module(name='rclpy')` was skipped by the `not node.args` guard; the
+detector now also inspects `node.keywords` for `name`/`module`. The sample gained
+a fourth form (`import_module(name='rclpy.action')`) and the self-test asserts on
+it. The docstring now states the inherent limit — a non-literal module name
+(`import_module(MODULE_NAME)`) cannot be caught by static analysis, and the
+clean-subprocess test is the backstop for anything that actually executes.
+
+**NOTE D — exactness restored where the mock is exact.** `_place` assigns
+`item.pose = skill.pose` verbatim, so the three *placed-object* comparisons are
+bit-identical by construction and the 1e-9 tolerance was throwing away a
+discriminating assertion (a refactor to `item.pose = self._gripper_pose(side)`
+would have slipped under it). Reverted to `==` with a comment saying why;
+`assert_pose_close` stays on the two *gripper* comparisons, which really are
+reconstructed from the shoulder. This restores the rule already stated above:
+tolerance only where a shoulder round trip is involved.
+
+**NOTE E — the `Place`/`Grasp` asymmetry is documented, not changed.** Accepted
+the ruling. `_resolve_holding_side`'s docstring now explains why implicit-side
+`Place` is deliberately *not* reach-aware: with both hands full the two arms hold
+*different* objects, so letting geometry pick the side would silently decide
+which object gets put down; and unlike `Grasp`, the brain can already name the
+right side without parsing a failure reason, because `held_objects()` and
+`gripper(side).held_object_id` report it directly. See §9 below.
+
+**NOTE F — `from_dict` now raises only `SerializationError`.** Took the
+translation option, since the alternative contradicts the strictness policy
+written down last round. New `parse_errors()` context manager in
+`serialization.py` wraps every `from_dict` construction site: a constructor
+`TypeError`/`ValueError` becomes a `SerializationError`, while one raised deeper
+in the parse passes through unwrapped (no double-prefixed messages). Guaranteed
+on `JsonSerializable.from_dict`'s docstring and in the policy section. Pinned by
+`test_from_dict_raises_only_serialization_error`, which covers five invariant
+classes across four types (duplicate ids, one-gripper-per-side, status/code
+agreement, non-finite geometry, blank skill identifier);
+`test_the_held_object_invariant_survives_a_round_trip` now asserts the stronger
+type too. This also settles the two pre-existing instances the reviewer noted.
+
+Re-verified: `pixi run build` green (7 packages);
+`colcon test --packages-select robot_skills robot_backends` + `test-result
+--verbose` → **117 tests, 0 errors, 0 failures, 0 skipped**; direct pytest
+59 (`robot_skills`) + 58 (`robot_backends`); the no-ROS subprocess check passes.
 
 ## Deliberately left out (per the brief's non-goals)
 

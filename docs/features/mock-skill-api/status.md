@@ -39,3 +39,13 @@ last_update: 2026-08-10
 - 2026-08-10 phase=redteam round 2 (delta-only) + test-runner dispatched in parallel
 - 2026-08-10 test-runner PASS: 116 tests (58+58), 0 failures; whole-workspace baseline = 5 empty skeleton pkgs (pre-existing)
 - 2026-08-10 red_team_round2.md: 1 BLOCK + 6 NOTE; phase=fix round 2 (cap reached — last fix round)
+- 2026-08-10 fix round 2 done (commits 19799e8, 1ab6bbf, 4d90962, 8c6296d): BLOCK 1 +
+  NOTEs A-F all addressed, none refused — left-preference test now uses plate_1 and
+  provably fails under nearest-arm selection (verified by injecting it); rclpy scan is
+  recursive, asserts what it visited, and catches the import_module kwarg form; exact
+  assertions restored for placed-object poses; Place/Grasp asymmetry documented;
+  from_dict now raises only SerializationError
+- 2026-08-10 fix: `pixi run build` green; `colcon test` on the two owned packages
+  green — 117 tests (59 + 58), 0 errors, 0 failures, 0 skipped
+- 2026-08-10 fix: implementation.md gained a "Round 2 fixes" section; §9 records the
+  deliberate Place/Grasp asymmetry. Round cap reached — next gate is the test-runner.
