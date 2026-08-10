@@ -1,0 +1,26 @@
+[project]
+name = "sisyphus"
+version = "0.0.0"
+description = "Autonomous household-chore robot — LLM-operated mobile manipulator (ROS 2 Jazzy)."
+authors = ["Jaime C."]
+channels = ["https://prefix.dev/robostack-jazzy", "conda-forge"]
+platforms = ["linux-64", "linux-aarch64"]
+
+[dependencies]
+# Core ROS 2 Jazzy via RoboStack + colcon build tooling.
+ros-jazzy-desktop = "*"
+colcon-common-extensions = "*"
+# Workspace source management
+python = "*"
+
+# TODO (verify availability on robostack-jazzy; source-build in this env if missing):
+#   ros-jazzy-moveit                (MoveIt 2 — confirmed present on channel)
+#   ros-jazzy-navigation2           (Nav2)
+#   ros-jazzy-nav2-bringup
+#   ros-jazzy-foxglove-bridge
+#   mujoco                          (conda-forge)
+#   mujoco_ros2_control             (likely source-build via robot.repos)
+
+[tasks]
+build = "colcon build --symlink-install"
+test = "colcon test && colcon test-result --verbose"

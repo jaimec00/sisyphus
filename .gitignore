@@ -1,0 +1,26 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+
+# ROS 2 / colcon
+build/
+install/
+log/
+
+# pixi
+.pixi/
+
+# dev run / test logs (kept until PR merges, then pruned)
+.dev/
+
+# secrets & local settings
+.claude/settings.local.json
+.env
+*.pat
+*.token
+
+# OS
+.DS_Store

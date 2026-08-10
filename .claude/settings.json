@@ -1,0 +1,17 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(pixi run build:*)",
+      "Bash(pixi run test:*)",
+      "Bash(colcon build:*)",
+      "Bash(colcon test:*)",
+      "Bash(pytest:*)",
+      "Bash(git status:*)",
+      "Bash(git diff:*)",
+      "Bash(git log:*)",
+      "Bash(git add:*)",
+      "Bash(git commit:*)"
+    ],
+    "deny": []
+  }
+}

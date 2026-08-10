@@ -1,0 +1,17 @@
+# vcstool manifest — external ROS 2 source dependencies, pinned at fixed commits.
+# Import with:  vcs import src < robot.repos
+# Populated as we adopt/fork upstreams (see docs/design/PROJECT.md "Reuse map").
+#
+# Examples (commented until adopted — pin a real commit in `version:`):
+#
+# repositories:
+#   so101_ros2:
+#     type: git
+#     url: https://github.com/msf4-0/so101_ros2.git
+#     version: <commit-sha>
+#   mujoco_ros2_control:
+#     type: git
+#     url: https://github.com/ros-controls/mujoco_ros2_control.git
+#     version: <commit-sha>
+
+repositories: {}
