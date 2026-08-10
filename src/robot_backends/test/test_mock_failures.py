@@ -125,6 +125,40 @@ def test_grasp_out_of_reach(backend):
     assert backend.execute(Grasp('mug_1')).status is SkillStatus.OK
 
 
+def test_naming_an_arm_that_cannot_reach_is_still_refused():
+    """Reach-aware side selection only applies when the brain leaves side open."""
+    backend = _asymmetric_backend()
+
+    result = assert_refused(
+        backend, Grasp('cube_1', Side.LEFT), FailureCode.OUT_OF_REACH)
+    assert 'left shoulder' in result.reason
+    assert backend.execute(Grasp('cube_1', Side.RIGHT)).status is SkillStatus.OK
+
+
+def test_implicit_side_reports_out_of_reach_when_no_free_arm_can_reach():
+    """With the reaching arm already full, the refusal names the arm that is free."""
+    backend = _asymmetric_backend()
+    run(backend, Grasp('near_1', Side.RIGHT))  # fill the only arm that can reach
+
+    result = assert_refused(backend, Grasp('cube_1'), FailureCode.OUT_OF_REACH)
+    assert 'left shoulder' in result.reason, result.reason
+
+
+def _asymmetric_backend() -> MockBackend:
+    """Build a world where cube_1 is reachable by the right arm only."""
+    return MockBackend(
+        MockWorld(
+            locations={'dock': Pose.from_xyz(0.0, 0.0, 0.0)},
+            start_location='dock',
+            objects=(
+                # 0.62 m from the right shoulder, 0.98 m from the left one.
+                ObjectSpec('cube_1', 'cube', Pose.from_xyz(0.0, -0.80, 0.80)),
+                ObjectSpec('near_1', 'block', Pose.from_xyz(0.30, -0.18, 0.75)),
+            ),
+        )
+    )
+
+
 def test_move_gripper_out_of_reach(backend):
     """A Cartesian target beyond the arm's envelope is refused, not clamped."""
     run(backend, NavigateTo('kitchen'))

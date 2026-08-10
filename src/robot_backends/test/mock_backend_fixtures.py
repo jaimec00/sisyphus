@@ -10,12 +10,12 @@ Kept out of ``conftest.py`` so test modules can import them directly without
 relying on a module name every package in the workspace shares.
 """
 
-from typing import Any
-
+import pytest
 from robot_backends import MockBackend
 from robot_skills import (
     FailureCode,
     JsonDict,
+    Pose,
     Skill,
     SkillResult,
     SkillStatus,
@@ -43,12 +43,26 @@ def run(backend: MockBackend, *skills: Skill) -> SkillResult:
     return result
 
 
+def assert_pose_close(actual: Pose, expected: Pose, *, tolerance: float = 1e-9) -> None:
+    """Assert two poses match to floating-point tolerance.
+
+    The mock stores an arm *offset* from the shoulder and reconstructs world
+    poses as ``(target - shoulder) + shoulder``, which is not bit-exact for
+    badly scaled coordinates.  That approximation is the real contract, so the
+    tests state it rather than relying on numbers that happen to round well.
+    """
+    actual_xyz = (actual.position.x, actual.position.y, actual.position.z)
+    expected_xyz = (expected.position.x, expected.position.y, expected.position.z)
+    assert actual_xyz == pytest.approx(expected_xyz, abs=tolerance)
+    assert actual.orientation == expected.orientation
+
+
 def assert_refused(
     backend: MockBackend,
     skill: Skill,
     code: FailureCode,
     *,
-    reason_contains: str | Any = None,
+    reason_contains: str | None = None,
 ) -> SkillResult:
     """Assert a skill fails with ``code`` and leaves the world byte-identical.
 

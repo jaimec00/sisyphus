@@ -6,8 +6,9 @@
 
 """Per-skill round trips: each skill's effect shows up in the next observation."""
 
-from mock_backend_fixtures import run, snapshot
+from mock_backend_fixtures import assert_pose_close, run, snapshot
 import pytest
+from robot_backends import MockBackend, MockWorld, ObjectSpec
 from robot_skills import (
     CloseGripper,
     ExtendColumn,
@@ -55,16 +56,27 @@ def test_navigate_to_moves_the_base_and_updates_the_named_location(backend, worl
     assert 'already at' in again.reason
 
 
-def test_move_gripper_puts_that_gripper_at_the_requested_pose(backend):
+@pytest.mark.parametrize(
+    'target',
+    [
+        # Well-scaled against the left shoulder at (2.0, 0.18, 0.8).
+        Pose(Point(2.2, 0.25, 1.0), Quaternion(0.0, 0.0, 0.7071, 0.7071)),
+        # Badly scaled: 0.1 - 0.8 + 0.8 != 0.1 in binary floating point, so this
+        # case pins the *approximate* contract the offset-from-shoulder model
+        # actually offers.
+        Pose(Point(2.0, 0.20, 0.1), Quaternion(0.0, 0.0, 0.7071, 0.7071)),
+    ],
+    ids=['well_scaled', 'badly_scaled'],
+)
+def test_move_gripper_puts_that_gripper_at_the_requested_pose(backend, target):
     """move_gripper: the commanded pose is what the observation reports back."""
     run(backend, NavigateTo('kitchen'))
-    target = Pose(Point(2.2, 0.25, 1.0), Quaternion(0.0, 0.0, 0.7071, 0.7071))
     other_before = backend.get_observation().robot.gripper(Side.RIGHT)
 
     result = backend.execute(MoveGripper(Side.LEFT, target))
 
-    assert result.status is SkillStatus.OK
-    assert result.observation.robot.gripper(Side.LEFT).pose == target
+    assert result.status is SkillStatus.OK, result.reason
+    assert_pose_close(result.observation.robot.gripper(Side.LEFT).pose, target)
     assert result.observation.robot.gripper(Side.RIGHT) == other_before
 
 
@@ -99,6 +111,41 @@ def test_grasp_without_a_side_fills_the_left_gripper_then_the_right(backend):
     assert second.observation.robot.gripper(Side.RIGHT).held_object_id == 'plate_1'
 
 
+def test_grasp_without_a_side_prefers_a_gripper_that_can_actually_reach():
+    """An object only the right arm can reach is grasped with the right arm.
+
+    The shoulders are 0.36 m apart against a 0.85 m reach, so "first free arm"
+    alone would refuse a grasp the robot can plainly do.
+    """
+    backend = MockBackend(
+        MockWorld(
+            locations={'dock': Pose.from_xyz(0.0, 0.0, 0.0)},
+            start_location='dock',
+            objects=(
+                # 0.62 m from the right shoulder, 0.98 m from the left one.
+                ObjectSpec('cube_1', 'cube', Pose.from_xyz(0.0, -0.80, 0.80)),
+            ),
+        )
+    )
+    observation = backend.get_observation()
+    left = observation.robot.gripper(Side.LEFT).pose.position  # sanity: arms differ
+    assert left.y > observation.robot.gripper(Side.RIGHT).pose.position.y
+
+    result = backend.execute(Grasp('cube_1'))
+
+    assert result.status is SkillStatus.OK, result.reason
+    assert result.observation.robot.gripper(Side.RIGHT).held_object_id == 'cube_1'
+    assert result.observation.robot.gripper(Side.LEFT).held_object_id is None
+    assert result.observation.find_object('cube_1').held_by is Side.RIGHT
+
+
+def test_implicit_side_still_prefers_the_left_arm_when_both_can_reach(backend):
+    """Preference order is unchanged where reach does not decide it."""
+    run(backend, NavigateTo('kitchen'))
+    result = backend.execute(Grasp('bowl_1'))
+    assert result.observation.robot.gripper(Side.LEFT).held_object_id == 'bowl_1'
+
+
 def test_a_held_object_travels_with_the_robot(backend, world):
     """Carrying is modelled: navigating moves the load, the shelf stays put."""
     run(backend, NavigateTo('kitchen'), Grasp('mug_1'))
@@ -123,9 +170,10 @@ def test_place_drops_the_held_object_at_the_requested_pose(backend):
     assert result.status is SkillStatus.OK
     assert 'mug_1' in result.reason
     mug = result.observation.find_object('mug_1')
-    assert mug.pose == target
+    assert_pose_close(mug.pose, target)
     assert mug.held_by is None
     gripper = result.observation.robot.gripper(Side.LEFT)
+    assert_pose_close(gripper.pose, target)
     assert gripper.held_object_id is None
     assert gripper.state is GripperState.OPEN
 
@@ -138,7 +186,7 @@ def test_place_can_name_the_gripper_that_releases(backend):
     result = backend.execute(Place(target, Side.RIGHT))
 
     assert result.status is SkillStatus.OK
-    assert result.observation.find_object('plate_1').pose == target
+    assert_pose_close(result.observation.find_object('plate_1').pose, target)
     assert result.observation.robot.gripper(Side.RIGHT).held_object_id is None
     assert result.observation.robot.gripper(Side.LEFT).held_object_id == 'mug_1'
 

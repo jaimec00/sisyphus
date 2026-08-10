@@ -269,6 +269,10 @@ class Observation(JsonSerializable):
     ``known_locations`` exposes the semantic map's vocabulary so the brain can
     only ever navigate to names that exist (see the ``unknown_location``
     failure path).
+
+    Construction enforces that the two views of a held object agree: a
+    gripper's ``held_object_id`` must name a perceived object whose ``held_by``
+    is that same side, and vice versa.
     """
 
     robot: RobotState
@@ -291,11 +295,47 @@ class Observation(JsonSerializable):
             raise ValueError(
                 f'Observation.objects has duplicate object_id(s): {", ".join(duplicates)}')
         object.__setattr__(self, 'objects', objects)
+        self._check_held_objects_agree(objects)
         locations = tuple(
             as_identifier(name, name='Observation.known_locations')
             for name in self.known_locations
         )
         object.__setattr__(self, 'known_locations', locations)
+
+    def _check_held_objects_agree(self, objects: tuple[SceneObject, ...]) -> None:
+        """Enforce that the gripper view and the object view report the same load.
+
+        The redundancy is deliberate (the brain wants both views), so the type
+        -- not just the backend that happens to fill it in -- has to guarantee
+        the two projections cannot disagree.  A backend that reads gripper state
+        and object attachment from two different sources (a simulator's joints
+        and its weld constraints, say) fails loudly here instead of handing the
+        brain a scene that contradicts itself.
+        """
+        by_id = {item.object_id: item for item in objects}
+        for gripper in self.robot.grippers:
+            held_id = gripper.held_object_id
+            if held_id is None:
+                continue
+            item = by_id.get(held_id)
+            if item is None:
+                raise ValueError(
+                    f'Observation: the {gripper.side.value} gripper reports holding '
+                    f'{held_id!r}, which is not among the perceived objects')
+            if item.held_by is not gripper.side:
+                raise ValueError(
+                    f'Observation: the {gripper.side.value} gripper reports holding '
+                    f'{held_id!r}, but that object reports held_by='
+                    f'{None if item.held_by is None else item.held_by.value}')
+        for item in objects:
+            if item.held_by is None:
+                continue
+            gripper = self.robot.gripper(item.held_by)
+            if gripper.held_object_id != item.object_id:
+                raise ValueError(
+                    f'Observation: object {item.object_id!r} reports being held by the '
+                    f'{item.held_by.value} gripper, but that gripper reports holding '
+                    f'{gripper.held_object_id!r}')
 
     def find_object(self, object_id: str) -> SceneObject | None:
         """Return the object with ``object_id``, or ``None`` if not perceived."""

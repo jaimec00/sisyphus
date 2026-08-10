@@ -8,7 +8,13 @@
 
 import json
 
-from mock_backend_fixtures import snapshot, TABLE_DROP_X, TABLE_DROP_Y, TABLE_DROP_Z
+from mock_backend_fixtures import (
+    assert_pose_close,
+    snapshot,
+    TABLE_DROP_X,
+    TABLE_DROP_Y,
+    TABLE_DROP_Z,
+)
 from robot_backends import MockBackend
 from robot_skills import (
     ExtendColumn,
@@ -52,7 +58,7 @@ def test_navigate_grasp_navigate_place_scenario(backend, world):
 
     # The mug moved from the kitchen counter to the requested spot on the table.
     mug = final.find_object('mug_1')
-    assert mug.pose == Pose.from_xyz(TABLE_DROP_X, TABLE_DROP_Y, TABLE_DROP_Z)
+    assert_pose_close(mug.pose, Pose.from_xyz(TABLE_DROP_X, TABLE_DROP_Y, TABLE_DROP_Z))
     assert mug.held_by is None
     assert mug.graspable is True
 

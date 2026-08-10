@@ -71,6 +71,72 @@ def test_held_object_is_visible_from_both_sides():
     assert observation.find_object('mug_1').is_held is True
 
 
+def test_a_gripper_holding_an_object_the_scene_disagrees_about_is_rejected():
+    """Direction 1: the gripper claims a load the object list does not confirm."""
+    holding_left = make_robot_state(
+        grippers=(
+            make_gripper(Side.LEFT, GripperState.CLOSED, 'mug_1'),
+            make_gripper(Side.RIGHT),
+        ),
+    )
+    # ...the object is not perceived at all.
+    with pytest.raises(ValueError, match='not among the perceived objects'):
+        make_observation(robot=holding_left, objects=())
+    # ...the object is perceived but thinks nobody holds it.
+    with pytest.raises(ValueError, match='held_by=None'):
+        make_observation(
+            robot=holding_left,
+            objects=(SceneObject('mug_1', 'mug', Pose()),),
+        )
+    # ...the object thinks the *other* gripper holds it.
+    with pytest.raises(ValueError, match='held_by=right'):
+        make_observation(
+            robot=holding_left,
+            objects=(SceneObject('mug_1', 'mug', Pose(), held_by=Side.RIGHT),),
+        )
+
+
+def test_an_object_claiming_a_holder_that_holds_nothing_is_rejected():
+    """Direction 2: the object claims a holder whose gripper disagrees."""
+    with pytest.raises(ValueError, match='that gripper reports holding None'):
+        make_observation(
+            robot=make_robot_state(),  # both grippers empty
+            objects=(SceneObject('mug_1', 'mug', Pose(), held_by=Side.LEFT),),
+        )
+    with pytest.raises(ValueError, match="reports holding 'plate_1'"):
+        make_observation(
+            robot=make_robot_state(
+                grippers=(
+                    make_gripper(Side.LEFT, GripperState.CLOSED, 'plate_1'),
+                    make_gripper(Side.RIGHT),
+                ),
+            ),
+            objects=(
+                SceneObject('mug_1', 'mug', Pose(), held_by=Side.LEFT),
+                SceneObject('plate_1', 'plate', Pose(), held_by=Side.LEFT),
+            ),
+        )
+
+
+def test_the_held_object_invariant_survives_a_round_trip():
+    """A consistent pair round-trips; a doctored dict is caught on parse."""
+    consistent = make_observation(
+        robot=make_robot_state(
+            grippers=(
+                make_gripper(Side.LEFT, GripperState.CLOSED, 'mug_1'),
+                make_gripper(Side.RIGHT),
+            ),
+        ),
+        objects=(SceneObject('mug_1', 'mug', Pose(), held_by=Side.LEFT),),
+    )
+    assert Observation.from_dict(consistent.to_dict()) == consistent
+
+    doctored = consistent.to_dict()
+    doctored['objects'][0]['held_by'] = None
+    with pytest.raises(ValueError, match='held_by=None'):
+        Observation.from_dict(doctored)
+
+
 def test_robot_state_requires_exactly_one_gripper_per_side():
     """A two-arm robot always reports two grippers, one per side."""
     with pytest.raises(ValueError, match='one entry per side'):

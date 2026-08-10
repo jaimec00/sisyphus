@@ -24,7 +24,7 @@ leave the world half-changed.
 """
 
 from dataclasses import dataclass
-from typing import Callable, Mapping
+from typing import Callable, Mapping, NoReturn
 
 from robot_backends.interface import RobotBackend
 from robot_backends.mock_world import default_world, MockWorld, ObjectSpec
@@ -237,8 +237,8 @@ class MockBackend(RobotBackend):
                 f'object {item.object_id!r} is already held by the '
                 f'{item.held_by.value} gripper',
             )
-        side = self._resolve_free_side(skill.side)
-        offset = self._require_reachable(side, item.pose, f'grasp {item.object_id!r}')
+        side, offset = self._resolve_grasping_side(
+            skill.side, item.pose, f'grasp {item.object_id!r}')
 
         gripper = self._grippers[side]
         gripper.offset = offset
@@ -344,12 +344,17 @@ class MockBackend(RobotBackend):
             if held_id is not None:
                 self._objects[held_id].pose = self._gripper_pose(side)
 
+    def _reach_offset(self, side: Side, target: Pose) -> Point | None:
+        """Return the arm offset reaching ``target``, or ``None`` if too far."""
+        offset = target.position - self._shoulder(side)
+        return offset if offset.norm() <= self._world.robot.reach_radius else None
+
     def _require_reachable(self, side: Side, target: Pose, action: str) -> Point:
         """Return the arm offset reaching ``target``, or refuse the skill."""
-        offset = target.position - self._shoulder(side)
-        distance = offset.norm()
-        reach = self._world.robot.reach_radius
-        if distance > reach:
+        offset = self._reach_offset(side, target)
+        if offset is None:
+            distance = (target.position - self._shoulder(side)).norm()
+            reach = self._world.robot.reach_radius
             at = 'nowhere' if self._location is None else repr(self._location)
             raise _SkillRefused(
                 FailureCode.OUT_OF_REACH,
@@ -358,19 +363,47 @@ class MockBackend(RobotBackend):
             )
         return offset
 
-    def _resolve_free_side(self, requested: Side | None) -> Side:
-        """Pick which gripper grasps, or refuse if none is free."""
+    def _resolve_grasping_side(
+        self,
+        requested: Side | None,
+        target: Pose,
+        action: str,
+    ) -> tuple[Side, Point]:
+        """Pick which gripper grasps ``target``, and the arm offset to do it with.
+
+        With a side named, that side must be free and able to reach.  With no
+        side named, prefer the first side in ``SIDE_ORDER`` that is *both* free
+        and within reach -- the shoulders are far enough apart that an object
+        can be reachable by one arm only, and committing to the left arm before
+        checking reach would make the brain parse a prose reason and retry.
+        Resolution stays deterministic: order is fixed, no distance tie-breaks.
+        """
         if requested is not None:
-            held = self._grippers[requested].held_object_id
-            if held is not None:
-                raise _SkillRefused(
-                    FailureCode.GRIPPER_OCCUPIED,
-                    f'the {requested.value} gripper already holds {held!r}',
-                )
-            return requested
-        for side in SIDE_ORDER:
-            if self._grippers[side].held_object_id is None:
-                return side
+            self._require_free_gripper(requested)
+            return requested, self._require_reachable(requested, target, action)
+
+        free = tuple(
+            side for side in SIDE_ORDER if self._grippers[side].held_object_id is None)
+        if not free:
+            self._refuse_both_grippers_occupied()
+        for side in free:
+            offset = self._reach_offset(side, target)
+            if offset is not None:
+                return side, offset
+        # No free gripper can reach: report the preferred one's distance.
+        return free[0], self._require_reachable(free[0], target, action)
+
+    def _require_free_gripper(self, side: Side) -> None:
+        """Refuse if the named gripper is already holding something."""
+        held = self._grippers[side].held_object_id
+        if held is not None:
+            raise _SkillRefused(
+                FailureCode.GRIPPER_OCCUPIED,
+                f'the {side.value} gripper already holds {held!r}',
+            )
+
+    def _refuse_both_grippers_occupied(self) -> NoReturn:
+        """Refuse a grasp because there is no free gripper at all."""
         holdings = ', '.join(
             f'{side.value} holds {self._grippers[side].held_object_id!r}'
             for side in SIDE_ORDER

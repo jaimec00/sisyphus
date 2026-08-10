@@ -18,6 +18,30 @@ Parsing is deliberately strict: missing keys, unknown keys and wrong value
 types all raise :class:`SerializationError` instead of silently producing a
 half-populated object.  A malformed command from the brain must be a loud,
 attributable failure, not a corrupted world model.
+
+Wire-format compatibility policy
+--------------------------------
+Strictness includes rejecting *unknown* keys, which trades forward
+compatibility for loudness.  The chosen stance, deliberately:
+
+**These dicts are an internal, versioned-together format, not a public API.
+Adding, renaming or removing a field is a coordinated breaking change made in
+one commit across every producer and consumer in this repo.**
+
+That is affordable because all of them -- brain, safety layer, backends, and
+the eventual ROS 2 action transport -- ship from this repo and this workspace,
+and it is worth paying because the most likely producer of a malformed dict is
+an LLM: silently ignoring a key the model invented (``"objct_id"``,
+``"height_cm"``) would turn a typo into a wrong action instead of a clean
+refusal.
+
+If independently versioned peers ever become real (e.g. an older brain talking
+to a newer action server across a network boundary), the migration is *not* to
+relax :func:`check_keys` globally -- that would give up the LLM-typo defence
+everywhere.  It is to add one reserved, explicitly ignored ``extensions``
+sub-object to the machine-to-machine types (:class:`Observation`,
+:class:`SkillResult`), keeping :class:`Skill` -- the type an LLM writes --
+strict.  Until then, no such escape hatch exists, on purpose.
 """
 
 from abc import ABC, abstractmethod
