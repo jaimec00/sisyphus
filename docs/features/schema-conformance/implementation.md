@@ -65,7 +65,7 @@ Design choices, in order of how much they were left open:
 - **No `grasped` field on `SkillResult`.** D19's text names
   `SkillResult`/`Observation`, but the flag is per-gripper and a copy on the
   result would be a second source of truth able to disagree with the
-  observation the result already carries. Instead `SkillResult.grasped(side)`
+  observation the result already carries. Instead `SkillResult.did_grasp(side)`
   reads through to `observation.robot.gripper(side).grasped` — the one-line
   closed-loop answer to "did I get it?" with no duplicated state.
 - **The Mock derives `grasped` from what it holds.** It models no aperture and
@@ -188,7 +188,7 @@ New/extended, all exercising acceptance criteria rather than restating code:
 - `test_mock_skills.py` — closing on nothing succeeds with `grasped=False`
   (twice, idempotently), closing on a held object keeps reporting the grasp,
   opening an already-open gripper is an idempotent success, opening clears the
-  flag, grasping sets it on both the observation and `SkillResult.grasped()`.
+  flag, grasping sets it on both the observation and `SkillResult.did_grasp()`.
 - `test_skill_serialization.py` — the stamp is present at both depths and absent
   from skills, survives round trips, is optional on parse, and a foreign or
   non-integer version is refused (including one hidden in a nested observation).
@@ -208,10 +208,11 @@ Command output (this worktree, `pixi` env available):
 - **No aperture/contact-force detail** on `GripperObservation`, though D19
   mentions it parenthetically: the Mock has no such state to report, and an
   unpopulated field on the seam would be speculative generality. When a backend
-  with force sensing arrives, adding `aperture_m`/`contact_force_n` is an
-  additive optional field — non-breaking, no version bump, no golden
-  regeneration. That path is tested (`test_the_guard_allows_an_added_optional_field`
-  literally uses those two names).
+  with force sensing arrives, adding `aperture_m`/`contact_force_n` as an
+  **optional** field is non-breaking — no version bump, no golden regeneration
+  (`test_the_guard_allows_an_added_optional_field` literally uses those two
+  names). Adding one as *required* is breaking and now fails the reader half of
+  the guard; see the round-1 fixes below.
 - **No `robot_safety` code.** It is out of bounds for this issue and still a
   skeleton; the classifier lives in `robot_skills.result` precisely so both it
   and `robot_backends` can import it when the time comes. Nothing in the Mock
@@ -219,6 +220,76 @@ Command output (this worktree, `pixi` env available):
 - **No multi-version parsing or migration shims** — D18 forbids them.
 - **No `extensions` escape hatch** — the existing policy prose reserves that for
   the day independently versioned peers become real; that day has not come.
+
+## Red-team round 1 — fixes
+
+Both BLOCKs fixed; four NOTEs promoted by the manager applied; NOTE 3 waived by
+the manager (type discovery relies on `__init__` re-exporting every module —
+true, and the adjacent count assertion is a deliberate tripwire).
+
+### BLOCK 1 — the guard was producer-only
+
+Correct finding, and the more interesting of the two: comparing `to_dict()` to
+the fixture proved only that we still *write* v1. `test_the_frozen_fixture_still_parses_into_an_equal_object`
+adds the reader half — `type(sample).from_dict(load_golden(name)) == sample` for
+all 15 types.
+
+Verified against the red-team's exact scenario rather than assumed: adding an
+`aperture_m` that `to_dict()` emits *and* `check_keys(required=...)` demands
+left the writer half green for all 15 types and `test_observation.py -k round_trip`
+green (3 passed), and failed **only** the new reader half, on the four types
+that embed a gripper (`GripperObservation`, `RobotState`, `Observation`,
+`SkillResult`). Mutation reverted.
+
+**Did it make an existing test redundant?** No, and nothing was deleted.
+`test_a_payload_without_grasped_infers_it_from_the_load` (`test_observation.py`)
+looks adjacent but tests the opposite direction: it *removes* a key from the
+dict to prove a pre-`grasped` payload still parses meaningfully. The v1 fixtures
+all contain `grasped`, so the golden reader test never exercises that path. The
+`assert_round_trip` helper also stays: it additionally covers `to_json`/
+`from_json`, the JSON-text round trip and dict stability, none of which the
+golden test touches.
+
+### BLOCK 2 — the new invariant was not enumerated at the parse boundary
+
+Fair: the repo treats "`from_dict` raises **only** `SerializationError`" as
+load-bearing, with one test enumerating every constructor invariant reachable
+from a parse, and the `held_object_id`-without-`grasped` case was missing from
+it. Added there. The assertion has teeth because `SerializationError` subclasses
+`ValueError`, not the reverse — a leaked raw `ValueError` fails
+`pytest.raises(SerializationError)`.
+
+### Promoted NOTEs
+
+- **NOTE 1** — `SkillResult.grasped(side)` → `did_grasp(side)`. The collision
+  with the bool field made `if result.grasped:` always true at a call site that
+  reads as obviously correct. Renamed at the definition, in the six test call
+  sites and in this document; the reason is now in the method docstring so it is
+  not renamed back.
+- **NOTE 2** — `check_schema_version` now runs *before* `check_keys` in both
+  `from_dict`s, so a future payload is diagnosed as a version mismatch rather
+  than as an unknown key it happens to also carry. Pinned by
+  `test_a_foreign_version_is_diagnosed_before_the_keys_it_explains`, which sends
+  a v2 payload carrying a v2-only key.
+- **NOTE 4** — `load_golden` now turns a missing fixture into the instruction
+  the author needs (how to freeze a new version; and, at an unchanged version,
+  "restore it from git — a frozen record is not something to regenerate")
+  instead of a bare `FileNotFoundError`.
+- **NOTE 5** — documentation only, as agreed. The `GripperObservation` docstring
+  now states the contract the invariant imposes on any backend with real
+  sensing: on a detected drop, clear `held_object_id` and the matching
+  `SceneObject.held_by` in the *same* update that reports `grasped=False`,
+  because the constructor raises inside `get_observation()`, where there is no
+  parse boundary to translate it.
+- **NOTE 6** — `schema_drift`'s docstring and the writer test now record that
+  values are frozen as well as shapes, deliberately, with examples of the drift
+  that catches (a changed unit, a renamed enum value).
+
+### Post-fix suite
+
+`pixi run test` → `Summary: 252 tests, 0 errors, 0 failures, 0 skipped`,
+`AUDIT PASSED`, `All stages passed`. Per package: `robot_skills` 93 → 109,
+`robot_backends` 62 (unchanged), everything else unchanged.
 
 ## Notes for the manager
 
@@ -230,3 +301,9 @@ Command output (this worktree, `pixi` env available):
   two sub-decisions those rulings left to me (the constructor invariant on
   `grasped`, and not duplicating the flag onto `SkillResult`) are documented
   above with their rationale.
+- **Surviving NOTE after round 1:** NOTE 3 only — `public_serializable_types()`
+  discovers a type only if its module was imported, so the completeness test
+  relies on `robot_skills/__init__.py` re-exporting every module. The manager
+  waived it as not worth the churn; it is worth a follow-up if the package ever
+  grows a module that is not re-exported. No other red-team finding is
+  outstanding.
