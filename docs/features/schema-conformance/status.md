@@ -10,11 +10,12 @@ golden-fixture guard, `grasped` flag, FailureCode limit-split.
 | 0. Sync | done — worktree == origin/main @ 0a66386 |
 | 1. Brief (issue #33) | done — body present, acceptance criteria clear |
 | 2. Context | done — `context.md` |
-| 3. Implement | in progress |
-| 4. Red-team (round 1) | pending |
-| 5. Fix | pending |
-| 6. Test-runner | pending |
-| 7. PR + ready | pending |
+| 3. Implement | done — 5 commits, `pixi run test` 236 tests / 0 failures |
+| 4. Red-team (round 1) | done — 2 BLOCK, 6 NOTE (`red_team.md`) |
+| 5. Fix (round 1) | done — 4 commits, `pixi run test` 252 tests / 0 failures |
+| 5b. Red-team (round 2) | done — both BLOCKs closed, no new BLOCK (`red_team_round2.md`) |
+| 6. Test-runner | done — build 7/7; 252 tests, 0 failures, 0 skipped, AUDIT PASSED |
+| 7. PR + ready | in progress |
 
 **Round:** —
 **Blockers:** none
