@@ -23,8 +23,10 @@ before any non-trivial work.
 - `src/robot_*` — ROS 2 ament_python packages (brain, skills, safety, backends,
   perception, description, bringup).
 - `docs/design/` — architecture + decision log (read-only design source).
-- `docs/features/<slug>/` — per-feature `brief.md`, `context.md`,
-  `implementation.md`, `red_team.md`, `status.md`.
+- `docs/features/<slug>/` — **ephemeral** per-feature working docs (`context.md`,
+  `status.md`, `implementation.md`, `red_team.md`): git-tracked during the run,
+  **deleted at merge** (CI keeps `docs/features/` empty on `main`). The **brief is
+  the GitHub issue**, not a file.
 - `.claude/agents/`, `.claude/commands/` — agent roles + orchestration.
 - `.dev/runs/<slug>/<ts>/` — gitignored run/test logs (kept until PR merges).
 
@@ -76,25 +78,23 @@ it, replies via comment (relaying genuine design forks to Jaime), and the
 manager **resumes on the reply**. Record escalations in `status.md`; keep them
 rare. Chain: worker → worktree manager → Sisyphus (Pi) → Jaime.
 
-## Retro & continuous improvement
-Every feature ends with `docs/features/<slug>/retro.md` from the worktree
-manager: operational difficulties hit, suggested workflow/tooling/context
-improvements, and drafted follow-up proposals. Sisyphus distills recurring
-themes into workflow/context improvements (ops PRs) and files the worthwhile
-follow-ups.
-
-## Follow-up issues
-Worktree managers **propose** follow-up work (in `retro.md`, drafted with title +
-rationale + affected paths) but do **not** create issues directly. **Sisyphus
-files them** — deduping against the roadmap and keeping decomposition coherent.
-This keeps the manager's fresh context (they draft well) while Sisyphus owns
-cross-worktree coordination.
+## Feedback routing (manager-only, outward)
+Only the worktree manager comments outward; workers escalate to it in-process.
+- **Follow-ups** (new work the team uncovered, incl. surviving NOTES) → comment on
+  the **issue** (title + rationale + affected paths). Managers do **not** open
+  issues; **Sisyphus files them**, deduping against the roadmap.
+- **Retro** (workflow / agent-feature / "would've made dev easier" suggestions) →
+  comment on the **PR**. Sisyphus reads via cron, flags worthwhile items to Jaime,
+  and folds recurring themes into ops PRs. No durable retro file (avoids dupes).
 
 ## Merge governance
 The worktree manager opens the PR and signals "ready" (green against **current**
-main) — it does **not** merge. **Sisyphus owns the merge** and chooses order;
-other open worktrees then rebase on main and re-green before their turn. PRs are
-**squash-merged**. Never force-push main; never delete branches others depend on.
+main) — it does **not** merge and does **not** delete its `docs/features/<slug>/`
+docs (they stay for review). **At merge, Sisyphus deletes those ephemeral docs**
+(CI fails while `docs/features/` is non-empty — that check *is* the final gate),
+then **squash-merges** and chooses order. Other open worktrees then rebase on main
+and re-green before their turn. Never force-push main; never delete branches
+others depend on.
 
 ## Coding standards
 - Match surrounding style; keep each package cohesive per its README.

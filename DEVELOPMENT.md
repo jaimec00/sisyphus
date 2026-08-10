@@ -16,14 +16,14 @@ canonical**; this document defers to it.
 
 ## Where it runs
 Code, git, pixi env, and tests live on the **laptop**; **Claude Code** is the
-execution host. Sisyphus (Pi) coordinates via **GitHub** (issues/PRs) plus the
-git-tracked `docs/features/<slug>/` files. GitHub is both the state substrate
-and the trigger.
+execution host. Sisyphus (Pi) coordinates via **GitHub** (issues/PRs/comments).
+The **brief is the issue**; per-feature `docs/features/<slug>/` working docs are
+ephemeral (git-tracked during the run, deleted at merge). GitHub is both the
+state substrate and the trigger.
 
 ## The loop (per feature)
-1. **Brief** — Sisyphus opens a **brief PR** (self-merged, no full loop) adding
-   `docs/features/<slug>/brief.md` (goal, owned paths, acceptance criteria,
-   required tests), plus a labeled GitHub issue.
+1. **Brief** — Sisyphus opens a **GitHub issue** whose body *is* the brief (goal,
+   owned paths, acceptance criteria, required tests). No brief file.
 2. **Trigger** — a self-hosted GitHub Actions runner (or a small dev-runner) on
    the laptop starts a Claude Code manager in a fresh worktree
    (`git worktree add worktrees/<slug> -b feat/<slug>`).
@@ -32,15 +32,17 @@ and the trigger.
    increments, writes `implementation.md`.
 5. **Red-team** — `red-team` (read-only) reviews source + tests vs. acceptance
    criteria → `red_team.md` (severity rubric).
-6. **Fix** — `implementer` addresses BLOCK items (≤2 rounds; surviving NOTES
-   become follow-up issues).
+6. **Fix** — `implementer` addresses BLOCK items (≤2 rounds; surviving NOTES →
+   follow-up **comment on the issue**; Sisyphus files them).
 7. **Test** — `test-runner` runs the suite, reporting pass/fail + log path only.
    Loop 4–7 until green.
-8. **PR** — the manager opens a **squash-merge** PR; light CI (lint) + the full
-   local suite must pass.
-9. **Merge** — when the PR is green (tests + red-team + CI), Sisyphus picks order
-   and squash-merges (no manual approval gate — green is the gate). Other open
-   worktrees then rebase on main, re-green, and take their turn.
+8. **PR** — the manager opens a **squash-merge** PR (full local suite passes;
+   light GitHub CI runs guards). The `docs/features/<slug>/` docs stay for review;
+   the manager posts a **retro comment on the PR**.
+9. **Merge** — when green, Sisyphus **deletes the ephemeral `docs/features/<slug>/`
+   docs** (the CI "docs clean" gate then passes), picks order, and squash-merges
+   (no manual approval gate — green is the gate). Other open worktrees then rebase
+   on main, re-green, and take their turn.
 
 `status.md` tracks phase/round/blockers so any agent (or a restart) resumes
 deterministically.
@@ -52,11 +54,13 @@ gate. Operational/meta PRs are self-merged by Sisyphus without the full loop.
 Because main moves, agents `fetch`+`rebase origin/main` before work and after any
 merge — never build on stale main.
 
-## Escalation channel
+## Comments & escalation (manager-only, outward)
 Workers escalate in-process to their worktree manager. Only the **manager**
-converses outward: it comments on its PR/issue and pauses; Sisyphus (polling PR
-status via a cron) replies by comment (relaying genuine design forks to Jaime);
-the manager resumes on the reply.
+comments outward, three purposes:
+- **Escalation** (mid-run blocker / design fork) → comment + pause; Sisyphus
+  (polling via cron) replies; the manager resumes on the reply.
+- **Follow-ups** (new work) → comment on the **issue**; Sisyphus files them.
+- **Retro** (dev-experience / workflow suggestions) → comment on the **PR**.
 
 ## Parallelism
 Sisyphus decomposes along package seams (`robot_brain` / `robot_skills` / ...).
@@ -68,9 +72,11 @@ Run/test logs go to gitignored `.dev/runs/<slug>/<ts>/`, kept until the PR
 merges, then pruned. The nightly job cleans stragglers.
 
 ## Automated checks
+- **GitHub CI (PRs):** light guards — fails if `docs/features/` is non-empty
+  (ephemeral docs must be deleted at merge). Heavy tests run on the laptop.
 - **Laptop nightly cron:** runs the full suite on `main`, reports regressions.
-- **Sisyphus (Pi) cron:** polls open PR statuses + manager escalation comments,
-  squash-merges green PRs, and answers escalations.
+- **Sisyphus (Pi) cron:** polls open PR statuses + manager comments (escalations,
+  follow-ups, retros), squash-merges green PRs, answers escalations.
 
 ## Budgets & safety
 Per-feature agent/token caps. Merges require green checks (tests + red-team + CI);
