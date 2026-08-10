@@ -142,8 +142,27 @@ def golden_path(name: str, version: int = SCHEMA_VERSION) -> Path:
 
 
 def load_golden(name: str, version: int = SCHEMA_VERSION) -> JsonDict:
-    """Load one frozen fixture as a plain dict."""
-    return json.loads(golden_path(name, version).read_text(encoding='utf-8'))
+    """Load one frozen fixture as a plain dict.
+
+    A missing file is the shape a fresh ``SCHEMA_VERSION`` bump takes, so it
+    answers with the instruction the author needs rather than a bare
+    ``FileNotFoundError`` naming a path they have never seen.
+    """
+    path = golden_path(name, version)
+    try:
+        text = path.read_text(encoding='utf-8')
+    except FileNotFoundError as exc:
+        raise FileNotFoundError(
+            f'no frozen fixture at {path}.\n'
+            f'If SCHEMA_VERSION was just bumped to {version}, freeze the new wire '
+            'form with:\n'
+            '    python src/robot_skills/test/golden_fixtures.py\n'
+            'which writes the missing golden/v'
+            f'{version}/ files from real to_dict() calls.  If instead a fixture '
+            'went missing at an unchanged version, restore it from git: a frozen '
+            'record is not something to regenerate.'
+        ) from exc
+    return json.loads(text)
 
 
 def public_serializable_types() -> dict[str, type[JsonSerializable]]:
@@ -199,6 +218,12 @@ def schema_drift(actual: Any, golden: Any, *, path: str = '<root>') -> list[str]
     changed.  Keys present only in ``actual`` are *not* breaking -- that is an
     additive optional field, which the rule allows at the same version -- so
     they are deliberately not reported.
+
+    Values are frozen as well as shapes, on purpose: a fixture is what a *given*
+    sample serialized to, so a silently changed constant (a different quaternion
+    normalisation, a renamed enum value, a unit change from metres to
+    centimetres) is drift the brain would act on and belongs in this report.
+    Such a failure reads ``value changed``; a shape failure names the types.
     """
     if json_type_name(actual) != json_type_name(golden):
         return [

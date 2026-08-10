@@ -18,6 +18,12 @@ The comparison is deliberately asymmetric, encoding the compat rule: an added
 key is fine at the same version (additive optional field = non-breaking), while
 a dropped, renamed or retyped one fails until ``SCHEMA_VERSION`` is bumped and a
 new fixture set is written -- the same PR that updates every binder.
+
+The guard has two halves, because a wire format is a contract in both
+directions: today's ``to_dict()`` must still *match* the fixture, and the
+fixture must still *parse*.  The second half is what catches a break the
+asymmetry would otherwise hide -- a field promoted to required emits fine and
+drifts not at all, yet makes every stored v1 payload unreadable.
 """
 
 import json
@@ -37,7 +43,12 @@ from robot_skills import SCHEMA_VERSION
 
 @pytest.mark.parametrize('name', sorted(GOLDEN_SAMPLES))
 def test_the_wire_form_still_matches_the_frozen_fixture(name):
-    """No field may be dropped, renamed or retyped without a version bump."""
+    """No field may be dropped, renamed or retyped without a version bump.
+
+    The writer half of the guard.  Values are pinned as well as field names and
+    types, so a silently changed constant (a unit, an enum's wire value) is
+    reported too -- see ``schema_drift``.
+    """
     drift = schema_drift(GOLDEN_SAMPLES[name].to_dict(), load_golden(name))
     assert drift == [], (
         f'{name} no longer matches golden/v{SCHEMA_VERSION}/{name}.json:\n  '
@@ -46,6 +57,30 @@ def test_the_wire_form_still_matches_the_frozen_fixture(name):
           'Anything else is a breaking change: bump SCHEMA_VERSION, regenerate '
           'into the new golden/v<N>/ directory, and update every binder in the '
           'same PR (D18).')
+
+
+@pytest.mark.parametrize('name', sorted(GOLDEN_SAMPLES))
+def test_the_frozen_fixture_still_parses_into_an_equal_object(name):
+    """The reader half: v1 payloads written by anyone must still be readable.
+
+    Comparing today's ``to_dict()`` to the fixture only proves we still *write*
+    version 1.  Nothing else in the suite proves we can still *read* it, and the
+    guard's deliberate tolerance of added keys leaves room for a break that is
+    invisible from the writer side: promote a new field to
+    ``check_keys(required=...)`` and every stored v1 payload -- logs, brain
+    memories, these fixtures -- stops parsing, while the round-trip tests stay
+    green because ``to_dict()`` now emits the key it demands.
+
+    This is also the one enumerated place where ``from_dict(<wire form>) == x``
+    is asserted for *every* public type rather than per module.
+    """
+    sample = GOLDEN_SAMPLES[name]
+    rebuilt = type(sample).from_dict(load_golden(name))
+    assert rebuilt == sample, (
+        f'golden/v{SCHEMA_VERSION}/{name}.json no longer parses back into an '
+        f'equal {name}.  Reading the frozen wire form is as much a part of the '
+        'schema as writing it: a newly required key, or a narrowed optional '
+        'one, is a breaking change even when to_dict() still emits it (D18).')
 
 
 def test_every_public_serializable_type_has_a_golden_fixture():
