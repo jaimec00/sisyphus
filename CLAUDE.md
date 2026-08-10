@@ -76,6 +76,20 @@ it, replies via comment (relaying genuine design forks to Jaime), and the
 manager **resumes on the reply**. Record escalations in `status.md`; keep them
 rare. Chain: worker → worktree manager → Sisyphus (Pi) → Jaime.
 
+## Retro & continuous improvement
+Every feature ends with `docs/features/<slug>/retro.md` from the worktree
+manager: operational difficulties hit, suggested workflow/tooling/context
+improvements, and drafted follow-up proposals. Sisyphus distills recurring
+themes into workflow/context improvements (ops PRs) and files the worthwhile
+follow-ups.
+
+## Follow-up issues
+Worktree managers **propose** follow-up work (in `retro.md`, drafted with title +
+rationale + affected paths) but do **not** create issues directly. **Sisyphus
+files them** — deduping against the roadmap and keeping decomposition coherent.
+This keeps the manager's fresh context (they draft well) while Sisyphus owns
+cross-worktree coordination.
+
 ## Merge governance
 The worktree manager opens the PR and signals "ready" (green against **current**
 main) — it does **not** merge. **Sisyphus owns the merge** and chooses order;
