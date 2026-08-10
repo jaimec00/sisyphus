@@ -87,6 +87,11 @@ def lazy_import():
 def lazy_dynamic():
     import importlib
     return importlib.import_module('rclpy')
+
+
+def lazy_dynamic_by_keyword():
+    import importlib
+    return importlib.import_module(name='rclpy.action')
 '''
 
 SAMPLE_WITHOUT_IMPORTS = '''
@@ -112,8 +117,14 @@ def find_forbidden_imports(source: str, roots: tuple[str, ...] = FORBIDDEN_ROOTS
 
     Walks the AST rather than the text, so a lazy ``from rclpy.node import
     Node`` inside a function body, an ``import rclpy.qos``, and an
-    ``importlib.import_module('rclpy')`` are all caught, while a lookalike
-    module name or the word in a docstring is not.
+    ``importlib.import_module('rclpy')`` (positional or by keyword) are all
+    caught, while a lookalike module name or the word in a docstring is not.
+
+    Known limit: a dynamic import whose module name is not a literal --
+    ``import_module(MODULE_NAME)`` or ``import_module('rc' + 'lpy')`` -- cannot
+    be detected by static analysis and is not caught here.  The clean-subprocess
+    test above is the backstop for anything that actually executes on the
+    import path.
     """
     findings = []
     for node in ast.walk(ast.parse(source)):
@@ -127,15 +138,20 @@ def find_forbidden_imports(source: str, roots: tuple[str, ...] = FORBIDDEN_ROOTS
                 findings.append(f'line {node.lineno}: from {node.module} import ...')
         elif isinstance(node, ast.Call):
             called = getattr(node.func, 'attr', None) or getattr(node.func, 'id', None)
-            if called not in DYNAMIC_IMPORTERS or not node.args:
+            if called not in DYNAMIC_IMPORTERS:
                 continue
-            target = node.args[0]
-            if (
-                isinstance(target, ast.Constant)
-                and isinstance(target.value, str)
-                and _root_module(target.value) in roots
-            ):
-                findings.append(f'line {node.lineno}: {called}({target.value!r})')
+            targets = list(node.args)
+            targets += [
+                keyword.value for keyword in node.keywords
+                if keyword.arg in ('name', 'module')
+            ]
+            for target in targets:
+                if (
+                    isinstance(target, ast.Constant)
+                    and isinstance(target.value, str)
+                    and _root_module(target.value) in roots
+                ):
+                    findings.append(f'line {node.lineno}: {called}({target.value!r})')
     return findings
 
 
@@ -143,33 +159,56 @@ def test_the_import_detector_catches_every_form_it_claims_to():
     """The detector is itself tested, so the scan below is not a false comfort."""
     findings = find_forbidden_imports(SAMPLE_WITH_LAZY_IMPORTS)
 
-    assert len(findings) == 3, findings
+    assert len(findings) == 4, findings
     assert any('from rclpy.node import' in item for item in findings)
     assert any('import rclpy.qos' in item for item in findings)
     assert any("import_module('rclpy')" in item for item in findings)
+    assert any("import_module('rclpy.action')" in item for item in findings)
 
     # ...and it does not fire on prose or on a module that merely starts with it.
     assert find_forbidden_imports(SAMPLE_WITHOUT_IMPORTS) == []
 
-    # A plain substring grep would miss two of the three and would also be
+    # A plain substring grep would miss three of the four and would also be
     # fooled by the clean sample's lookalike import.
     assert SAMPLE_WITH_LAZY_IMPORTS.count('import rclpy') == 1
 
 
+def _python_files(root: str) -> list[str]:
+    """Return every ``.py`` file under ``root``, recursively, sorted."""
+    found = []
+    for directory, subdirectories, filenames in os.walk(root):
+        subdirectories[:] = sorted(
+            name for name in subdirectories if name != '__pycache__')
+        found += [
+            os.path.join(directory, name)
+            for name in sorted(filenames) if name.endswith('.py')
+        ]
+    return found
+
+
 def test_no_source_file_imports_rclpy():
-    """Neither package may reach for rclpy, even lazily inside a function."""
+    """Neither package may reach for rclpy, even lazily inside a function.
+
+    Recursive on purpose: a future ``robot_backends/sim/kinematics.py`` must be
+    scanned too, which is exactly the shape the lazy-import hazard would take.
+    """
     import robot_backends
     import robot_skills
 
-    scanned = 0
+    scanned = {}
     for package in (robot_skills, robot_backends):
         root = os.path.dirname(package.__file__)
-        for entry in sorted(os.listdir(root)):
-            if not entry.endswith('.py'):
-                continue
-            with open(os.path.join(root, entry), encoding='utf-8') as handle:
+        paths = _python_files(root)
+        for path in paths:
+            with open(path, encoding='utf-8') as handle:
                 source = handle.read()
             findings = find_forbidden_imports(source)
-            assert not findings, f'{package.__name__}/{entry}: {findings}'
-            scanned += 1
-    assert scanned >= 10, f'expected to scan both packages, only saw {scanned} files'
+            assert not findings, f'{os.path.relpath(path, root)}: {findings}'
+        scanned[package.__name__] = {os.path.relpath(path, root) for path in paths}
+
+    # Both packages must actually have been visited, including their entry
+    # points and the modules holding the world model and the skill types.
+    assert {'__init__.py', 'skills.py', 'observation.py', 'result.py'} <= scanned[
+        'robot_skills'], scanned['robot_skills']
+    assert {'__init__.py', 'interface.py', 'mock_backend.py'} <= scanned[
+        'robot_backends'], scanned['robot_backends']
