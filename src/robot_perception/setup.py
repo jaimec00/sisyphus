@@ -17,7 +17,7 @@ setup(
     maintainer_email='hejaca00@gmail.com',
     description='Perception: detector + depth -> structured scene JSON with grounded poses.',
     license='MIT',
-    tests_require=['pytest'],
+    extras_require={'test': ['pytest']},
     entry_points={
         'console_scripts': [],
     },

@@ -17,7 +17,7 @@ setup(
     maintainer_email='hejaca00@gmail.com',
     description='Safety layer: joint/velocity/force limits, collision gate, e-stop.',
     license='MIT',
-    tests_require=['pytest'],
+    extras_require={'test': ['pytest']},
     entry_points={
         'console_scripts': [],
     },
