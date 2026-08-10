@@ -1,7 +1,7 @@
 # Status: mock-skill-api
 
-phase: impl         # context | impl | redteam | fix | test | pr | done
-round: 0            # red-team ↔ fix rounds (cap: 2)
+phase: fix         # context | impl | redteam | fix | test | pr | done
+round: 1            # red-team ↔ fix rounds (cap: 2)
 owner_agent: implementer
 blockers: none      # or: "escalation needed — <describe>"
 pr: -
@@ -25,3 +25,5 @@ last_update: 2026-08-10
   robot_bringup, robot_description, robot_perception, robot_safety) — they have no
   tests, so colcon falls back to `python -m unittest` and exits 5. Also a pre-existing
   E501 in `src/robot_description/setup.py`.
+- 2026-08-10 red_team.md written (round 1): 0 BLOCK, 11 NOTE; verdict READY
+- 2026-08-10 phase=fix (voluntary round for NOTE 2,3,4,5,6,11-typing); rest → issues
