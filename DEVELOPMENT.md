@@ -24,9 +24,11 @@ state substrate and the trigger.
 ## The loop (per feature)
 1. **Brief** — Sisyphus opens a **GitHub issue** whose body *is* the brief (goal,
    owned paths, acceptance criteria, required tests). No brief file.
-2. **Trigger** — a self-hosted GitHub Actions runner (or a small dev-runner) on
-   the laptop starts a Claude Code manager in a fresh worktree
-   (`git worktree add worktrees/<slug> -b feat/<slug>`).
+2. **Trigger** — **pull-based**: Sisyphus (Pi) runs
+   `scripts/start-feature.sh <issue>` over SSH, which creates a fresh worktree off
+   the latest `origin/main` (`feat/i<n>-<slug>`) and launches a detached Claude
+   Code manager in `tmux`. There is **no backfill cron / Actions-runner
+   trigger** — work is only ever started by an explicit call to the script.
 3. **Context** — `context-explorer` explores the repo → `context.md`.
 4. **Implement** — `implementer` builds the feature + tests, commits in small
    increments, writes `implementation.md`.
