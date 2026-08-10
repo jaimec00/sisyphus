@@ -5,8 +5,8 @@
 
 | field | value |
 |---|---|
-| phase | implement (red-team round 1 fixes done) |
-| round | 1 |
+| phase | ready (PR open, awaiting Sisyphus merge) |
+| round | 2 (final) |
 | blockers | none |
 
 ## Log
@@ -38,3 +38,21 @@
   `colcon_test_result` requires `failures` as well as `tests`, so the guard's
   strictness was already parity; the docstring was fixed rather than the code.
   No escalations, no design forks.
+- **red-team round 2** — **APPROVE, 0 BLOCK, 6 new NOTE** (NOTE-8…13) →
+  `red_team.md` § "Round 2". All four round-1 BLOCKs verified fixed *in code*,
+  not taken on the implementer's word; the reviewer spot-checked ten unlisted
+  mutations of the driver (nine caught) and attacked the new git-ownership
+  model on worktrees, nested repos, submodules, missing `git` and tarball
+  checkouts. Key structural result: a malfunctioning ownership probe can only
+  shrink the expected set to empty, which lands on BLOCK-4's `parser.error` —
+  so the guard fails hard rather than passing silently. Test adequacy judged
+  adequate. Round limit reached; surviving NOTES go to the issue as follow-ups.
+- **test-runner** — **PASS** from a wiped `build/ install/ log/`. `pixi run
+  build` exit 0, `pixi run test` exit 0: 8 packages, **198 tests**, 0 skipped,
+  0 errors, 0 failures, `AUDIT PASSED`.
+  Logs: `.dev/runs/i16-test-integrity-make-pixi-run-test-honest/20260810_090937/`.
+- **ready** — rebased on `origin/main` @ 3e3355b (already current), PR opened.
+  Follow-ups (NOTE-2, NOTE-4+6, NOTE-8…13, CI item) posted as a comment on
+  issue #16 for Sisyphus to file; retro posted on the PR.
+  Reminder for Sisyphus: `docs/features/test-integrity/` is intentionally still
+  present — the CI "docs clean" check reads red until you delete it at merge.

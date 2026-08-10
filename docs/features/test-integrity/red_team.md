@@ -300,3 +300,319 @@ failure into a non-zero `pixi run test` — is untested (BLOCK-2). For any other
 feature I would push two of these to follow-ups; for the tool that defines what
 "green" means, they should be fixed before merge. All four fixes are small and
 local.
+
+---
+
+# Round 2
+
+Final review round. Re-read the current `scripts/check_test_integrity.py`,
+`scripts/tests/{test_audit,test_driver,test_lint,conftest}.py`, `pixi.toml`,
+`README.md` and `implementation.md`, plus the shipped
+`colcon_test_result/test_result/xunit.py` and `colcon_core/verb/test.py` to
+re-check the parity and flag claims. Verdicts below are from the code, not from
+the implementer's summary.
+
+## Round-1 BLOCK verification
+
+### BLOCK-1 (all-skipped suite is green) — **FIXED**
+
+- `check_test_integrity.py:62` `SKIPPED_ATTRIBUTES = ('skip', 'skipped',
+  'disabled')`; `:238-239` sums all three per `<testsuite>`; `:66-67`
+  `XUnitCounts` carries `skipped`.
+- `:92-95` `PackageAudit.executed = tests - skipped`; `:331-335` sets the new
+  `_STATUS_ALL_SKIPPED` when `executed <= 0`, kept distinct from
+  `_STATUS_ZERO_TESTS` at `:328-330`, so the two failure modes stay legible.
+- Visibility (the half of BLOCK-1 that was about a human not being able to
+  notice) is also fixed: `:379` adds a `skipped` column, `:400-403` appends
+  `(N skipped)` to the totals line.
+
+I verified the parity claim directly against the shipped
+`colcon_test_result/test_result/xunit.py:108-115` — colcon sums exactly
+`skip` + `skipped` + `disabled` into one `skipped_count`, requires `tests` and
+`failures`, and defaults `errors` and the three skip attributes to 0. The
+guard's `parse_xunit` (`:232-247`) now matches that rule attribute for
+attribute, which incidentally also resolves round-1 NOTE-1 correctly (my
+round-1 premise about `failures` being optional was wrong; `failures` has
+default `None` in colcon's table, i.e. required — the implementer caught this
+and fixed the docstring rather than the code, which is right).
+
+Behaviour I probed that the fix handles correctly:
+- multiple `<testsuite>` children under one `<testsuites>`: summed (`:233-247`);
+- multiple result files per package: summed (`:309-315`), and
+  `test_skips_are_summed_across_result_files` (`test_audit.py:150-160`) pins
+  that one non-skipped test anywhere in the package clears the status;
+- pytest reports `xfail` in the `skipped` bucket, so an all-`xfail` package
+  reports `all-skipped`. Arguably a false positive (xfail bodies do run), but
+  it is fail-loud and a whole package of xfails deserves a look. Not a finding.
+- `skipped > tests` (malformed but non-negative) → `executed < 0` → still
+  `all-skipped`. Correct.
+
+One residual, deliberately out of scope of BLOCK-1, in NOTE-12 below: a suite
+where every test *errors* is still `ok` to the audit.
+
+### BLOCK-2 (untested exit-code composition) — **FIXED**
+
+`scripts/tests/test_driver.py` (194 lines, 19 tests) is new and does the right
+thing: it patches `guard._run`, `guard.run_tooling_tests` and
+`guard.delete_result_files` (`test_driver.py:57-61`) but lets the *fake*
+`colcon test` write real JUnit files (`:73-77`) and lets the real
+`delete_result_files` run underneath the recorder (`:63-66`), so the audit
+still judges real files on disk. That is the difference between a contract test
+and a mock-shaped tautology.
+
+The four asserts I asked for are all present and non-trivial:
+1. `test_no_single_failing_stage_can_be_swallowed` (`:125-143`) parametrises
+   over all four stages, asserts `rc == 1` **and** that the `FAILED stages:`
+   line names exactly that stage — so a mutation that drops any one key from
+   the `stages` dict (`check_test_integrity.py:586-591`) fails.
+2. `test_every_stage_runs_and_the_report_prints_after_an_early_failure`
+   (`:176-188`) asserts the full event order after `colcon test` fails, killing
+   any re-introduced short-circuit.
+3. `test_results_are_deleted_before_colcon_test_runs` (`:206-212`) asserts the
+   ordering by index, and `test_a_stale_result_cannot_stand_in_for_a_package_
+   colcon_skipped` (`:215-226`) asserts the *consequence* (`'99' not in out`),
+   which is the stronger of the two.
+4. Narrowed mode: `:255-287` cover passthrough, tooling skipped, PARTIAL
+   banner, selective deletion, and that narrowing does not weaken the verdict.
+
+**Spot-check of unlisted mutations** (the thing you asked me to try — I reasoned
+these through the test bodies rather than trusting the implementer's table):
+
+| mutation | caught by |
+|---|---|
+| drop `'workspace-tooling tests': rc_tooling` from `stages` | `:125` param case `TOOLING` (rc 1 + named) |
+| `failed = [... if rc]` → `if rc > 1` | every `rc == 1` param case |
+| `rc_audit = 0 if all(...) else 1` → `rc_audit = 0` | `:125` AUDIT case, `:163`, `:229` |
+| print the report only when failing | `:113` (`'AUDIT PASSED' in out`) |
+| drop `--packages-select` passthrough to colcon | `:261` |
+| move `packages.append(TOOLING_PACKAGE)` into the narrowed branch | `:229`, `:263-264` |
+| `executed <= 0` → `executed < 0` | `test_audit.py:120` |
+| shrink `SKIPPED_ATTRIBUTES` to `('skipped',)` | `test_audit.py:163-176` |
+| invert the "no git signal" fallback to `return [], []` | `test_audit.py:484-493` |
+| remove the empty-expected-set `parser.error` | `test_audit.py:513`, `:539` |
+
+The "swap `max()` for `min()` over stage codes" mutation does not apply: the
+driver does not compose a numeric max, it returns a flat `1` if any stage
+non-zero (`:592-597`), which the parametrised test covers exhaustively.
+
+One mutation **survives**: deleting `min_mtime=started` from the audit call
+(`:582`) leaves all 19 driver tests green, because pre-run deletion covers the
+same scenarios. See NOTE-13 — low severity, the freshness rule itself is unit
+tested in `test_audit.py:291-327`.
+
+### BLOCK-3 (vendored sources permanently red) — **FIXED**
+
+`discover_packages` (`:167-192`) now splits `find_manifests` output into
+`expected` (git-tracked) and `unowned`, and `find_source_packages` (`:195-197`)
+is a thin wrapper. I attacked this model along every axis you named:
+
+- **Worktree.** This repo *is* a linked worktree (`.git` is a file). `git -C
+  <src> rev-parse --is-inside-work-tree` and `git -C <src> ls-files -z` both
+  read the worktree's own index and work normally. Decisive evidence that the
+  git path (not the fallback) is live here: `vendored_untracked.log` shows
+  `mujoco_ros2_control` classified as *unowned* while the seven `robot_*`
+  packages stayed expected — under the fallback every package is expected, so
+  that output is only reachable via a working `git ls-files`.
+- **Path matching.** `ls-files` with `-C <dir>` emits paths relative to that
+  dir and, crucially, `-z` suppresses `core.quotePath` escaping, so non-ASCII
+  paths do not silently fall out of the tracked set. Both sides of the
+  comparison are `.resolve()`d (`:162`, `:190`), so a symlinked `src/` matches.
+- **A package added but not `git add`ed** → unowned + a `note:` line, not
+  silently dropped (`:483-487`, tested at `test_audit.py:428-443`). This is the
+  right trade: on a branch that is about to become a PR the manifest is tracked
+  by construction, and the local pre-`git add` window is loudly annotated.
+- **git absent from PATH** → `subprocess.run` raises `FileNotFoundError`
+  (an `OSError`), caught at `:140-141` → `None` → expect everything. **Tarball
+  export / non-git checkout** → `rev-parse` non-zero → `None` → expect
+  everything (`:154-155`). Both fail *loud*, never silent.
+- **Can a git failure be misread?** No, and this is the part I was most
+  suspicious of. The only way to reach a wrongly-small expected set is
+  `rev-parse` succeeding with `true` *and* `ls-files` succeeding with output
+  that omits real manifests. In that case every first-party package lands in
+  `unowned`, `expected` is empty, and BLOCK-4's `parser.error` fires
+  (`:526-531`) — i.e. a malfunctioning ownership probe is always a hard exit,
+  never a pass. `test_a_source_tree_of_only_vendored_packages_is_an_error`
+  (`test_audit.py:539-553`) pins exactly that composition. Good design; the two
+  fixes reinforce each other rather than interacting badly.
+- **A nested git repo under `src/`** (which is what `vcs import` creates) is not
+  listed by the superproject's `ls-files`, so vendored trees drop out
+  automatically — no `.gitignore` entry required. **Submodules** are listed only
+  as a gitlink, so their `package.xml` is likewise unowned. Both are the
+  intended semantics ("owned by *this* repo"); worth knowing that vendoring a
+  first-party package as a submodule would exempt it, but that is a visible,
+  reviewable act, same as removing a manifest from the index.
+- **Opt-out resistance preserved.** `test_a_first_party_package_cannot_opt_out_
+  with_a_marker_file` (`test_audit.py:461-471`) and
+  `test_a_gitignored_first_party_package_is_still_expected` (`:474-481`) pin the
+  two ways someone would try. `COLCON_IGNORE` still grants nothing — verified
+  in code (`find_manifests` never looks at markers) and in tests.
+
+The tests for this fix are real: they `git init` a tmp repo and `git add` actual
+files (`test_audit.py:75-83`) rather than monkeypatching `_git`, so they would
+catch a regression in the actual command line, not just in the plumbing.
+
+### BLOCK-4 (fail-open on an empty expected set) — **FIXED**
+
+`main:522-531`: `--source-dir` must be a directory, and the discovered owned set
+must be non-empty; both are `parser.error` (exit **2**, distinct from the
+stage-failure exit **1** at `:595` and from `_run`'s 127 for a missing command).
+Placement is correct and unconditional — the checks sit *before* the `narrowed`
+branch, before `--audit-only`'s return at `:546-551`, and before any deletion or
+subprocess, so they cover every code path including `--audit-only` and
+`--packages-select`. `test_driver.py:290-296` asserts `workspace.events == []`
+after a bad `--source-dir`, which proves nothing ran (delete included), not just
+that the exit code was non-zero. Three more cases at `test_audit.py:513-553`.
+
+The deliberate decision *not* to add an "implausibly small" floor
+(`implementation.md:355-361`) is the right call — a hardcoded `>= 7` would be a
+lie the first time a package is split.
+
+## New findings
+
+No BLOCKs. Everything below is NOTE (follow-up material), numbered continuing
+from round 1.
+
+### NOTE-8 — A malformed or `<name>`-less *vendored* manifest still aborts the whole run
+
+`check_test_integrity.py:126-130` (`find_manifests` raises `ValueError` for a
+missing `<name>`) and `:200-205` (`_package_name` lets
+`ElementTree.ParseError` escape). Both run over **every** manifest found,
+*before* `discover_packages` (`:184-185`) applies the ownership filter.
+
+**Scenario.** `vcs import` lands a third-party tree under `src/` that contains a
+`package.xml` the guard cannot parse — a non-ROS file that happens to be named
+`package.xml`, a manifest with an XML entity the vendored repo tolerates, or a
+template with no `<name>`. `pixi run test` then dies with a `ValueError` or a
+raw `ParseError` traceback before a single test runs. That is a smaller,
+lower-probability instance of exactly the BLOCK-3 failure mode: third-party
+content under `src/` making the driver unfixably red.
+
+**Fix.** Filter by ownership first, then resolve names: keep the hard error for
+a *tracked* manifest (that is a real repo bug and must be loud) and demote an
+unparseable *untracked* manifest to an `unowned` entry with a `note:` line
+explaining why it was skipped.
+
+### NOTE-9 — Vendored packages get two contradictory notes in the report
+
+`check_test_integrity.py:483-496` passes only `packages` (expected + tooling) to
+`unexpected_result_dirs` (`:349-361`), so once colcon builds and tests a
+vendored package, `build/mujoco_ros2_control/` holds results for a name that is
+not in the expected set. The report then prints both
+
+```
+note: mujoco_ros2_control is in the source tree but not tracked ...
+note: build/mujoco_ros2_control holds results for a package that is not in the
+      source tree (leftover?)
+```
+
+The second is false and directly contradicts the first, which erodes trust in
+exactly the report this feature exists to make trustworthy. Fix: pass
+`set(packages) | set(unowned)` as the "known" set to `unexpected_result_dirs`.
+Not caught by tests because `_notes` is only exercised through the tracked/
+untracked case where no build dir exists (`test_audit.py:428-443`).
+
+### NOTE-10 — `git` is now a hard dependency of the tooling suite but is undeclared
+
+`scripts/tests/test_audit.py:75-83` shells out to `git init` / `git add` with
+`check=True`, and `:496-510` runs `discover_packages` against the real repo.
+`pixi.toml:9-14` does not list `git`, so the suite depends on the ambient system
+git leaking into the pixi environment. On a machine without git (a container
+image built from `pixi install` alone) seven tooling tests error out and
+`pixi run test` is red for an environmental reason. Fix: add `git` to
+`[dependencies]`. Do **not** make the tests skip on missing git — with the
+all-skipped rule now in place a partial skip is visible in the table but not
+fatal, which is the wrong outcome for this particular capability.
+
+### NOTE-11 — The one test that touches the real repo passes identically under the fallback
+
+`scripts/tests/test_audit.py:496-510`
+(`test_the_real_workspace_manifests_are_tracked`) asserts `ours <= expected` and
+`not ours & unowned`. Under the no-git fallback (`:187`) `expected` is *every*
+package and `unowned` is `[]`, so both assertions hold. The test therefore
+cannot distinguish "git ownership works in this checkout" from "the ownership
+probe silently degraded". The docstring's caution about not asserting
+`unowned == []` is right and should stay; the missing half is one line:
+`assert guard._git_tracked_manifests(REPO_ROOT / 'src') is not None`. Low
+severity only because a degraded probe is fail-loud in both directions (see the
+BLOCK-3 verdict above) — but it means the git path's behaviour in a *worktree*
+is currently pinned by a manual log, not by CI-able evidence.
+
+### NOTE-12 — A suite in which every test errors is `ok` to the audit
+
+`check_test_integrity.py:317-336` judges only `tests`, `skipped` and the
+sentinel; `errors`/`failures` are recorded and printed but never fail a
+package (a deliberate choice, `implementation.md:444-446`). A package whose only
+test module fails to import reports `tests="1" errors="1"`; twelve setup errors
+report `tests="12" errors="12"`. Both come out `status=ok`.
+
+In the full driver this is harmless — `colcon test` and `colcon test-result`
+both go non-zero, so the run is red. The gap is `pixi run test-audit`
+(`pixi.toml:32`), which returns **0** and prints `AUDIT PASSED: every expected
+package collected tests` over a table showing `errors 12`. README:35-36 sells
+that command as "re-read the last run's results", and a human will read the
+banner, not the column. Fix: in `--audit-only` either include errors/failures in
+the verdict, or make the final line read e.g. `AUDIT PASSED (12 errors, 0
+failures — see colcon test-result)` so the banner cannot be read as "all well".
+
+### NOTE-13 — The driver's freshness argument is not pinned by any driver test
+
+`check_test_integrity.py:582` (`audit(..., min_mtime=started)`). Removing
+`min_mtime=started` leaves all 19 driver tests green, because pre-run deletion
+independently covers every scenario they exercise. The second layer is
+explicitly described as defence-in-depth for a failed/partial clean
+(`implementation.md:169-178`), and `audit_package`'s staleness logic is well
+unit-tested (`test_audit.py:291-327`) — but the *wiring* is not. One test that
+no-ops the patched `delete_result_files`, leaves an old result for a package the
+fake colcon does not regenerate, and asserts `stale` would close it.
+
+## Paths touched
+
+Confined to the feature's owned paths. `docs/features/` contains only
+`test-integrity/` (`context.md`, `status.md`, `implementation.md`,
+`red_team.md`) — no other feature's docs exist on this branch.
+`.github/workflows/guards.yml` and `docs/design/{PROJECT.md,decisions.md}` are
+present and unmodified (oldest mtimes in the tree; `implementation.md:15-16`
+and `:434-438` also record the deliberate decision to leave CI alone).
+Round 2's additions are `scripts/check_test_integrity.py`,
+`scripts/tests/test_{audit,driver}.py`, `README.md` (six lines, accurate to the
+shipped behaviour including the ownership rule and the all-skipped case) and
+`docs/features/test-integrity/*`. Round 1's cross-cutting touches
+(`src/robot_*/…`, `pixi.toml`) are unchanged since round 1 and were already
+flagged by the implementer.
+
+## Test adequacy (explicit assessment)
+
+**Adequate.** 66 tests across three modules, and — the part that matters — they
+test the contract rather than the implementation:
+
+- `test_audit.py` fixtures are the XML shapes actually observed from this
+  colcon/pytest pair, including the verbatim colcon placeholder
+  (`test_audit.py:43-50`), so they will keep meaning what they mean.
+- The git-ownership tests use a real `git init`/`git add`, not a patched `_git`
+  (`test_audit.py:75-83`) — they would catch a wrong command line or wrong path
+  relativity, which a mock would not.
+- `test_driver.py`'s fakes stop at the process boundary: the audit under test
+  still reads real files written by the fake stage (`:73-77`), so the tests
+  cannot pass on a guard that has stopped reading evidence.
+- The parametrisation at `:125-143` asserts *which* stage is named, not merely
+  that the run failed — that is what makes it a mutation-resistant test of the
+  composition rather than of the exit code.
+
+Residual gaps are NOTE-11 (real-repo git path not pinned) and NOTE-13
+(`min_mtime` wiring not pinned); neither can hide a hollow green, both are
+one-test fixes.
+
+## Round 2 verdict
+
+**APPROVE — 0 BLOCK, 6 NOTE (NOTE-8 … NOTE-13, plus round 1's surviving
+NOTE-2, NOTE-4, NOTE-6 and the CI item in NOTE-7).**
+
+All four round-1 BLOCKs are genuinely fixed in code, not papered over, and the
+fixes compose well: the ownership filter's failure modes all land on BLOCK-4's
+refusal to audit nothing, so a malfunctioning guard exits non-zero instead of
+passing. The new driver tests are the ones the acceptance criteria asked for
+and they survive mutations beyond the four the implementer listed. Nothing I
+found in round 2 can produce a hollow green through `pixi run test`; the
+remaining notes are report accuracy (NOTE-9, NOTE-12), robustness against
+malformed vendored input (NOTE-8), environment declaration (NOTE-10) and two
+missing pins (NOTE-11, NOTE-13). All are follow-up material, not blockers.
