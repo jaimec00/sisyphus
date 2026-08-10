@@ -43,7 +43,7 @@ state substrate and the trigger.
    the manager posts a **retro comment on the PR**.
 9. **Merge** — when green, Sisyphus **deletes the ephemeral `docs/features/<slug>/`
    docs** (the CI "docs clean" gate then passes), picks order, and squash-merges
-   (no manual approval gate — green is the gate; Sisyphus merges on its own judgment and asks Jaime only when a merge is genuinely tricky). Other open worktrees then rebase
+   (no manual approval gate — green is the gate; Sisyphus merges on its own judgment — from the PR description, comments, and green CI, not by re-running tests — and asks Jaime only when a merge is genuinely tricky). Other open worktrees then rebase
    on main, re-green, and take their turn.
 
 `status.md` tracks phase/round/blockers so any agent (or a restart) resumes
