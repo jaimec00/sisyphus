@@ -28,7 +28,11 @@ assert result.succeeded
 Failures (`unknown_location`, `unknown_object`, `not_graspable`,
 `gripper_occupied`, `gripper_empty`, `out_of_reach`, `out_of_range`, ...) are
 validated **before** any mutation, so a refused skill leaves the world byte
-identical — the tests assert exactly that.
+identical — the tests assert exactly that. Every one of them is a *backend
+refusal* in D17's sense ("can't be done"); the Mock never emits a safety event,
+which is the clamp layer's job. Closing on thin air or opening an already-open
+gripper are **successes** that report themselves via `grasped` in the returned
+observation (D19), not failures.
 
 Pass your own `MockWorld` to test a different scene; `reset()` always returns
 to that seed world. Deterministic: the same world plus the same skills always
