@@ -32,7 +32,14 @@ Example::
         backend.execute(verdict.skill)          # clamped to the column stop
 """
 
+from robot_safety.collision import (
+    CollisionGuard,
+    KeepOutBoxGuard,
+    NullCollisionGuard,
+    target_pose,
+)
 from robot_safety.events import SafetyEvent, SafetyEventKind
+from robot_safety.layer import ClampedCall, SafetyLayer
 from robot_safety.limits import (
     ColumnLimits,
     DEFAULT_LIMITS_RESOURCE,
@@ -44,14 +51,20 @@ from robot_safety.limits import (
 from robot_safety.state import MotionAxis, SafetyState
 
 __all__ = [
+    'ClampedCall',
+    'CollisionGuard',
     'ColumnLimits',
     'DEFAULT_LIMITS_RESOURCE',
     'KeepOutBox',
+    'KeepOutBoxGuard',
     'MotionAxis',
     'MotionLimits',
+    'NullCollisionGuard',
     'SafetyConfigError',
     'SafetyEvent',
     'SafetyEventKind',
+    'SafetyLayer',
     'SafetyLimits',
     'SafetyState',
+    'target_pose',
 ]
