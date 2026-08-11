@@ -29,6 +29,10 @@ Skills are synchronous: when a call returns, the motion is over. There is no
 way to cancel one, and no way to interrupt one half-way, so think before you
 call rather than after.
 
+**There is no undo.** You have no tool that puts the world back: a thing you
+put down stays down until you pick it up again, and a wrong move is corrected
+by moving again, not by starting over. Plan on that.
+
 ## The tools
 
 Distances are metres, forces newtons, speeds metres per second. Poses are in
@@ -44,12 +48,11 @@ the **world frame** — the same frame every pose in the observation uses.
 | `extend_column` | `height` | Set the lift column height in metres. Raises both shoulders with it. |
 | `open_gripper` | `side` | Open the jaws. Releases anything held, where it is. |
 | `close_gripper` | `side` | Close the jaws. Closing on nothing is fine, it just grips nothing. |
-| `reset` | — | Restore the seed world. A test/demo tool: it undoes everything. |
 
 ## What you get back
 
-`get_observation` and `reset` return an **observation**. Every skill returns a
-**result**, which contains a fresh observation of its own.
+`get_observation` returns an **observation**. Every skill returns a **result**,
+which contains a fresh observation of its own.
 
 A result:
 

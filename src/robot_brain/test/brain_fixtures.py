@@ -26,7 +26,27 @@ A plain module rather than ``conftest.py``, matching ``mcp_fixtures.py`` in
 
 import json
 import re
-from typing import Any, Iterator
+from types import MappingProxyType
+from typing import Any, Iterator, Mapping
+
+#: Tools ``robot_mcp`` serves that the ``robot`` agent deliberately does *not*
+#: get, each with the reason it is withheld.
+#:
+#: This is a classification, not an exclusion list to trim when a test goes
+#: red: the suite asserts that the shipped config exposes exactly
+#: ``TOOL_NAMES - WITHHELD_TOOLS`` and that the prompt teaches exactly the same
+#: set, so a tool added to the seam fails both until somebody *decides* which
+#: side of this mapping it belongs on.  Deciding is the point; the failure is
+#: the prompt for the decision.
+WITHHELD_TOOLS: Mapping[str, str] = MappingProxyType({
+    'reset': (
+        'restores the seed world, undoing everything: harmless against Mock, '
+        'but this is the same tool boundary a Sim/Real backend will front '
+        '(D9), where RobotBackend.reset() is real motion and real lost state. '
+        'An autonomous planner that decides mid-chore to "start over" must not '
+        'be able to. An operator who wants it drives the server directly.'
+    ),
+})
 
 #: A fenced code block, which the inline-``code`` reader must not look inside:
 #: the examples show raw wire JSON, which is not the prompt's own vocabulary.

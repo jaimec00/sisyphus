@@ -25,6 +25,7 @@ from brain_fixtures import (
     stated_numbers,
     tool_rows,
     tool_table,
+    WITHHELD_TOOLS,
 )
 import pytest
 from robot_backends import default_world, MockBackend
@@ -34,6 +35,12 @@ from robot_safety import SafetyLimits
 from robot_skills import FailureCode, GripperState, NavigateTo, Side, SkillStatus
 
 PROMPT = operating_prompt()
+
+#: The tools this agent is actually given -- the served catalogue minus the
+#: ones the shipped config withholds from it.  Teaching a tool the config
+#: filters out would be worse than not teaching it: the agent would plan
+#: around a call it never gets to make.
+AGENT_TOOLS = frozenset(TOOL_NAMES) - frozenset(WITHHELD_TOOLS)
 
 #: Each tool's argument names and its required ones, from the shipped schemas.
 SCHEMAS = {
@@ -65,7 +72,9 @@ def live_vocabulary() -> set[str]:
     the wire keys of a real observation and a real result, every enum value on
     the wire, and the seed world's own ids.  A word in backticks that is *not*
     in this set is either a typo or an invention -- both of which teach the
-    agent to call something that does not exist.
+    agent to call something that does not exist.  Withheld tools are *not* in
+    it: naming one is as wrong as naming a fictional one, because the agent
+    does not have it either.
     """
     backend = MockBackend()
     result = backend.execute(NavigateTo('kitchen'))
@@ -73,7 +82,7 @@ def live_vocabulary() -> set[str]:
     values = {member.value for enum in (SkillStatus, FailureCode, Side, GripperState)
               for member in enum}
     return (
-        set(TOOL_NAMES)
+        set(AGENT_TOOLS)
         | {name for names, _ in SCHEMAS.values() for name in names}
         | wire_keys(result.to_dict())
         | values
@@ -88,16 +97,33 @@ def live_vocabulary() -> set[str]:
 class TestToolCatalogue:
     """Every tool the prompt teaches exists, and every tool that exists is taught."""
 
-    def test_the_tool_table_lists_exactly_the_served_tools(self):
-        """A tool added to (or dropped from) the catalogue fails here."""
-        assert set(tool_table(PROMPT)) == set(TOOL_NAMES)
+    def test_the_tool_table_lists_exactly_the_tools_the_agent_is_given(self):
+        """A tool added to the catalogue, or withheld from the agent, fails here.
+
+        Not ``TOOL_NAMES``: the shipped config filters ``WITHHELD_TOOLS`` out
+        of this agent's allowlist, and a prompt that taught one of those would
+        have the agent planning around a call it never gets to make.
+        """
+        assert set(tool_table(PROMPT)) == set(AGENT_TOOLS)
 
     def test_every_worked_example_calls_a_real_tool(self):
         """The examples are the part an agent imitates most literally."""
         called = {name for name, _ in example_calls(PROMPT)}
-        assert called <= set(TOOL_NAMES), called - set(TOOL_NAMES)
+        assert called <= set(AGENT_TOOLS), called - set(AGENT_TOOLS)
         # ...and they are examples of *driving*, not a second catalogue.
         assert {'navigate_to', 'grasp', 'place'} <= called
+
+    def test_a_withheld_tool_is_not_taught_at_all(self):
+        """Silence, not a description: the agent cannot call what it lacks.
+
+        The prompt used to describe ``reset`` as "a test/demo tool", which is
+        an invitation dressed as documentation.  A tool the config filters out
+        has no row, no example and no mention.
+        """
+        for name in WITHHELD_TOOLS:
+            assert name not in tool_table(PROMPT)
+            assert name not in {called for called, _ in example_calls(PROMPT)}
+            assert f'`{name}`' not in PROMPT
 
     def test_the_prompt_names_nothing_the_system_does_not_have(self):
         """No invented tool, field, code or object id anywhere in the prose.
@@ -113,7 +139,7 @@ class TestToolCatalogue:
 class TestToolArguments:
     """What the prompt says each tool takes matches that tool's own schema."""
 
-    @pytest.mark.parametrize('name', sorted(TOOL_NAMES))
+    @pytest.mark.parametrize('name', sorted(AGENT_TOOLS))
     def test_the_table_teaches_exactly_the_schema_properties(self, name):
         """A renamed or added skill argument fails here, per tool."""
         properties, _ = SCHEMAS[name]
@@ -126,7 +152,8 @@ class TestToolArguments:
         have the word "optional" in its row, and no other row may claim it.
         """
         rows = tool_rows(PROMPT)
-        for name, (properties, required) in SCHEMAS.items():
+        for name in sorted(AGENT_TOOLS):
+            properties, required = SCHEMAS[name]
             has_optional = bool(properties - required)
             assert ('optional' in rows[name]) is has_optional, name
 

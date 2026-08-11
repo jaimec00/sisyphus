@@ -23,6 +23,7 @@ secret.
 import json
 import re
 
+from brain_fixtures import WITHHELD_TOOLS
 from robot_brain import AGENT_ID, config_fragment, MCP_SERVER_NAME
 from robot_brain.agent import CONFIG_RESOURCE, PROMPT_RESOURCE
 from robot_mcp.tools import TOOL_NAMES
@@ -141,10 +142,28 @@ def test_the_launch_command_carries_every_package_the_server_needs():
         assert f'/src/{package}' in command, package
 
 
-def test_the_exposed_tools_are_the_tools_that_exist():
-    """The tool filter cannot name a tool the server does not serve."""
+def test_the_exposed_tools_are_the_tools_this_agent_should_have():
+    """Every served tool is either exposed or withheld *on purpose*.
+
+    Two failure modes, one assertion: the filter cannot name a tool the server
+    does not serve, and a tool added to the seam cannot quietly appear in (or
+    vanish from) the model's allowlist.  What it deliberately does **not** do
+    is demand that every future tool be exposed -- a teleop escape hatch or a
+    torque setter must be able to arrive without the path of least resistance
+    being "hand it to the LLM".
+    """
     exposed = set(server()['toolFilter']['include'])
-    assert exposed == set(TOOL_NAMES), exposed.symmetric_difference(TOOL_NAMES)
+    expected = set(TOOL_NAMES) - set(WITHHELD_TOOLS)
+
+    assert exposed == expected, exposed.symmetric_difference(expected)
+
+
+def test_every_withheld_tool_is_a_real_tool_with_a_stated_reason():
+    """The withhold list cannot go stale or become a shrug."""
+    assert set(WITHHELD_TOOLS) <= set(TOOL_NAMES), (
+        set(WITHHELD_TOOLS) - set(TOOL_NAMES))
+    for name, reason in WITHHELD_TOOLS.items():
+        assert len(reason) > 40, f'{name} is withheld without saying why'
 
 
 def test_the_request_timeout_allows_for_a_slow_chore():

@@ -23,8 +23,7 @@
             "move_gripper",
             "navigate_to",
             "open_gripper",
-            "place",
-            "reset"
+            "place"
           ]
         }
       }

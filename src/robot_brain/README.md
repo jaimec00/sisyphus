@@ -44,6 +44,22 @@ that pipe. `-T` because a pty would inject terminal bytes into a stream that
 must carry nothing but MCP frames. (Verified on the laptop: `pixi`'s manifest
 warning goes to **stderr**; stdout carries only JSON-RPC.)
 
+## What the agent is *not* given
+
+`mcp.servers.robot.toolFilter.include` exposes every tool the server serves
+**except `reset`**, and the prompt does not mention it. `reset` restores the
+seed world: harmless against Mock, but this is the same tool boundary a Sim or
+Real backend will front (D9), where `RobotBackend.reset()` is real motion and
+real lost state. A planner that decides mid-chore to "start over" must not be
+able to; an operator who wants it drives the server directly. The prompt tells
+the agent plainly that there is no undo, so it plans forward instead of
+looking for one.
+
+The tests treat this as a **classification**, not an exclusion list: a tool
+added to `robot_mcp` fails both the config suite and the prompt suite until
+someone consciously exposes it or adds it to `WITHHELD_TOOLS` with a reason.
+Neither test forces a future tool into the model's hands.
+
 ## The prompt is guarded, not generated
 
 Prompt quality is the deliverable (D22: an LLM has to *operate* this robot
@@ -110,6 +126,15 @@ is where you find out if this build spells them the same.
    in `tools.allow` (`mcp__robot__*`), and `bindings[].match`'s keys. The
    fragment deliberately omits `model`, so the agent inherits your global
    default; set it in the entry if you want a specific one.
+
+   **Then check the agent can still *answer*.** `tools.allow: ["mcp__robot__*"]`
+   is written as if it scopes only MCP tools. If your build treats `allow` as a
+   strict allowlist over *all* tools, and replying to Telegram goes through a
+   tool in another namespace, the agent will drive the robot and be unable to
+   say a word back — which is half of what this milestone is for. Say hello to
+   it before asking for a chore; if it does not reply, **`tools.allow` is the
+   first thing to relax** (widen it or drop it entirely and rely on the MCP
+   server's own `toolFilter`).
 7. **Text the agent "clear the table"** and read the tool-call log. Expected:
    `get_observation`, then a `navigate_to` / `grasp` / `navigate_to` / `place`
    loop repeated until the table is empty, then a plain-language report. The
