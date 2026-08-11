@@ -1,6 +1,6 @@
 # Status — `safety-clamp-layer` (issue #43)
 
-- **Phase:** red-team round 1 → implementer fixing
+- **Phase:** red-team round 2 done (0 BLOCK) → final polish → test-runner
 - **Branch:** `feat/i43-robot-safety-dynamic-clamp-abort-safety`, based on `origin/main` @ `9236fef`
 - **Blockers:** none
 - **Escalations:** none
@@ -54,6 +54,28 @@
     fail-open/fail-closed choice better made deliberately later.
   - Red-team independently concurred the `test_ratchet.py` edit does not weaken
     that test, and judged test adequacy "above the repo's bar".
+- **Implementer fix round 1.** B1 fixed with a new `policy.py`: `SKILL_POLICIES`
+  enumerates the vocabulary once, keyed by wire name (the key `SKILL_TYPES`
+  uses), and an unclassified skill is **refused at runtime**
+  (`SafetyEventKind.UNCLASSIFIED_SKILL`, checked second — after e-stop, before
+  the guard) *and* trips a dev-time test. The implementer took the runtime-error
+  option I offered and justified it: a test-only tripwire protects this repo's
+  maintainers but not a downstream workspace that adds a skill without running
+  our suite. Structured refusal on the return path is this layer's contract.
+  N3/N4/N5 also fixed. 521 tests, 0 failures.
+- **Red-team round 2** → `red_team_round2.md` (new file; round 1's evidence kept
+  intact). **0 BLOCK, 3 NOTES.** Confirmed the three rewritten dispatch sites
+  preserve behaviour exactly (no inversion, no widening), `Grasp(side=None)`
+  still checks both sides, `OpenGripper` still un-gated (R11), N4/N5 regress no
+  construction path, and the ~31 new tests are load-bearing.
+  - Manager disposition: take all three notes as a **final polish pass**, no
+    third red-team round (2-round cap respected; these are hardenings, not
+    design). N1 — assert the *converse* flag→field implication, closing B1's
+    hole as reached by mis-classification rather than omission, with `side`
+    explicitly exempt per R11. N2 — `policy_for` verifies the skill is the shape
+    its name promises, turning an exotic `AttributeError` into a refusal.
+    N3 — document the raise/return boundary where it is actually read (on
+    `filter`, in the README, and on the `CollisionGuard` protocol).
 
 ---
 

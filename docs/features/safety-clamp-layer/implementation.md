@@ -1,14 +1,14 @@
 # Implementation — `robot_safety`: dynamic clamp/abort safety layer (issue #43)
 
-Final state after the red-team round: **169 tests in `robot_safety`, full
-workspace suite green** (521 tests, 0 failures, test-integrity audit passed —
+Final state after both red-team rounds: **179 tests in `robot_safety`, full
+workspace suite green** (531 tests, 0 failures, test-integrity audit passed —
 see "Verification" below). All rulings R1–R14 implemented as written; no ruling
 was deviated from and no escalation was needed. `src/robot_skills/**` was
 **not** edited.
 
-Red-team round 1 (1 BLOCK, 6 NOTES): **B1, N3, N4 and N5 are fixed** — see
-"Red-team round 1" below. N1, N2 and N6 were ruled out of scope by the manager
-and are follow-ups.
+- Red-team round 1 (1 BLOCK, 6 NOTES): **B1, N3, N4, N5 fixed**; N1, N2, N6
+  ruled out of scope by the manager and left as follow-ups.
+- Red-team round 2 (0 BLOCK, 3 NOTES): **all three fixed**.
 
 ## What shipped
 
@@ -20,7 +20,7 @@ and are follow-ups.
 | `events.py` | `SafetyEventKind` (6 members), `SafetyEvent` — the structured verdict |
 | `limits.py` | `ColumnLimits`, `MotionLimits`, `KeepOutBox`, `SafetyLimits`, `SafetyConfigError` |
 | `limits.yaml` | the shipped defaults, **the single source of every number** |
-| `policy.py` | `SKILL_POLICIES`, `SkillPolicy`, `policy_for`, `unclassified_skills` — which checks apply to which skill |
+| `policy.py` | `SKILL_POLICIES`, `SkillPolicy`, `policy_for`, `unclassified_skills`, `unrecognised_reason` — which checks apply to which skill |
 | `collision.py` | `CollisionGuard` protocol, `NullCollisionGuard`, `KeepOutBoxGuard`, `target_pose` |
 | `layer.py` | `ClampedCall`, `SafetyLayer.filter(skill, state) -> ClampedCall \| SafetyEvent` |
 
@@ -209,6 +209,62 @@ N1 (`gripper.abort_force`, a second higher threshold), N2 (`require_readings`,
 making absent telemetry itself an event), N6 (a guard that raises propagates
 out of `filter` — fail-closed, left deliberate).
 
+## Red-team round 2 — what changed
+
+### N1 — the converse of the flag→field check
+
+`test_skill_policy.py` asserted *flag ⇒ field exists* but never *field ⇒ flag*,
+so a future skill carrying a `pose` and classified as a bare `SkillPolicy()`
+would have been invisible to the collision guard with every test green: B1's
+hole reached by **mis-classification** instead of by omission.
+`test_each_judgeable_field_implies_the_flag_that_judges_it` now checks the
+other direction for `pose` and `height`.
+
+`side` is deliberately **exempt**, and the test says so with R11 named:
+`OpenGripper` carries a `side` and must never be force-gated, so a carried
+`side` cannot imply `closes_jaws`.
+
+Verified the new test has teeth by temporarily downgrading `Place` to a bare
+policy — `AssertionError: place commands a pose that no collision guard would
+ever see`, one failing param — then reverting.
+
+### N2 — `policy_for` now checks the type behind the name
+
+The table is keyed by wire name, so a `register=False` name-squatter of the
+wrong shape (`name = 'grasp'`, no `side` field) would have been handed `Grasp`'s
+policy and the force check would have read `skill.side` off an object without
+one — an `AttributeError` escaping a method whose contract is to *return*
+structured verdicts.
+
+`policy_for` now requires `isinstance(skill, SKILL_TYPES[skill.name])`.
+**I reused `UNCLASSIFIED_SKILL` rather than adding a kind**: to the gate all
+three cases mean the same thing — refuse, because the layer does not know what
+this is — and a kind exists to let a *caller* react differently, which nothing
+would here. What a reader does need is the reason, so `unrecognised_reason()`
+distinguishes the three in `SafetyEvent.detail` ("not a skill in the shared
+registry" / "claims the wire name … which belongs to …" / "is not classified by
+this safety layer"), and `policy_for` derives its verdict from that same
+function so the two cannot disagree. Covered by
+`test_a_skill_of_the_wrong_shape_for_its_name_is_refused_not_crashed_on` and
+two tests in `test_skill_policy.py`.
+
+### N3 — the raise/return boundary, documented where it is read
+
+The rule — *safety verdicts return, programmer and integration errors raise* —
+is now stated in `filter`'s docstring together with **all three** raise paths
+(bad argument types; a guard returning a non-event; a guard returning a clamp
+record) plus the fourth case that is not ours to raise: an exception from an
+injected guard propagates untouched, which is fail-closed and deliberate.
+
+`README.md` no longer says the layer returns an event "rather than raising"
+flatly; it states the rule and points at the docstring. The two obligations on
+a guard author — **abort, never rewrite** and **be total** — moved from
+`layer.py` onto the `CollisionGuard` protocol docstring, which is what someone
+implementing a guard actually opens.
+
+Left alone per the manager: `test_skill_policy.py`'s two table-restating tests
+(they pin the design deliberately and have independent behavioural cover).
+
 ## Verified empirically
 
 ### R12 — YAML packaging (the flagged risk). Verified three ways, all green.
@@ -250,11 +306,11 @@ and asserts `rclpy`/`ament_index_python`/`rosidl` are absent from `sys.modules`
 
 ### Full suite
 
-Run after the red-team fixes (the numbers actually seen):
+Run after both red-team rounds (the numbers actually seen):
 
 ```
 $ pixi run build && pixi run test
-Summary: 521 tests, 0 errors, 0 failures, 0 skipped
+Summary: 531 tests, 0 errors, 0 failures, 0 skipped
 
 package             tests  skipped  errors  failures  non-lint  vs-base  status
 _workspace_tooling    114        0       0         0       111       +0  ok
@@ -264,7 +320,7 @@ robot_bringup           3        0       0         0         0       +0  ok
 robot_description       3        0       0         0         0       +0  ok
 robot_mcp              55        0       0         0        52       +0  ok
 robot_perception        3        0       0         0         0       +0  ok
-robot_safety          169        0       0         0       166     +166  ok
+robot_safety          179        0       0         0       176     +176  ok
 robot_skills          109        0       0         0       106       +0  ok
 AUDIT PASSED: every expected package collected tests
 All stages passed.
@@ -285,7 +341,7 @@ unmodified.
 
 `scripts/test_baseline.json` still reads `robot_safety: 0`, which passes (the
 ratchet only fails a package that drops *below* its floor; this one is at
-`+166`). Ratcheting it to the real count remains the follow-up the manager
+`+176`). Ratcheting it to the real count remains the follow-up the manager
 already recorded for Sisyphus.
 
 ## Known weaknesses / follow-up candidates (NOTES, not blockers)
