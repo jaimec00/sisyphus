@@ -1,0 +1,61 @@
+# robot_safety — default dynamic-safety limits (D4/D17).
+#
+# THIS FILE IS THE SINGLE SOURCE OF THE DEFAULTS. The Python code deliberately
+# hard-codes no metre, no metre-per-second and no newton: retuning the robot's
+# envelope is an edit here and nowhere else. Every number below carries the
+# reasoning that produced it, because a safety limit with no rationale is a
+# number nobody dares change and nobody trusts.
+#
+# Units are SI throughout: metres, metres per second, newtons. Parsing is
+# strict — unknown keys, missing keys, non-finite values, non-positive caps and
+# an inverted column range are all load errors (see limits.py).
+#
+# These are starting values for a household mobile manipulator, chosen to be
+# conservative. They are not measured from hardware; the Real backend feature
+# should revisit them against the actual machine.
+
+# Travel range of the vertical lift column, clamped (never refused): height is
+# the one scalar in the skill API where "less of it" is unambiguously safer, so
+# pulling an out-of-range request back to the stop is both sound and useful.
+column:
+  # Column fully stowed. The base frame's z origin, i.e. no extension.
+  min_height: 0.0
+  # Enough to reach a standard worktop (~0.9 m) and a low shelf, short of the
+  # ceiling-strike and tip-over regime a taller extension would open up.
+  max_height: 1.2
+
+# Speed caps per body axis. Keys are the MotionAxis member values; all three
+# must be present, so adding an axis to the enum is a load error until it is
+# given a cap here rather than silently becoming uncapped.
+velocity:
+  # Well under an adult walking pace (~1.4 m/s): indoors, among people and
+  # furniture, the robot should never be the fastest thing in the room.
+  base: 0.6
+  # A lift column moves a heavy mass through the height where hands are: slow
+  # enough that a pinch is a nudge, not an injury.
+  column: 0.15
+  # In the range collaborative arms use for unfenced operation near people.
+  arm: 0.5
+
+# Jaw force ceiling, checked against measured force while closing (D19:
+# over-force while closing is a safety event; closing on nothing is not).
+gripper:
+  # Comfortably holds a full mug, and well below the ~100 N range where a
+  # trapped finger stops being merely painful.
+  max_force: 40.0
+
+# Axis-aligned world-frame regions a commanded target pose may not fall inside.
+# Every bound is optional; an omitted bound means unbounded on that side, so a
+# half-space is expressible. Consumed by KeepOutBoxGuard, which ABORTS rather
+# than rewriting: unlike a height, a 6-DoF goal has no "safer direction" to be
+# nudged in, so silently relocating it would be worse than refusing it.
+#
+# Stub geometry on purpose — real collision geometry (robot model, meshes,
+# swept volumes) is a later feature. This entry exists so the seam ships
+# working, not merely declared.
+keep_out_boxes:
+  # The world frame's floor is z = 0. A gripper target below it is a bad
+  # transform or a hallucinated pose, never a thing to drive into; 2 cm of
+  # tolerance keeps a legitimate floor-level pick from tripping it.
+  - label: below_floor
+    z_max: -0.02

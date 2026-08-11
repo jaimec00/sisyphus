@@ -6,6 +6,11 @@ setup(
     name=package_name,
     version='0.0.0',
     packages=find_packages(exclude=['test']),
+    # The default limits ship *inside* the importable package, not in share/:
+    # a file beside the code is readable from a source checkout and from a
+    # symlink-installed build alike, with no ament index and no ROS graph.
+    package_data={package_name: ['*.yaml']},
+    include_package_data=True,
     data_files=[
         ('share/ament_index/resource_index/packages',
             ['resource/' + package_name]),

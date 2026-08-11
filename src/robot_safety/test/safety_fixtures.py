@@ -1,0 +1,106 @@
+# Copyright (c) 2026 Jaime C.
+#
+# Use of this source code is governed by an MIT-style
+# license that can be found in the LICENSE file or at
+# https://opensource.org/licenses/MIT.
+
+"""Shared builders for the robot_safety tests.
+
+Kept out of ``conftest.py`` so test modules can import the helpers directly
+without relying on a module name that every package in the workspace shares.
+Deliberately local: each package owns its own ``test/`` helpers, which are not
+importable across package boundaries.
+
+The limit set built here is *not* the shipped one -- the tests pick round,
+obviously-synthetic numbers so a failure reads as "the layer clamped wrong",
+never as "somebody retuned ``limits.yaml``".  Exactly one module
+(``test_limits_config.py``) is about the shipped file itself.
+"""
+
+from typing import Any
+
+from robot_safety import SafetyLimits, SafetyState
+from robot_skills import (
+    GripperObservation,
+    GripperState,
+    Observation,
+    Point,
+    Pose,
+    Quaternion,
+    RobotState,
+    SceneObject,
+    Side,
+)
+
+
+def make_gripper(
+    side: Side,
+    state: GripperState = GripperState.OPEN,
+    held_object_id: str | None = None,
+    grasped: bool | None = None,
+) -> GripperObservation:
+    """Build a gripper observation with a deterministic pose."""
+    offset = 0.2 if side is Side.LEFT else -0.2
+    return GripperObservation(
+        side=side,
+        state=state,
+        pose=Pose.from_xyz(0.3, offset, 0.8),
+        held_object_id=held_object_id,
+        grasped=(held_object_id is not None) if grasped is None else grasped,
+    )
+
+
+def make_robot_state(**overrides: Any) -> RobotState:
+    """Build a plain robot state, overridable field by field."""
+    defaults: dict[str, Any] = {
+        'pose': Pose(Point(1.0, 2.0, 0.0), Quaternion(0.0, 0.0, 0.7071, 0.7071)),
+        'column_height': 0.4,
+        'grippers': (make_gripper(Side.LEFT), make_gripper(Side.RIGHT)),
+        'location': 'kitchen',
+    }
+    defaults.update(overrides)
+    return RobotState(**defaults)
+
+
+def make_observation(**overrides: Any) -> Observation:
+    """Build a small observation with one graspable object."""
+    defaults: dict[str, Any] = {
+        'robot': make_robot_state(),
+        'objects': (SceneObject('mug_1', 'mug', Pose.from_xyz(1.3, 0.2, 0.9)),),
+        'known_locations': ('kitchen', 'table'),
+    }
+    defaults.update(overrides)
+    return Observation(**defaults)
+
+
+def make_state(**overrides: Any) -> SafetyState:
+    """Build a telemetry sample: nominal, unless overridden.
+
+    Nominal means "everything reads well inside :func:`make_limits`": no
+    e-stop, all three axes standing still, both grippers unloaded.
+    """
+    defaults: dict[str, Any] = {
+        'observation': make_observation(),
+        'estop_engaged': False,
+        'velocities': {'base': 0.0, 'column': 0.0, 'arm': 0.0},
+        'gripper_forces': {Side.LEFT: 0.0, Side.RIGHT: 0.0},
+    }
+    defaults.update(overrides)
+    return SafetyState(**defaults)
+
+
+def limits_mapping(**overrides: Any) -> dict[str, Any]:
+    """Return a valid limits mapping with synthetic, easy-to-read numbers."""
+    defaults: dict[str, Any] = {
+        'column': {'min_height': 0.0, 'max_height': 1.0},
+        'velocity': {'base': 1.0, 'column': 0.5, 'arm': 2.0},
+        'gripper': {'max_force': 10.0},
+        'keep_out_boxes': [],
+    }
+    defaults.update(overrides)
+    return defaults
+
+
+def make_limits(**overrides: Any) -> SafetyLimits:
+    """Build a limit set from :func:`limits_mapping`, section by section."""
+    return SafetyLimits.from_mapping(limits_mapping(**overrides))
