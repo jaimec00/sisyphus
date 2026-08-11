@@ -80,7 +80,15 @@ jaw-force reading anywhere. So of the layer's six checks, against the Mock:
   `below_floor` is aborted by the default server, with the region's label in
   the reason. That geometry is still a **stub**: one floor half-space checked
   against the *goal* pose. There is no robot model, no mesh and no swept
-  volume here, so it stops a hallucinated target, not a collision;
+  volume here, so it stops a hallucinated target, not a collision. **It judges
+  commanded target poses only** — `navigate_to` commands no pose, so driving
+  the base through a region is not checked, and neither is whatever the
+  grippers are carrying while it drives. A chore can therefore move an object
+  *through* (or park it in) a keep-out region without a verdict ever being
+  taken; only the explicit `place`/`move_gripper` target is judged.
+  `test_clear_the_table.py` asserts exactly that gap rather than papering over
+  it. Closing it needs a swept-volume check against the base's route, which is
+  MoveIt's job (invariant 5) and a later feature;
 - **wired and reachable, but silent until a backend measures something:**
   e-stop, per-axis velocity caps, gripper over-force. They are not fiction —
   the layer checks them on every call — but with no reading available they

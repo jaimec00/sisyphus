@@ -11,14 +11,18 @@ Worktree: `/home/sisyphus/worktrees/i46-first-milestone-openclaw-robot-agent-rob
 | 2 | Provision deps + probe installed API | done — **no new dependency**; `mcp==2.0.0` already pinned in `pixi.toml` and probed (`importlib.metadata.version('mcp') == '2.0.0'`, `mcp.Client` present, `mcp_types` top-level). OpenClaw itself is **not installable here** (see R8). |
 | 3 | context-explorer → `context.md` | done |
 | 4 | Manager rulings | done — R1–R11 below |
-| 5 | implementer → code + tests + `implementation.md` | pending |
-| 6 | red-team → `red_team.md` | pending |
-| 7 | fix rounds (≤2) | pending |
-| 8 | test-runner (`pixi run test`) | pending |
+| 5 | implementer → code + tests + `implementation.md` | done — 8 commits, `0341d2b`…`0dd208c`. Implementer reported the full gate green (584 tests) before R12; R12 re-ran green and re-cut the baseline (`robot_mcp` 67 → 71). |
+| 5a | Manager ruling R12 (raised by the implementer as F8) | done — issued mid-run, landed as `0dd208c` |
+| 6 | red-team → `red_team.md` | done — **3 BLOCK, 7 NOTE**. Every hypothesis about the safety wiring itself was checked and cleared (R1's abort path, R3's chokepoint, R12's exception scope, the milestone test's non-vacuity, R10's arithmetic, the drift guards' vacuity traps, the secret scanner). All three BLOCKs are claims that outrun their evidence, not defects in running code. |
+| 7 | fix rounds (≤2) | **round 1 running** — B1 (false keep-out claim in the milestone test), B2 (`reset` exposed to the model + a test forcing exposure of every future tool), B3 (PROJECT.md:45's server-side guards absent *and* undocumented as absent), plus N1–N5. N6/N7 declined → surviving NOTES for Sisyphus. |
+| 8 | test-runner (`pixi run test`) | **PASS** — `pixi run build` exit 0, `pixi run test` exit 0; 588 tests, 0 errors / 0 failures / 0 skipped, 561 non-linter across 9 packages, every package at `vs-base: +0` or better, none flagged. Log: `.dev/runs/i46-openclaw-robot-agent/20260811-184324/test.log` |
 | 9 | rebase on current main, open PR, report "ready" | pending |
 
 ## Blockers
 None.
+
+## Run notes
+- The implementer session was terminated once by an Anthropic session limit (17:0x, resets 18:30 ET) **after** it had committed R12 and re-cut the baseline. On-disk state was verified clean and complete (`git status` empty, `implementation.md` updated in `0dd208c`); no work was lost and the worker was not respawned.
 
 ---
 

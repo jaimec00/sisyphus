@@ -28,7 +28,7 @@ from mcp_fixtures import connected, payload
 import pytest
 from robot_backends import default_world, MockBackend
 from robot_safety import KeepOutBox, KeepOutBoxGuard, SafetyLayer, SafetyLimits
-from robot_skills import Pose, SkillResult
+from robot_skills import Point, Pose, SkillResult
 
 pytestmark = pytest.mark.anyio
 
@@ -246,12 +246,20 @@ async def test_the_default_server_clamps_a_column_command_mid_run(backend):
     assert len(put_away) >= 2
 
 
-async def test_an_injected_guard_stops_the_loop_and_the_agent_cannot_route_around_it():
-    """A keep-out region over the drop zone: the chore fails, safely and legibly.
+async def test_a_keep_out_region_refuses_the_place_into_it_however_often_it_is_tried():
+    """A commanded target inside a keep-out region is refused, server-side.
 
-    The enforcement is server-side (D21), so no sequence of tool calls the
-    agent can make gets the object into the region -- it keeps holding it and
-    is told, in the safety layer's own words, why.
+    What this proves is exactly the guard's scope: it judges the **commanded
+    target pose of a cartesian skill**.  The ``place`` into the region is
+    refused, and refused again on a retry, and the object stays held -- no
+    prompt wording and no repetition talks that pose past the gate, because
+    the gate is below the tool boundary (D21).
+
+    What it does **not** prove is asserted below rather than implied away: by
+    the time the place is refused, the carried object is *already inside the
+    region*, driven there by ``navigate_to``, which commands no pose for a
+    guard to look at.  Stub geometry judges goals -- not swept volumes, not a
+    driving base, not a load in a gripper (see ``robot_mcp/README.md``).
     """
     counter = next(
         spec for spec in default_world().objects if spec.label == 'counter')
@@ -280,6 +288,18 @@ async def test_an_injected_guard_stops_the_loop_and_the_agent_cannot_route_aroun
     assert refused['code'] == 'rejected'
     assert 'counter_top' in refused['reason']
     assert retried['code'] == 'rejected', 'trying again must not wear the gate down'
-    # The object never entered the region: it is still in a gripper.
+    # The refusal left the world alone: the object is still in the gripper.
     assert [item['object_id'] for item in refused['observation']['objects']
             if item['held_by'] is not None] == [target]
+
+    # ...and here is the gap, asserted so nobody has to trust a comment about
+    # it: the held object is inside the forbidden box already, carried there
+    # by a navigate the guard never judged. Catching this needs a swept-volume
+    # check against the base's route -- MoveIt's job, a later feature. If this
+    # assertion ever fails, the guard grew that check and this test should be
+    # rewritten to celebrate it.
+    held = next(
+        item for item in refused['observation']['objects']
+        if item['object_id'] == target)
+    where = held['pose']['position']
+    assert forbidden.contains(Point(where['x'], where['y'], where['z'])), where
