@@ -19,9 +19,11 @@ from math import inf, nan
 
 import pytest
 from robot_safety import (
+    ColumnLimits,
     DEFAULT_LIMITS_RESOURCE,
     KeepOutBox,
     MotionAxis,
+    MotionLimits,
     SafetyConfigError,
     SafetyLimits,
 )
@@ -224,6 +226,38 @@ def test_yaml_loading_does_not_execute_python_tags():
 
     with pytest.raises(SafetyConfigError, match='not valid YAML'):
         SafetyLimits.from_yaml(text)
+
+
+@pytest.mark.parametrize(
+    'velocities, force, expected',
+    [
+        pytest.param({MotionAxis.BASE: -1.0}, 10.0, 'positive', id='negative-cap'),
+        pytest.param({MotionAxis.BASE: 0.0}, 10.0, 'positive', id='zero-cap'),
+        pytest.param({MotionAxis.BASE: nan}, 10.0, 'finite', id='non-finite-cap'),
+        pytest.param({}, -1.0, 'positive', id='negative-force'),
+        pytest.param({}, 0.0, 'positive', id='zero-force'),
+    ],
+)
+def test_a_cap_built_in_python_is_held_to_the_same_rule_as_one_from_yaml(
+        velocities, force, expected):
+    """The rule lives on the type, not only on the parser.
+
+    A limit set is not always born from a file -- a test, a future ROS
+    parameter bridge or a caller tuning one section builds one directly -- and
+    a negative "cap" reaching a ``speed > cap`` comparison would silently
+    disable that axis.
+    """
+    caps = dict.fromkeys(MotionAxis, 1.0)
+    caps.update(velocities)
+
+    with pytest.raises(SafetyConfigError, match=expected):
+        MotionLimits(velocities=caps, max_gripper_force=force)
+
+
+def test_a_column_range_built_in_python_is_checked_too():
+    """The same discipline on the other limit type (this one always had it)."""
+    with pytest.raises(SafetyConfigError, match='must be below'):
+        ColumnLimits(min_height=1.0, max_height=0.5)
 
 
 def test_keep_out_box_bounds_are_half_open_where_a_bound_is_omitted():

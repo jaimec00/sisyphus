@@ -42,6 +42,8 @@ class SafetyEventKind(Enum):
     VELOCITY_EXCEEDED = 'velocity_exceeded'
     GRIPPER_OVERFORCE = 'gripper_overforce'
     COLLISION_RISK = 'collision_risk'
+    #: The layer met a skill it has no policy for (see :mod:`robot_safety.policy`).
+    UNCLASSIFIED_SKILL = 'unclassified_skill'
 
 
 @dataclass(frozen=True)

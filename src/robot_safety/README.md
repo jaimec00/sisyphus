@@ -25,6 +25,8 @@ importing this package needs no ROS graph and no ROS packages.
 - `limits.py` + `limits.yaml` — the configured envelope, strictly parsed. **The
   YAML is the single source of the defaults**; no metre, m/s or newton is
   hard-coded in Python.
+- `policy.py` — `SKILL_POLICIES`: which checks apply to which skill, enumerated
+  once. Not an `isinstance` chain, because those default to *permissive*.
 - `collision.py` — `CollisionGuard` protocol plus `NullCollisionGuard` (the
   default) and `KeepOutBoxGuard` (working stub geometry).
 - `layer.py` — `SafetyLayer.filter(skill, state) -> ClampedCall | SafetyEvent`.
@@ -45,10 +47,15 @@ else:
     backend.execute(verdict.skill)                       # clamped to the column stop
 ```
 
-Checks run in a fixed order, **aborts before clamps**: e-stop → collision →
-measured velocity → gripper over-force → column clamp. An in-limit call passes
-through *identically* (`verdict.skill is skill`), so "unchanged" is checkable,
-not merely believed.
+Checks run in a fixed order, **aborts before clamps**: e-stop → unclassified
+skill → collision → measured velocity → gripper over-force → column clamp. An
+in-limit call passes through *identically* (`verdict.skill is skill`), so
+"unchanged" is checkable, not merely believed.
+
+**A skill this layer has no policy for is refused**, not waved through, and
+`unclassified_skills()` turns the same gap into a test failure — so adding a
+skill to the shared seam costs one deliberate line in `policy.py` instead of
+silently arriving unclamped and unchecked.
 
 `filter` is **pure and stateless**: the same `(skill, state)` always yields the
 same verdict. Today's backends are synchronous — `execute()` returns when the

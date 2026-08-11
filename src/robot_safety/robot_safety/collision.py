@@ -26,9 +26,10 @@ from dataclasses import dataclass
 from typing import Protocol, runtime_checkable
 
 from robot_safety.events import SafetyEvent, SafetyEventKind
-from robot_safety.limits import KeepOutBox, SafetyLimits
+from robot_safety.limits import KeepOutBox, SafetyConfigError, SafetyLimits
+from robot_safety.policy import policy_for
 from robot_safety.state import SafetyState
-from robot_skills import MoveGripper, Place, Pose, Skill
+from robot_skills import Pose, Skill
 
 __all__ = ['CollisionGuard', 'KeepOutBoxGuard', 'NullCollisionGuard', 'target_pose']
 
@@ -36,12 +37,15 @@ __all__ = ['CollisionGuard', 'KeepOutBoxGuard', 'NullCollisionGuard', 'target_po
 def target_pose(skill: Skill) -> Pose | None:
     """Return the Cartesian target a skill commands, or ``None`` if it has none.
 
-    Only two skills name a point in space; the rest address a location, an
-    object id or a gripper, and are not geometry this layer can check.
+    Which skills those are is read from :data:`~robot_safety.policy.SKILL_POLICIES`
+    rather than from an ``isinstance`` chain here, so a skill added upstream
+    cannot acquire "no geometry to check" by default: it has no policy at all,
+    and the gate refuses it before any guard is asked.
     """
-    if isinstance(skill, (MoveGripper, Place)):
-        return skill.pose
-    return None
+    policy = policy_for(skill)
+    if policy is None or not policy.has_cartesian_target:
+        return None
+    return skill.pose
 
 
 @runtime_checkable
@@ -89,7 +93,18 @@ class KeepOutBoxGuard:
 
     @classmethod
     def from_limits(cls, limits: SafetyLimits) -> 'KeepOutBoxGuard':
-        """Build a guard from the ``keep_out_boxes`` section of a limit set."""
+        """Build a guard from the ``keep_out_boxes`` section of a limit set.
+
+        Refuses a limit set with no regions configured: a guard built from
+        config that vetoes nothing is the dead parameter this seam exists to
+        avoid, reached by configuration instead of by design.  Wiring one in
+        and getting silence is worse than not wiring one in at all.  An
+        intentionally empty guard stays expressible as ``KeepOutBoxGuard(())``.
+        """
+        if not limits.keep_out_boxes:
+            raise SafetyConfigError(
+                'keep_out_boxes: no regions configured, so KeepOutBoxGuard would check '
+                'nothing; configure a region or use NullCollisionGuard deliberately')
         return cls(boxes=limits.keep_out_boxes)
 
     def check(self, skill: Skill, state: SafetyState) -> SafetyEvent | None:

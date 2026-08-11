@@ -32,21 +32,20 @@ from robot_skills import (
     MoveGripper,
     NavigateTo,
     OpenGripper,
-    Place,
     Pose,
     Side,
 )
-from safety_fixtures import make_limits, make_observation, make_state
-
-EVERY_SKILL = (
-    pytest.param(NavigateTo('kitchen'), id='navigate_to'),
-    pytest.param(MoveGripper(Side.LEFT, Pose.from_xyz(0.4, 0.2, 0.9)), id='move_gripper'),
-    pytest.param(Grasp('mug_1'), id='grasp'),
-    pytest.param(Place(Pose.from_xyz(0.4, 0.2, 0.9)), id='place'),
-    pytest.param(ExtendColumn(0.5), id='extend_column'),
-    pytest.param(OpenGripper(Side.RIGHT), id='open_gripper'),
-    pytest.param(CloseGripper(Side.RIGHT), id='close_gripper'),
+from safety_fixtures import (
+    every_skill,
+    make_limits,
+    make_observation,
+    make_state,
+    UnclassifiedSkill,
 )
+
+#: Every skill in the shared registry, not a hand-written list that would go
+#: stale the moment one is added (``test_skill_policy.py`` pins the two together).
+EVERY_SKILL = every_skill()
 
 
 # --------------------------------------------------------------------------
@@ -364,6 +363,102 @@ def test_a_caller_error_raises_instead_of_becoming_a_safety_event(layer, skill, 
     """A type error in the caller is a bug, not an unsafe robot: it must surface."""
     with pytest.raises(TypeError):
         layer.filter(skill, state)
+
+
+# --------------------------------------------------------------------------
+# A skill the layer has no policy for
+# --------------------------------------------------------------------------
+
+def test_a_skill_this_layer_cannot_classify_is_refused(layer):
+    """Fail closed: no policy means no basis for letting the command through.
+
+    The alternative -- the permissive default an ``isinstance`` chain gives you
+    for free -- would let a skill added upstream run unclamped, with no geometry
+    check and outside the force check, while every test here stayed green.
+    """
+    verdict = layer.filter(UnclassifiedSkill(), make_state())
+
+    assert isinstance(verdict, SafetyEvent)
+    assert verdict.kind is SafetyEventKind.UNCLASSIFIED_SKILL
+    assert 'wipe_surface' in verdict.detail
+
+
+def test_an_unclassified_skill_is_refused_even_when_everything_reads_nominal(layer):
+    """Not a side effect of some other check happening to fire."""
+    nominal = make_state(
+        velocities={'base': 0.0, 'column': 0.0, 'arm': 0.0},
+        gripper_forces={Side.LEFT: 0.0, Side.RIGHT: 0.0},
+    )
+
+    assert layer.filter(NavigateTo('kitchen'), nominal).was_clamped is False
+    assert isinstance(layer.filter(UnclassifiedSkill(), nominal), SafetyEvent)
+
+
+def test_the_estop_still_outranks_an_unclassified_skill(layer):
+    """Both refuse; the fixed order decides which is reported."""
+    verdict = layer.filter(UnclassifiedSkill(), make_state(estop_engaged=True))
+
+    assert verdict.kind is SafetyEventKind.ESTOP_ENGAGED
+
+
+def test_an_unclassified_skill_is_refused_before_any_guard_is_asked():
+    """Do not ask a geometry checker about a command nobody has classified."""
+    asked = []
+
+    class RecordingGuard:
+        """A guard that records every skill it is asked about."""
+
+        def check(self, skill, state):
+            """Record the skill and clear it."""
+            asked.append(skill)
+            return None
+
+    layer = SafetyLayer(limits=make_limits(), collision_guard=RecordingGuard())
+
+    assert isinstance(layer.filter(UnclassifiedSkill(), make_state()), SafetyEvent)
+    assert asked == []
+    layer.filter(NavigateTo('kitchen'), make_state())
+    assert len(asked) == 1
+
+
+# --------------------------------------------------------------------------
+# ClampedCall's own invariants
+# --------------------------------------------------------------------------
+
+def test_a_clamped_call_reports_whether_anything_was_rewritten(layer):
+    """``was_clamped`` is exactly "there is a record", not a separate flag."""
+    motion = layer.limits.motion
+    clamp = SafetyEvent(
+        kind=SafetyEventKind.COLUMN_LIMIT, detail='clamped', clamped_value=1.0)
+
+    assert ClampedCall(NavigateTo('kitchen'), motion).was_clamped is False
+    assert ClampedCall(ExtendColumn(1.0), motion, (clamp,)).was_clamped is True
+
+
+def test_a_clamped_call_refuses_an_abort_event_as_a_clamp_record(layer):
+    """R9's discipline, enforced: an event with no clamped value is an abort.
+
+    Letting one into ``clamps`` would produce a call that says "this executed,
+    and here is the thing that stopped it".
+    """
+    abort = SafetyEvent(kind=SafetyEventKind.ESTOP_ENGAGED, detail='e-stop engaged')
+
+    with pytest.raises(ValueError, match='abort event'):
+        ClampedCall(ExtendColumn(1.0), layer.limits.motion, (abort,))
+
+
+@pytest.mark.parametrize(
+    'skill, limits, clamps',
+    [
+        pytest.param('extend_column', None, (), id='skill-is-prose'),
+        pytest.param(ExtendColumn(1.0), 'fast', (), id='limits-are-prose'),
+        pytest.param(ExtendColumn(1.0), None, ('clamped',), id='clamps-are-prose'),
+    ],
+)
+def test_a_malformed_clamped_call_is_rejected(layer, skill, limits, clamps):
+    """The accepted-call record is evidence too; it may not be built out of prose."""
+    with pytest.raises(TypeError):
+        ClampedCall(skill, layer.limits.motion if limits is None else limits, clamps)
 
 
 def test_a_layer_cannot_be_built_on_something_that_is_not_a_limit_set():

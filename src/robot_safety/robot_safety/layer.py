@@ -15,11 +15,16 @@ in-flight command to abort), and the layer is called once, before execution.
 When an asynchronous backend arrives, "clamp or abort in flight" (D17) is the
 same function re-asked against successive telemetry samples -- not a redesign.
 
-**Check order is fixed, and aborts precede clamps** (all five checks, in
-order): e-stop, collision, measured velocity, gripper over-force, then the
-column clamp.  E-stop first so an e-stopped over-limit call reports the e-stop
-rather than a clamp -- the most urgent true statement wins.  Rewriting a call
-that is about to be refused would be wasted work and a confusing record.
+**Check order is fixed, and aborts precede clamps**: e-stop, unclassified
+skill, collision, measured velocity, gripper over-force, then the column clamp.
+E-stop first so an e-stopped over-limit call reports the e-stop rather than a
+clamp -- the most urgent true statement wins.  Rewriting a call that is about
+to be refused would be wasted work and a confusing record.
+
+**Which checks apply to which skill is a table, not an ``isinstance`` chain**
+(:mod:`robot_safety.policy`), and a skill missing from it is *refused* rather
+than waved through.  An ``isinstance`` chain defaults to permissive, so a skill
+added upstream would quietly arrive unclamped and unchecked.
 
 **What is clamped, and what is not.**  Exactly one field is rewritten:
 ``ExtendColumn.height``, the one scalar in the skill API where "less of it" is
@@ -35,8 +40,9 @@ from dataclasses import dataclass
 from robot_safety.collision import CollisionGuard, NullCollisionGuard
 from robot_safety.events import SafetyEvent, SafetyEventKind
 from robot_safety.limits import MotionLimits, SafetyLimits
+from robot_safety.policy import policy_for, SkillPolicy
 from robot_safety.state import MotionAxis, SafetyState
-from robot_skills import CloseGripper, ExtendColumn, Grasp, Side, SIDE_ORDER, Skill
+from robot_skills import ExtendColumn, Side, SIDE_ORDER, Skill
 
 __all__ = ['ClampedCall', 'SafetyLayer']
 
@@ -88,20 +94,17 @@ class ClampedCall:
         return bool(self.clamps)
 
 
-def _closing_sides(skill: Skill) -> tuple[Side, ...]:
+def _closing_sides(skill: Skill, policy: SkillPolicy) -> tuple[Side, ...]:
     """Return the gripper sides a skill closes jaws on (empty for the rest).
 
     D19 draws the line at *closing*: over-force is a safety event on the clamp
-    path, while closing on nothing is an ordinary success.  ``Grasp`` with no
-    side is checked on **both** grippers -- the backend picks one and we cannot
-    know which, so the conservative reading is the only sound one.
-
-    ``OpenGripper`` is deliberately absent, and that absence is a safety
-    property, not an oversight: opening is the *remedy* for over-force, so
-    gating it on force would make an over-force state unrecoverable -- the
-    robot could never let go.
+    path, while closing on nothing is an ordinary success.  Which skills close
+    is read from the policy table, never guessed from the type here.  A skill
+    with no side named -- ``Grasp(side=None)`` -- is checked on **both**
+    grippers: the backend picks one and we cannot know which, so the
+    conservative reading is the only sound one.
     """
-    if not isinstance(skill, (CloseGripper, Grasp)):
+    if not policy.closes_jaws:
         return ()
     if skill.side is None:
         return SIDE_ORDER
@@ -178,20 +181,27 @@ class SafetyLayer:
         if not isinstance(state, SafetyState):
             raise TypeError(f'state must be a SafetyState, got {type(state).__name__}')
 
+        # The fixed order.  Every check takes the same arguments so the order
+        # is a list to read rather than control flow to trace; the two checks
+        # that consult the policy run after the one that refuses a missing one.
+        policy = policy_for(skill)
         for check in (
             self._check_estop,
+            self._check_classified,
             self._check_collision,
             self._check_velocities,
             self._check_gripper_force,
         ):
-            event = check(skill, state)
+            event = check(skill, state, policy)
             if event is not None:
                 return event
 
-        skill, clamps = self._clamp(skill)
+        skill, clamps = self._clamp(skill, policy)
         return ClampedCall(skill=skill, limits=self._limits.motion, clamps=clamps)
 
-    def _check_estop(self, skill: Skill, state: SafetyState) -> SafetyEvent | None:
+    def _check_estop(
+            self, skill: Skill, state: SafetyState, policy: SkillPolicy | None,
+    ) -> SafetyEvent | None:
         """Abort everything while the e-stop is engaged."""
         if not state.estop_engaged:
             return None
@@ -200,16 +210,49 @@ class SafetyLayer:
             detail=f'e-stop engaged; {skill.name} refused, all motion is inhibited',
         )
 
-    def _check_collision(self, skill: Skill, state: SafetyState) -> SafetyEvent | None:
-        """Ask the injected guard, and insist on the protocol's return type."""
-        event = self._collision_guard.check(skill, state)
-        if event is None or isinstance(event, SafetyEvent):
-            return event
-        raise TypeError(
-            f'{type(self._collision_guard).__name__}.check must return a SafetyEvent '
-            f'or None, got {type(event).__name__}')
+    def _check_classified(
+            self, skill: Skill, state: SafetyState, policy: SkillPolicy | None,
+    ) -> SafetyEvent | None:
+        """Refuse a skill this layer has no policy for.
 
-    def _check_velocities(self, skill: Skill, state: SafetyState) -> SafetyEvent | None:
+        Fail closed, and at runtime rather than only in the test suite: a gate
+        that cannot say what checks apply to a command has no basis for letting
+        it through.  ``robot_safety.policy.unclassified_skills`` makes the same
+        gap a test failure, so this path should be unreachable in a
+        well-maintained workspace -- which is exactly why it must not be a
+        silent pass-through when it is not.
+        """
+        if policy is not None:
+            return None
+        return SafetyEvent(
+            kind=SafetyEventKind.UNCLASSIFIED_SKILL,
+            detail=(
+                f'{skill.name!r} is not classified by this safety layer; refusing a '
+                'command whose limits nobody has decided'),
+        )
+
+    def _check_collision(
+            self, skill: Skill, state: SafetyState, policy: SkillPolicy | None,
+    ) -> SafetyEvent | None:
+        """Ask the injected guard, and hold it to the protocol it implements."""
+        event = self._collision_guard.check(skill, state)
+        if event is None:
+            return None
+        name = type(self._collision_guard).__name__
+        if not isinstance(event, SafetyEvent):
+            raise TypeError(
+                f'{name}.check must return a SafetyEvent or None, '
+                f'got {type(event).__name__}')
+        if event.is_clamp:
+            raise ValueError(
+                f'{name}.check returned a clamp record (clamped_value='
+                f'{event.clamped_value!r}); a guard aborts, it never rewrites -- '
+                'clamping a 6-DoF goal would move it somewhere nobody asked for')
+        return event
+
+    def _check_velocities(
+            self, skill: Skill, state: SafetyState, policy: SkillPolicy | None,
+    ) -> SafetyEvent | None:
         """Abort while *any* axis is over its cap, related to this skill or not.
 
         A base running at 2 m/s makes commanding an arm motion unsafe just the
@@ -234,10 +277,16 @@ class SafetyLayer:
                 )
         return None
 
-    def _check_gripper_force(self, skill: Skill, state: SafetyState) -> SafetyEvent | None:
-        """Abort a jaw-closing skill while that gripper is already over-force."""
+    def _check_gripper_force(
+            self, skill: Skill, state: SafetyState, policy: SkillPolicy | None,
+    ) -> SafetyEvent | None:
+        """Abort a jaw-closing skill while that gripper is already over-force.
+
+        ``policy`` is never ``None`` here: an unclassified skill was refused
+        two checks earlier.
+        """
         cap = self._limits.motion.max_gripper_force
-        for side in _closing_sides(skill):
+        for side in _closing_sides(skill, policy):
             force = state.gripper_force(side)
             if force is None or force <= cap:
                 continue
@@ -252,13 +301,17 @@ class SafetyLayer:
             )
         return None
 
-    def _clamp(self, skill: Skill) -> tuple[Skill, tuple[SafetyEvent, ...]]:
+    def _clamp(
+            self, skill: Skill, policy: SkillPolicy | None,
+    ) -> tuple[Skill, tuple[SafetyEvent, ...]]:
         """Return the skill to execute plus a record of every rewrite.
 
         Returns the caller's own object when nothing needed changing, so an
-        in-limit call passes through identically and not merely equally.
+        in-limit call passes through identically and not merely equally.  Which
+        skills carry a clampable height comes from the policy table; a skill
+        with no policy never reaches here.
         """
-        if not isinstance(skill, ExtendColumn):
+        if policy is None or not policy.clamps_column_height:
             return skill, ()
         column = self._limits.column
         bound = column.violated_bound(skill.height)

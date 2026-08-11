@@ -19,6 +19,7 @@ from robot_safety import (
     KeepOutBox,
     KeepOutBoxGuard,
     NullCollisionGuard,
+    SafetyConfigError,
     SafetyEvent,
     SafetyEventKind,
     SafetyLayer,
@@ -173,7 +174,50 @@ def test_a_guard_that_breaks_the_protocol_is_not_quietly_believed():
         layer.filter(NavigateTo('kitchen'), make_state())
 
 
+def test_a_guard_that_returns_a_clamp_record_is_refused():
+    """Guards abort; they never rewrite (R9's discipline, on the injected side).
+
+    ``ClampedCall`` already refuses an abort event in its clamp record. Without
+    the mirror check, a third-party guard could hand back an event carrying a
+    ``clamped_value`` and ``filter`` would return it as an abort that claims to
+    have rewritten something -- exactly the state the other side forbids.
+    """
+    class RewritingGuard:
+        """A guard that tries to nudge a pose instead of refusing it."""
+
+        def check(self, skill, state):
+            """Return a clamp record where only an abort is allowed."""
+            return SafetyEvent(
+                kind=SafetyEventKind.COLLISION_RISK,
+                detail='nudged out of the way',
+                offending_value=-0.5,
+                limit=0.0,
+                clamped_value=0.0,
+            )
+
+    layer = SafetyLayer(limits=make_limits(), collision_guard=RewritingGuard())
+
+    with pytest.raises(ValueError, match='never rewrites'):
+        layer.filter(Place(Pose.from_xyz(0.4, 2.0, -0.5)), make_state())
+
+
 def test_a_guard_cannot_be_built_on_something_that_is_not_a_region():
     """Bad geometry config fails at construction, not mid-motion."""
     with pytest.raises(TypeError):
         KeepOutBoxGuard(('stove_top',))
+
+
+def test_building_a_box_guard_from_a_boxless_config_is_refused():
+    """A configured guard that checks nothing is the dead parameter R7 forbids.
+
+    Reached by configuration rather than by design: wiring in a geometry check
+    and getting silence is worse than not wiring one in at all.  An
+    intentionally empty guard stays expressible.
+    """
+    boxless = make_limits(keep_out_boxes=[])
+
+    with pytest.raises(SafetyConfigError, match='no regions configured'):
+        KeepOutBoxGuard.from_limits(boxless)
+
+    assert KeepOutBoxGuard(()).boxes == ()
+    assert KeepOutBoxGuard.from_limits(SafetyLimits.defaults()).boxes

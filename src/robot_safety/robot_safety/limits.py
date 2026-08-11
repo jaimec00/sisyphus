@@ -90,18 +90,29 @@ def _get_float(data: Mapping[str, Any], key: str, *, context: str) -> float:
         raise SafetyConfigError(f'{context}.{key}: {exc}') from exc
 
 
-def _get_positive(data: Mapping[str, Any], key: str, *, context: str) -> float:
-    """Return a strictly positive finite float from ``data[key]``, or raise.
+def _as_positive(value: Any, *, name: str) -> float:
+    """Return ``value`` as a strictly positive finite float, or raise.
 
     Caps are positive by definition.  A zero cap would abort every motion the
     instant any reading arrived, which is what the e-stop is for; reading it as
     a deliberate policy rather than a config slip would be the wrong guess.
+
+    Lives on the *type*, not on the parser, so a cap built in Python is held to
+    the same rule as one loaded from YAML -- the file is only one of the ways
+    a limit set comes into being.
     """
-    value = _get_float(data, key, context=context)
-    if value <= 0.0:
-        raise SafetyConfigError(
-            f'{context}.{key}: must be a positive number, got {value!r}')
-    return value
+    try:
+        result = as_finite_float(value, name=name)
+    except (TypeError, ValueError) as exc:
+        raise SafetyConfigError(f'{name}: {exc}') from exc
+    if result <= 0.0:
+        raise SafetyConfigError(f'{name}: must be a positive number, got {result!r}')
+    return result
+
+
+def _get_positive(data: Mapping[str, Any], key: str, *, context: str) -> float:
+    """Return a strictly positive finite float from ``data[key]``, naming the key."""
+    return _as_positive(_get_float(data, key, context=context), name=f'{context}.{key}')
 
 
 @dataclass(frozen=True)
@@ -165,7 +176,7 @@ class MotionLimits:
                 raise TypeError(
                     'MotionLimits.velocities keys must be MotionAxis members, '
                     f'got {type(axis).__name__}')
-            velocities[axis] = as_finite_float(cap, name=f'velocity.{axis.value}')
+            velocities[axis] = _as_positive(cap, name=f'velocity.{axis.value}')
         missing = [axis.value for axis in MotionAxis if axis not in velocities]
         if missing:
             raise SafetyConfigError(
@@ -174,7 +185,7 @@ class MotionLimits:
         object.__setattr__(
             self,
             'max_gripper_force',
-            as_finite_float(self.max_gripper_force, name='gripper.max_force'),
+            _as_positive(self.max_gripper_force, name='gripper.max_force'),
         )
 
     def velocity_cap(self, axis: MotionAxis) -> float:

@@ -17,20 +17,79 @@ never as "somebody retuned ``limits.yaml``".  Exactly one module
 (``test_limits_config.py``) is about the shipped file itself.
 """
 
-from typing import Any
+from dataclasses import dataclass
+from types import MappingProxyType
+from typing import Any, ClassVar, Mapping, Self
 
+import pytest
 from robot_safety import SafetyLimits, SafetyState
 from robot_skills import (
+    CloseGripper,
+    ExtendColumn,
+    Grasp,
     GripperObservation,
     GripperState,
+    MoveGripper,
+    NavigateTo,
     Observation,
+    OpenGripper,
+    Place,
     Point,
     Pose,
     Quaternion,
     RobotState,
     SceneObject,
     Side,
+    Skill,
+    SKILL_TYPES,
 )
+
+#: One example of every skill in the shared vocabulary, keyed by wire name.
+#:
+#: Keyed off ``SKILL_TYPES`` rather than hand-listed at each use site, so a
+#: skill added to the seam shows up as a missing example
+#: (``test_skill_policy.py``) instead of quietly going untested here.
+EXAMPLE_SKILLS: Mapping[str, Skill] = MappingProxyType({
+    NavigateTo.name: NavigateTo('kitchen'),
+    MoveGripper.name: MoveGripper(Side.LEFT, Pose.from_xyz(0.4, 0.2, 0.9)),
+    Grasp.name: Grasp('mug_1'),
+    Place.name: Place(Pose.from_xyz(0.4, 0.2, 0.9)),
+    ExtendColumn.name: ExtendColumn(0.5),
+    OpenGripper.name: OpenGripper(Side.RIGHT),
+    CloseGripper.name: CloseGripper(Side.RIGHT),
+})
+
+
+def every_skill() -> list:
+    """Return one pytest param per example skill, in registry order."""
+    return [
+        pytest.param(EXAMPLE_SKILLS[name], id=name)
+        for name in sorted(EXAMPLE_SKILLS)
+        if name in SKILL_TYPES
+    ]
+
+
+@dataclass(frozen=True)
+class UnclassifiedSkill(Skill, register=False):
+    """Stand-in for a skill somebody adds to the seam tomorrow.
+
+    ``register=False`` keeps it out of the shared registry, so merely importing
+    this module cannot pollute ``SKILL_TYPES`` for the rest of the session: it
+    stands for the *gap* in this layer's coverage, not for a real command.
+    """
+
+    name: ClassVar[str] = 'wipe_surface'
+
+    target: str = 'counter'
+
+    def _payload(self) -> dict[str, Any]:
+        """Return the skill's arguments, as any skill must be able to."""
+        return {'target': self.target}
+
+    @classmethod
+    def _from_payload(cls, data: Mapping[str, Any]) -> Self:
+        """Rebuild the stand-in from its dict form."""
+        return cls(target=data['target'])
 
 
 def make_gripper(
