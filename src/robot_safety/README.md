@@ -73,6 +73,14 @@ goal has no safe direction to be nudged in — geometry is *aborted* by the
 collision guard instead), and `OpenGripper` is never blocked by over-force,
 because opening is the remedy for it.
 
-Status: clamp/abort gate complete against Mock. Real collision geometry, backend
-reachability refusal and wiring into the brain loop are separate features. See
-`docs/design/decisions.md` (D4, D17, D19).
+**Who calls it.** `robot_mcp`'s `SkillToolRouter` runs every skill tool call
+through `SafetyLayer.filter` before the backend sees it — the brain-facing seam
+(D21), where an abort becomes a `rejected` `SkillResult` and a clamp executes
+the rewritten skill. It builds `SafetyState` from the backend's observation
+alone, because no backend in this workspace publishes e-stop, velocity or jaw
+force yet; those three checks are wired and reachable but cannot fire until one
+does. Callers that bypass MCP are not gated today.
+
+Status: clamp/abort gate complete against Mock and wired into the MCP tool
+boundary. Real collision geometry and backend reachability refusal are separate
+features. See `docs/design/decisions.md` (D4, D17, D19, D21).
