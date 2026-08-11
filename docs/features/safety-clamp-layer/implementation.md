@@ -1,28 +1,34 @@
 # Implementation — `robot_safety`: dynamic clamp/abort safety layer (issue #43)
 
-Final state: **138 tests in `robot_safety`, full workspace suite green** (490
-tests, 0 failures, test-integrity audit passed — see "Verification" below).
-All rulings R1–R14 implemented as written; no ruling was deviated from and no
-escalation was needed. `src/robot_skills/**` was **not** edited.
+Final state after the red-team round: **169 tests in `robot_safety`, full
+workspace suite green** (521 tests, 0 failures, test-integrity audit passed —
+see "Verification" below). All rulings R1–R14 implemented as written; no ruling
+was deviated from and no escalation was needed. `src/robot_skills/**` was
+**not** edited.
+
+Red-team round 1 (1 BLOCK, 6 NOTES): **B1, N3, N4 and N5 are fixed** — see
+"Red-team round 1" below. N1, N2 and N6 were ruled out of scope by the manager
+and are follow-ups.
 
 ## What shipped
 
-`src/robot_safety/robot_safety/`, five modules, ~700 lines including docstrings:
+`src/robot_safety/robot_safety/`, six modules:
 
 | module | contents |
 |---|---|
 | `state.py` | `MotionAxis` (`BASE`/`COLUMN`/`ARM`), `SafetyState` — one telemetry sample |
-| `events.py` | `SafetyEventKind` (5 members), `SafetyEvent` — the structured verdict |
+| `events.py` | `SafetyEventKind` (6 members), `SafetyEvent` — the structured verdict |
 | `limits.py` | `ColumnLimits`, `MotionLimits`, `KeepOutBox`, `SafetyLimits`, `SafetyConfigError` |
 | `limits.yaml` | the shipped defaults, **the single source of every number** |
+| `policy.py` | `SKILL_POLICIES`, `SkillPolicy`, `policy_for`, `unclassified_skills` — which checks apply to which skill |
 | `collision.py` | `CollisionGuard` protocol, `NullCollisionGuard`, `KeepOutBoxGuard`, `target_pose` |
 | `layer.py` | `ClampedCall`, `SafetyLayer.filter(skill, state) -> ClampedCall \| SafetyEvent` |
 
-Tests, `src/robot_safety/test/` (7 modules + the 3 pre-existing linters):
+Tests, `src/robot_safety/test/` (8 modules + the 3 pre-existing linters):
 `safety_fixtures.py` (local builders — the cross-package import of
 `skill_api_fixtures` is impossible, per context §6), `conftest.py`,
 `test_limits_config.py`, `test_safety_state.py`, `test_safety_events.py`,
-`test_safety_layer.py`, `test_collision_guard.py`,
+`test_skill_policy.py`, `test_safety_layer.py`, `test_collision_guard.py`,
 `test_mock_backend_integration.py`, `test_no_ros_runtime.py`.
 
 `package.xml` gained `<depend>robot_skills</depend>`,
@@ -38,8 +44,8 @@ skeleton stub.
 |---|---|
 | over-limit target → clamped to limit | `test_safety_layer.py::test_an_over_limit_column_target_is_clamped_to_the_limit` (above-max and below-min, asserting `offending_value`/`limit`/`clamped_value` and that the caller's own skill was not mutated) |
 | over-force close → `SafetyEvent` | `::test_over_force_while_closing_is_a_safety_event` (`CloseGripper`, `Grasp(side=…)`, `Grasp(side=None)` → both sides checked) |
-| e-stop → abort-all | `::test_the_estop_aborts_every_skill` (parametrized over **all seven** skills) + `::test_the_estop_is_reported_ahead_of_any_clamp_or_other_abort` |
-| in-limit call → pass-through unchanged | `::test_an_in_limit_call_passes_through_unchanged` (all seven skills, asserted with **`is`** per R6) |
+| e-stop → abort-all | `::test_the_estop_aborts_every_skill` (parametrized over **every registered skill**, derived from `SKILL_TYPES`) + `::test_the_estop_is_reported_ahead_of_any_clamp_or_other_abort` |
+| in-limit call → pass-through unchanged | `::test_an_in_limit_call_passes_through_unchanged` (every registered skill, asserted with **`is`** per R6) |
 | velocity cap enforced | `::test_a_measured_speed_over_its_cap_aborts`, `::test_every_axis_is_capped`, `::test_an_axis_at_its_cap_is_allowed`, `::test_an_axis_unrelated_to_the_skill_still_aborts_it` (R5) |
 | limits from YAML with documented defaults | `test_limits_config.py` — the shipped file is packaged, parses, populates every field, and its numbers *are* the defaults (a retuned copy produces retuned limits) |
 | R11: `OpenGripper` never blocked | `::test_over_force_never_blocks_the_skills_that_do_not_close_jaws` |
@@ -121,6 +127,88 @@ contract in issue #43 and in R1/R2, so the line is silenced with a comment
 explaining why, rather than renaming the seam around a linter. If the manager
 prefers a different name, it is a one-line change plus the docs.
 
+## Red-team round 1 — what changed
+
+### B1 (BLOCK) — permissive default dispatch for unknown skills
+
+Three sites enumerated skill types by `isinstance` and defaulted to *let it
+through*: the force check, the column clamp, and `target_pose`. A skill added
+upstream — a routine feature — would have arrived unclamped, ungeometried and
+outside the force check while every test stayed green, because a hand-written
+7-tuple of skills cannot notice an eighth.
+
+**Fixed by an exhaustive table plus a runtime refusal, and both were needed.**
+
+`robot_safety/policy.py` enumerates the vocabulary exactly once, keyed by wire
+name (the same key `SKILL_TYPES` uses), with three flags per skill —
+`closes_jaws`, `clamps_column_height`, `has_cartesian_target` — and a comment
+per row saying *why*. "Nothing applies" is an explicit `SkillPolicy()` row for
+`NavigateTo` and `OpenGripper`; it can no longer be reached by omission. The
+three check sites now read the table.
+
+I took the manager's option on the failure mode: **an unclassified skill is
+refused at runtime** (`SafetyEventKind.UNCLASSIFIED_SKILL`, checked second,
+right after e-stop and before any guard is asked). A gate that cannot say which
+checks apply to a command has no basis for letting it through, and a
+test-time-only tripwire protects this repo's own maintainers but not a
+downstream workspace that adds a skill without running our suite. It is a
+`SafetyEvent` rather than a raise because that is the layer's contract —
+structured refusal on the return path — and because the situation is a
+workspace-integration gap, not a caller type error (those still raise).
+
+The test tripwire is the second half, not an alternative:
+`unclassified_skills()` compares the table against `SKILL_TYPES` and must
+return `()`; `test_skill_policy.py` also pins that the suite's example skills
+*are* the registry, that each flag implies the field the layer will reach for
+(`fields()` on the skill dataclass), and that exactly one skill is clamped.
+`EVERY_SKILL` in `test_safety_layer.py` is now derived from `SKILL_TYPES`
+instead of hand-written.
+
+Verified empirically that the tripwire fires on a *genuinely* new registered
+skill, not just a synthetic mapping — defining a `Skill` subclass registers it
+in the live `SKILL_TYPES` registry:
+
+```
+in registry: True
+tripwire: ('wipe_surface',)
+verdict: SafetyEvent SafetyEventKind.UNCLASSIFIED_SKILL
+```
+
+The stand-in used by the tests (`safety_fixtures.UnclassifiedSkill`) is
+declared `register=False` precisely so importing the fixtures cannot pollute
+the shared registry for the rest of the session — with a test asserting that.
+
+### N3 — R9's abort/clamp discipline was one-sided and untested
+
+`_check_collision` now rejects an injected guard's event that carries a
+`clamped_value` (`ValueError`, "a guard aborts, it never rewrites"), mirroring
+the check `ClampedCall` already made in the other direction. `ClampedCall`'s
+four defensive branches had *no* tests — nothing constructed one directly —
+and now have four (`was_clamped` both ways, the abort-event rejection, and the
+three malformed-argument cases).
+
+### N4 — cap positivity was enforced only on the YAML path
+
+`MotionLimits(velocities={BASE: -1.0, …}, max_gripper_force=0.0)` used to
+construct fine. The rule moved into `MotionLimits.__post_init__` via a new
+`_as_positive` helper; `_get_positive` keeps only its key-naming duty on the
+parse path. A limit set is not always born from a file (a test, a caller tuning
+one section, a future ROS-parameter bridge), and a negative "cap" reaching a
+`speed > cap` comparison would silently disable that axis.
+
+### N5 — `from_limits` on a boxless config yielded a silently inert guard
+
+`KeepOutBoxGuard.from_limits` now raises `SafetyConfigError` when the limit set
+configures no regions. Wiring in a geometry check and getting silence is worse
+than not wiring one in; an intentionally empty guard stays expressible as
+`KeepOutBoxGuard(())`.
+
+### Not implemented (manager ruled out of scope, filed as follow-ups)
+
+N1 (`gripper.abort_force`, a second higher threshold), N2 (`require_readings`,
+making absent telemetry itself an event), N6 (a guard that raises propagates
+out of `filter` — fail-closed, left deliberate).
+
 ## Verified empirically
 
 ### R12 — YAML packaging (the flagged risk). Verified three ways, all green.
@@ -162,9 +250,11 @@ and asserts `rclpy`/`ament_index_python`/`rosidl` are absent from `sys.modules`
 
 ### Full suite
 
+Run after the red-team fixes (the numbers actually seen):
+
 ```
 $ pixi run build && pixi run test
-Summary: 490 tests, 0 errors, 0 failures, 0 skipped
+Summary: 521 tests, 0 errors, 0 failures, 0 skipped
 
 package             tests  skipped  errors  failures  non-lint  vs-base  status
 _workspace_tooling    114        0       0         0       111       +0  ok
@@ -174,7 +264,7 @@ robot_bringup           3        0       0         0         0       +0  ok
 robot_description       3        0       0         0         0       +0  ok
 robot_mcp              55        0       0         0        52       +0  ok
 robot_perception        3        0       0         0         0       +0  ok
-robot_safety          138        0       0         0       135     +135  ok
+robot_safety          169        0       0         0       166     +166  ok
 robot_skills          109        0       0         0       106       +0  ok
 AUDIT PASSED: every expected package collected tests
 All stages passed.
@@ -195,7 +285,7 @@ unmodified.
 
 `scripts/test_baseline.json` still reads `robot_safety: 0`, which passes (the
 ratchet only fails a package that drops *below* its floor; this one is at
-`+135`). Ratcheting it to the real count remains the follow-up the manager
+`+166`). Ratcheting it to the real count remains the follow-up the manager
 already recorded for Sisyphus.
 
 ## Known weaknesses / follow-up candidates (NOTES, not blockers)

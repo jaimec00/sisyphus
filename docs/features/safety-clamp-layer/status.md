@@ -1,6 +1,6 @@
 # Status — `safety-clamp-layer` (issue #43)
 
-- **Phase:** implement (round 0)
+- **Phase:** red-team round 1 → implementer fixing
 - **Branch:** `feat/i43-robot-safety-dynamic-clamp-abort-safety`, based on `origin/main` @ `9236fef`
 - **Blockers:** none
 - **Escalations:** none
@@ -19,6 +19,41 @@
   `robot_safety`, say" as exactly what flips the no-real-tests rule;
   `robot_mcp/README.md:109-114`'s "no in-flight command to cancel" is verbatim.
 - Rulings R1–R14 recorded below → dispatch implementer.
+- **Implementer round 0 complete.** 5 modules + `limits.yaml`, 7 test modules.
+  `pixi run build && pixi run test`: 490 tests, 0 failures, AUDIT PASSED.
+  R12 packaging verified empirically three ways (source tree, symlink-install
+  via egg-link with matching inode, copying install for a future wheel).
+- Manager approved two implementer-flagged decisions:
+  - `scripts/tests/test_ratchet.py` edit (commit `865ba0e`, **outside owned
+    paths**): the workspace test hard-coded `robot_safety` as a skeleton, which
+    this feature makes false. Verified the edit *strengthens* the assertion —
+    `robot_safety` moves from the "must be empty" list to an explicit "holds
+    implementation" assertion beside `robot_skills`/`robot_backends`; both
+    directions still checked. Necessary, minimal, isolated in its own commit.
+  - `# noqa: A003` on `SafetyLayer.filter` (`layer.py:165`): `filter` shadows a
+    builtin, but the name is the brief's published contract (deliverable 1) and
+    R1/R2. One commented line silenced rather than renaming the seam around a
+    linter.
+- **Red-team round 1** → `red_team.md`: **1 BLOCK, 6 NOTES**. Seven of the eight
+  attack hypotheses I set held under concrete attack — notably no NaN fail-open
+  (every route closed at construction via `as_finite_float` + non-negativity),
+  consistent inclusive boundaries, deterministic R10 ordering, strict R13 YAML
+  parsing, and `Grasp(side=None)` genuinely checking both sides.
+  - **B1 (BLOCK)** — three `isinstance` dispatch sites default *permissive*
+    (`layer.py:104`, `layer.py:261`, `collision.py:42`), and `EVERY_SKILL` is a
+    hard-coded 7-tuple, so a skill added upstream would flow through unclamped
+    with all 138 tests still green. Manager verified independently and concurs:
+    the package already applies the opposite discipline to its own `MotionAxis`
+    vocabulary (`limits.py:169-172` — an uncapped axis is a load error), so the
+    skill vocabulary deserves the same. Sent back to the implementer.
+  - Manager dispositions: fix **B1 + N3 + N4 + N5** (each a cheap hardening of a
+    seam I ruled on — R7, R9, R13). **N1, N2, N6 → follow-up comment on the
+    issue**, not implemented: N1 (`gripper.abort_force`) and N2
+    (`require_readings`) add safety semantics beyond the brief; N6 (a raising
+    guard propagates) is fail-closed today and the alternative forces a
+    fail-open/fail-closed choice better made deliberately later.
+  - Red-team independently concurred the `test_ratchet.py` edit does not weaken
+    that test, and judged test adequacy "above the repo's bar".
 
 ---
 
