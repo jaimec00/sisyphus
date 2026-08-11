@@ -14,13 +14,28 @@ produce no result file at all -- colcon's ``unittest`` fallback testing step
 writes no JUnit XML whatsoever -- and that silence is likewise reported as
 success. Either way a "green" merge can be hollow.
 
+A bar of "more than zero tests" is also too low on its own: a package can
+drop from 59 tests to 3 (a stray ``testpaths`` edit, an ``--ignore`` in
+``addopts``, a deleted module) and still clear it. So the guard additionally
+**ratchets**: ``scripts/test_baseline.json`` records the non-linter test
+count of every package, and a package that collects fewer than its baseline
+fails. A package that grows implementation code must have non-linter tests at
+all -- three ament linter tests are an honest suite for an empty skeleton
+package, and a dishonest one the moment the package holds real code.
+
+Update the baseline (and commit it) whenever tests are legitimately added or
+removed::
+
+    python scripts/check_test_integrity.py --update-baseline
+
 This module is both:
 
 * a **guard** -- :func:`audit` reads the JUnit XML that ``colcon test``
   already produced and fails when an expected package has no result file, a
-  result reporting zero collected tests, or a result in which every collected
-  test was skipped. It never runs tests itself, so it can only ever report
-  what colcon actually did; and
+  result reporting zero collected tests, a result in which every collected
+  test was skipped, fewer non-linter tests than the baseline records, or no
+  non-linter tests at all for a package holding implementation code. It never
+  runs tests itself, so it can only ever report what colcon actually did; and
 * the **driver** ``pixi run test`` invokes, which deletes stale results, runs
   ``colcon test``, runs the workspace-tooling suite (the tests for this very
   file), surfaces every result via ``colcon test-result --all``, and then
@@ -32,10 +47,12 @@ Usage::
     python scripts/check_test_integrity.py                  # full honest run
     python scripts/check_test_integrity.py --audit-only     # just re-read XML
     python scripts/check_test_integrity.py --packages-select robot_skills
+    python scripts/check_test_integrity.py --update-baseline  # re-cut floor
 """
 
 import argparse
 import collections
+import json
 import os
 from pathlib import Path
 import subprocess
@@ -61,23 +78,60 @@ MTIME_TOLERANCE = 2.0
 #: guard discounts exactly the tests colcon considers skipped.
 SKIPPED_ATTRIBUTES = ('skip', 'skipped', 'disabled')
 
+#: Test names (equivalently, test module names) that belong to a linter rather
+#: than to the package's own behaviour. Every ament linter test is a single
+#: function whose name matches its module's, so matching either is enough --
+#: and matching the *name* catches ``scripts/tests/test_lint.py``, which runs
+#: the same three linters from a module called something else.
+LINTER_TEST_NAMES = frozenset({
+    'test_copyright', 'test_flake8', 'test_pep257', 'test_mypy',
+    'test_xmllint', 'test_lint_cmake', 'test_cppcheck', 'test_cpplint',
+    'test_uncrustify',
+})
+
+#: Directory names that hold tests rather than implementation code.
+TEST_DIR_NAMES = frozenset({'test', 'tests'})
+
+#: Python files that are packaging/plumbing, never a package's implementation.
+NON_IMPLEMENTATION_FILES = frozenset({
+    '__init__.py', 'conftest.py', 'setup.py'})
+
+#: Checked-in per-package non-linter test counts -- the ratchet's floor.
+BASELINE_FILENAME = 'test_baseline.json'
+
+#: What to tell someone whose run just tripped (or could not read) the ratchet.
+BASELINE_HELP = ('if this is intended, re-cut the floor with '
+                 '`python scripts/check_test_integrity.py --update-baseline` '
+                 'and commit the result')
+
+#: Header written into the baseline file so it explains itself in a diff.
+BASELINE_COMMENT = (
+    'Per-package non-linter test counts: the floor scripts/'
+    'check_test_integrity.py ratchets against. Regenerate with '
+    '`python scripts/check_test_integrity.py --update-baseline`; a drop below '
+    'these numbers fails `pixi run test`.')
+
 #: Counts read from one JUnit XML file. ``sentinel_only`` is True when every
-#: test case in the file is colcon's placeholder (see above).
+#: test case in the file is colcon's placeholder (see above);
+#: ``non_linter`` counts the test cases that are not linter tests.
 XUnitCounts = collections.namedtuple(
-    'XUnitCounts', 'tests errors failures skipped sentinel_only')
+    'XUnitCounts', 'tests errors failures skipped sentinel_only non_linter')
 
 _STATUS_OK = 'ok'
 _STATUS_NO_RESULT = 'no-result'
 _STATUS_ZERO_TESTS = 'zero-tests'
 _STATUS_ALL_SKIPPED = 'all-skipped'
 _STATUS_STALE = 'stale'
+_STATUS_BELOW_BASELINE = 'below-baseline'
+_STATUS_NO_REAL_TESTS = 'no-real-tests'
 
 
 class PackageAudit:
     """The verdict on one expected package's test results."""
 
     def __init__(self, name, *, status, tests=0, errors=0, failures=0,
-                 skipped=0, result_files=(), newest_mtime=None, detail=''):
+                 skipped=0, non_linter=0, baseline=None, implementation=(),
+                 result_files=(), newest_mtime=None, detail=''):
         """Record a verdict; see :func:`audit_package` for how it is derived."""
         self.name = name
         self.status = status
@@ -85,6 +139,9 @@ class PackageAudit:
         self.errors = errors
         self.failures = failures
         self.skipped = skipped
+        self.non_linter = non_linter
+        self.baseline = baseline
+        self.implementation = tuple(implementation)
         self.result_files = list(result_files)
         self.newest_mtime = newest_mtime
         self.detail = detail
@@ -93,6 +150,13 @@ class PackageAudit:
     def executed(self):
         """Return the number of test bodies that actually ran."""
         return self.tests - self.skipped
+
+    @property
+    def baseline_delta(self):
+        """Return non-linter tests gained/lost vs. baseline, or None."""
+        if self.baseline is None:
+            return None
+        return self.non_linter - self.baseline
 
     @property
     def ok(self):
@@ -249,7 +313,76 @@ def parse_xunit(path):
     cases = list(root.iter('testcase'))
     sentinel_only = bool(cases) and all(
         case.get('name') == MISSING_RESULT_TESTCASE for case in cases)
-    return XUnitCounts(tests, errors, failures, skipped, sentinel_only)
+    # A result that reports counts without listing its cases (colcon's own
+    # placeholder, a hand-written summary) says nothing about *which* tests
+    # ran, so credit them all as real rather than invent a shortfall.
+    non_linter = (sum(1 for case in cases if not is_linter_case(case))
+                  if cases else tests)
+    return XUnitCounts(
+        tests, errors, failures, skipped, sentinel_only, non_linter)
+
+
+def is_linter_case(case):
+    """Return True when a JUnit ``<testcase>`` is one of the linter tests.
+
+    Linter tests are real tests -- they are why every package carries an
+    ``ament_lint`` test_depend -- but they exist whether or not the package
+    has any code, so they must not be counted as evidence that the package's
+    *behaviour* is tested. Parametrised names (``test_flake8[x]``) are matched
+    on their base name.
+    """
+    name = (case.get('name') or '').split('[')[0]
+    module = (case.get('classname') or '').split('.')[-1]
+    return name in LINTER_TEST_NAMES or module in LINTER_TEST_NAMES
+
+
+def find_implementation_modules(package_dir):
+    """Return a package's implementation modules, relative to its root.
+
+    "Implementation code" is read narrowly on purpose: python modules inside
+    an importable subpackage (a directory holding an ``__init__.py``) of the
+    package root, skipping test directories, ``__init__.py``/``conftest.py``/
+    ``setup.py``, and files that hold nothing but blank lines and comments.
+    A skeleton package -- one empty ``__init__.py`` and nothing else -- is
+    therefore honestly classified as having no implementation, so its three
+    linter tests remain an acceptable suite; the first real module to land in
+    it (a clamp function in ``robot_safety``, say) flips that immediately.
+    """
+    package_dir = Path(package_dir)
+    if not package_dir.is_dir():
+        return ()
+    modules = []
+    for child in sorted(package_dir.iterdir()):
+        if (not child.is_dir() or child.name in TEST_DIR_NAMES
+                or child.name.startswith('.')
+                or not (child / '__init__.py').is_file()):
+            continue
+        for path in sorted(child.rglob('*.py')):
+            relative = path.relative_to(child)
+            if (path.name in NON_IMPLEMENTATION_FILES
+                    or set(relative.parts) & TEST_DIR_NAMES):
+                continue
+            if _holds_code(path):
+                modules.append(str(path.relative_to(package_dir)))
+    return tuple(modules)
+
+
+def _holds_code(path):
+    """Return True when a python file holds more than blanks and comments."""
+    try:
+        text = path.read_text(encoding='utf-8', errors='replace')
+    except OSError:
+        return False
+    return any(line.strip() and not line.lstrip().startswith('#')
+               for line in text.splitlines())
+
+
+def implementation_map(source_dir, packages):
+    """Return ``{package: implementation modules}`` for ``packages``."""
+    wanted = set(packages)
+    return {name: find_implementation_modules(manifest.parent)
+            for name, manifest in find_manifests(source_dir)
+            if name in wanted}
 
 
 def find_result_files(directory):
@@ -271,7 +404,8 @@ def find_result_files(directory):
     return found
 
 
-def audit_package(name, build_base, *, min_mtime=None):
+def audit_package(name, build_base, *, min_mtime=None, baseline=None,
+                  implementation=()):
     """Audit one package's results under ``build_base`` and return a verdict.
 
     A package fails when it produced no parseable result file, when every
@@ -283,12 +417,22 @@ def audit_package(name, build_base, *, min_mtime=None):
     both of them success. A result whose only test case is colcon's
     ``pytest.missing_result`` placeholder counts as no result at all -- it is
     the record of a run that never happened.
+
+    Two further rules act on the *non-linter* count (see
+    :func:`is_linter_case`). A package listing ``implementation`` modules
+    (:func:`find_implementation_modules`) must have at least one non-linter
+    test, so code cannot land behind a suite of nothing but linters. And when
+    ``baseline`` is given, collecting fewer non-linter tests than it records
+    fails: the ratchet that catches a suite quietly shrinking. The count is
+    of tests *collected*, not executed, so a legitimately skipped test does
+    not trip the ratchet -- skips are the all-skipped rule's business.
     """
     directory = Path(build_base) / name
     files = find_result_files(directory) if directory.is_dir() else []
+    common = {'baseline': baseline, 'implementation': implementation}
     if not files:
         return PackageAudit(
-            name, status=_STATUS_NO_RESULT,
+            name, status=_STATUS_NO_RESULT, **common,
             detail=f'no JUnit result file under {directory}')
 
     newest = max(f.stat().st_mtime for f in files)
@@ -297,14 +441,14 @@ def audit_package(name, build_base, *, min_mtime=None):
                  if f.stat().st_mtime >= min_mtime - MTIME_TOLERANCE]
         if not fresh:
             return PackageAudit(
-                name, status=_STATUS_STALE, result_files=files,
+                name, status=_STATUS_STALE, result_files=files, **common,
                 newest_mtime=newest,
                 detail='only stale results ({}, newest {:.0f}s before this '
                        'run)'.format(_join(files), min_mtime - newest))
         files = fresh
         newest = max(f.stat().st_mtime for f in files)
 
-    tests = errors = failures = skipped = 0
+    tests = errors = failures = skipped = non_linter = 0
     sentinel_only = True
     for path in files:
         parsed = parse_xunit(path)
@@ -312,15 +456,16 @@ def audit_package(name, build_base, *, min_mtime=None):
         errors += parsed.errors
         failures += parsed.failures
         skipped += parsed.skipped
+        non_linter += parsed.non_linter
         sentinel_only = sentinel_only and parsed.sentinel_only
 
     verdict = PackageAudit(
         name, status=_STATUS_OK, tests=tests, errors=errors,
-        failures=failures, skipped=skipped, result_files=files,
-        newest_mtime=newest)
+        failures=failures, skipped=skipped, non_linter=non_linter,
+        result_files=files, newest_mtime=newest, **common)
     if sentinel_only:
         verdict.status = _STATUS_NO_RESULT
-        verdict.tests = verdict.skipped = 0
+        verdict.tests = verdict.skipped = verdict.non_linter = 0
         verdict.detail = (
             f'{_join(files)} holds only the colcon '
             f'{MISSING_RESULT_TESTCASE} placeholder: the test invocation '
@@ -333,17 +478,92 @@ def audit_package(name, build_base, *, min_mtime=None):
         verdict.detail = (
             f'{_join(files)} reports {tests} collected tests but all '
             f'{skipped} were skipped: no test body ran')
+    elif verdict.implementation and non_linter == 0:
+        verdict.status = _STATUS_NO_REAL_TESTS
+        verdict.detail = (
+            f'holds implementation code ({_join_names(verdict.implementation)})'
+            f' but all {tests} collected tests are linter tests: nothing '
+            f'tests what this package does')
+    elif baseline is not None and non_linter < baseline:
+        verdict.status = _STATUS_BELOW_BASELINE
+        verdict.detail = (
+            f'{non_linter} non-linter tests, {baseline - non_linter} below '
+            f'the baseline of {baseline}: tests were removed or stopped being '
+            f'collected -- {BASELINE_HELP}')
     return verdict
+
+
+def _join_names(names, limit=3):
+    """Render a few names, with a count of whatever is left over."""
+    names = list(names)
+    shown = ', '.join(names[:limit])
+    return shown if len(names) <= limit else f'{shown}, +{len(names) - limit}'
 
 
 def _join(paths):
     return ', '.join(str(p) for p in paths)
 
 
-def audit(packages, build_base, *, min_mtime=None):
+def audit(packages, build_base, *, min_mtime=None, baseline=None,
+          implementations=None):
     """Audit every expected package and return the list of verdicts."""
-    return [audit_package(name, build_base, min_mtime=min_mtime)
+    baseline = baseline or {}
+    implementations = implementations or {}
+    return [audit_package(name, build_base, min_mtime=min_mtime,
+                          baseline=baseline.get(name),
+                          implementation=implementations.get(name, ()))
             for name in packages]
+
+
+def load_baseline(path):
+    """Return ``{package: non-linter test count}`` from a baseline file.
+
+    Raises :class:`ValueError` when the file is missing or malformed rather
+    than falling back to "no baseline": a floor that quietly evaporates --
+    deleted, renamed, corrupted -- would silently switch the ratchet off,
+    which is precisely the class of failure this guard exists to catch.
+    """
+    path = Path(path)
+    try:
+        data = json.loads(path.read_text(encoding='utf-8'))
+    except OSError as error:
+        raise ValueError(
+            f'{path}: baseline file cannot be read ({error.strerror}); '
+            f'{BASELINE_HELP}')
+    except json.JSONDecodeError as error:
+        raise ValueError(f'{path}: baseline file is not valid JSON ({error})')
+    packages = data.get('packages') if isinstance(data, dict) else None
+    if not isinstance(packages, dict):
+        raise ValueError(
+            f'{path}: baseline file has no "packages" object; {BASELINE_HELP}')
+    counts = {}
+    for name, value in packages.items():
+        if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+            raise ValueError(
+                f'{path}: baseline for {name} is not a non-negative integer: '
+                f'{value!r}')
+        counts[name] = value
+    return counts
+
+
+def write_baseline(path, counts):
+    """Write ``counts`` as the baseline file, sorted for a legible diff."""
+    payload = {
+        'comment': BASELINE_COMMENT,
+        'packages': {name: counts[name] for name in sorted(counts)},
+    }
+    Path(path).write_text(json.dumps(payload, indent=2) + '\n',
+                          encoding='utf-8')
+
+
+def baseline_changes(baseline, audits):
+    """Return ``(name, old, new)`` for every count an update would change."""
+    changed = []
+    for verdict in sorted(audits, key=lambda a: a.name):
+        old = baseline.get(verdict.name)
+        if old != verdict.non_linter:
+            changed.append((verdict.name, old, verdict.non_linter))
+    return changed
 
 
 def unexpected_result_dirs(packages, build_base):
@@ -372,12 +592,24 @@ def format_age(seconds):
     return f'{seconds / 86400:.0f}d'
 
 
-def format_report(audits, *, notes=(), show_age=False):
-    """Render the per-package summary printed on both success and failure."""
+def format_baseline_delta(verdict):
+    """Render one package's non-linter delta vs. its baseline entry."""
+    if verdict.baseline is None:
+        return '-'
+    return f'{verdict.baseline_delta:+d}'
+
+
+def format_report(audits, *, notes=(), show_age=False, tolerated=()):
+    """Render the per-package summary printed on both success and failure.
+
+    ``tolerated`` names statuses that must not be reported as failures --
+    ``--update-baseline`` uses it so the counts it is about to re-cut are
+    shown as movement rather than as a verdict.
+    """
     width = max([len(a.name) for a in audits] + [len('package')])
     status_width = max([len(a.status) for a in audits] + [len('status')])
     header = (f'{"package".ljust(width)}  tests  skipped  errors  failures'
-              f'  {"status".ljust(status_width)}')
+              f'  non-lint  vs-base  {"status".ljust(status_width)}')
     if show_age:
         header += f'  {"age":>6}'
     lines = [
@@ -388,7 +620,8 @@ def format_report(audits, *, notes=(), show_age=False):
     now = time.time()
     for a in sorted(audits, key=lambda a: a.name):
         row = (f'{a.name.ljust(width)}  {a.tests:5d}  {a.skipped:7d}  '
-               f'{a.errors:6d}  {a.failures:8d}  '
+               f'{a.errors:6d}  {a.failures:8d}  {a.non_linter:8d}  '
+               f'{format_baseline_delta(a):>7}  '
                f'{a.status.ljust(status_width)}')
         if show_age:
             age = ('-' if a.newest_mtime is None
@@ -398,13 +631,15 @@ def format_report(audits, *, notes=(), show_age=False):
     lines.append('-' * len(header))
     total = sum(a.tests for a in audits)
     total_skipped = sum(a.skipped for a in audits)
+    total_non_linter = sum(a.non_linter for a in audits)
     summary = f'{len(audits)} packages, {total} tests collected'
     if total_skipped:
         summary += f' ({total_skipped} skipped)'
+    summary += f', {total_non_linter} of them non-linter'
     lines.append(summary)
     lines.extend(notes)
 
-    bad = [a for a in audits if not a.ok]
+    bad = [a for a in audits if not a.ok and a.status not in tolerated]
     for a in sorted(bad, key=lambda a: a.name):
         lines.append(f'FAIL {a.name}: {a.detail}')
     if bad:
@@ -496,6 +731,75 @@ def _notes(narrowed, packages, unowned, args):
         for name in unexpected_result_dirs(packages, args.build_base)]
 
 
+def _baseline_notes(baseline, packages, narrowed, error, updating=False):
+    """Render the baseline-related lines appended to the report.
+
+    A package with no baseline entry, or an entry for a package that is no
+    longer here, is reported but never fatal: adding a package must not fail
+    the run before its first ``--update-baseline``, and the "implementation
+    code needs real tests" rule already covers the case that matters. An
+    updating run is about to fix both, so it says nothing.
+    """
+    if error is not None:
+        return [f'error: {error}']
+    if updating:
+        return []
+    notes = [
+        f'note: {name} has no entry in the test-count baseline (new '
+        f'package?), so nothing ratchets it yet; {BASELINE_HELP}'
+        for name in packages if name not in baseline]
+    if narrowed:
+        return notes
+    return notes + [
+        f'note: the test-count baseline still lists {name}, which is not in '
+        f'this workspace (renamed or removed?); {BASELINE_HELP}'
+        for name in sorted(set(baseline) - set(packages))]
+
+
+def _is_own_workspace(source_dir, repo_root):
+    """Return True when ``source_dir`` is this repository's own ``src/``."""
+    try:
+        return Path(source_dir).resolve() == (Path(repo_root) / 'src').resolve()
+    except OSError:
+        return False
+
+
+def _update_baseline(path, baseline, audits, prune=False):
+    """Rewrite the baseline from ``audits``; return 0 on success, 1 if not.
+
+    Refuses to write from a run in which some package produced no usable
+    result at all -- a baseline cut from a broken run would bake that
+    brokenness in as the new floor. A package below its old floor is the
+    normal reason to be here, so that alone does not block the update; a
+    package holding implementation code with no real test never becomes
+    acceptable, so it does.
+
+    ``prune`` drops entries for packages the run did not cover, which is
+    right for a whole-workspace run (the package is gone) and wrong for a
+    narrowed one (the package was merely not selected).
+    """
+    blockers = [a for a in audits
+                if a.status not in (_STATUS_OK, _STATUS_BELOW_BASELINE)]
+    if blockers:
+        print('refusing to update the test-count baseline from a run that is '
+              'not otherwise green: ' +
+              ', '.join(f'{a.name} ({a.status})'
+                        for a in sorted(blockers, key=lambda a: a.name)))
+        return 1
+    counts = {} if prune else dict(baseline)
+    counts.update({a.name: a.non_linter for a in audits})
+    changed = baseline_changes(baseline, audits)
+    dropped = sorted(set(baseline) - set(counts))
+    write_baseline(path, counts)
+    for name, old, new in changed:
+        print(f'baseline {name}: {"-" if old is None else old} -> {new}')
+    for name in dropped:
+        print(f'baseline {name}: {baseline[name]} -> dropped (no such '
+              f'package in this workspace)')
+    print(f'wrote {path} ({len(changed)} package(s) changed); commit it')
+    return 0
+
+
 def main(argv=None):
     """Parse arguments, run the requested stages, and return an exit code."""
     repo_root = Path(__file__).resolve().parent.parent
@@ -517,6 +821,19 @@ def main(argv=None):
         '--packages-select', nargs='+', metavar='NAME', default=None,
         help='narrow the run to these packages; the result is a PARTIAL '
              'run and is not a whole-workspace verdict')
+    parser.add_argument(
+        '--baseline', default=None,
+        help=f'per-package non-linter test-count floor. Defaults to the '
+             f'checked-in scripts/{BASELINE_FILENAME}, which describes THIS '
+             f"repository's workspace, so it is used only when --source-dir "
+             f"is this repository's src/; point a run at another source tree "
+             f'and the ratchet is inert unless you name its own baseline')
+    parser.add_argument(
+        '--update-baseline', action='store_true',
+        help='re-cut the baseline from this run instead of ratcheting '
+             'against it, and commit the result: the supported way to record '
+             'legitimately added or removed tests. Refuses to write from a '
+             'run whose packages did not all produce a usable result')
     args = parser.parse_args(argv)
 
     if not Path(args.source_dir).is_dir():
@@ -541,14 +858,56 @@ def main(argv=None):
     else:
         packages.append(TOOLING_PACKAGE)
 
+    # The checked-in baseline describes this repository's own workspace, so a
+    # run pointed at some other source tree (a fixture, a scratch workspace)
+    # ratchets only against a baseline it was explicitly given -- otherwise
+    # this repo's counts would be applied to packages they say nothing about.
+    baseline_path = args.baseline
+    if baseline_path is None and _is_own_workspace(args.source_dir, repo_root):
+        baseline_path = str(Path(__file__).resolve().parent
+                            / BASELINE_FILENAME)
+    if baseline_path is None and args.update_baseline:
+        parser.error(
+            '--update-baseline needs --baseline: --source-dir is not this '
+            f"repository's src/, so scripts/{BASELINE_FILENAME} does not "
+            f'describe it')
+
+    baseline, baseline_error = {}, None
+    if baseline_path is not None:
+        try:
+            baseline = load_baseline(baseline_path)
+        except ValueError as error:
+            # Bootstrapping (or repairing) the file is exactly what
+            # --update-baseline is for, so only a ratcheting run fails on it.
+            baseline_error = None if args.update_baseline else str(error)
+
+    implementations = implementation_map(args.source_dir, packages)
+    if TOOLING_PACKAGE in packages:
+        # The pseudo-package's implementation is this very script, and the
+        # suite that tests it is the reason the whole guard can be trusted.
+        implementations[TOOLING_PACKAGE] = (Path(__file__).name,)
+
     notes = _notes(narrowed, packages, unowned, args)
+    if baseline_path is not None:
+        notes += _baseline_notes(baseline, packages, narrowed, baseline_error,
+                                 updating=args.update_baseline)
+    # The counts --update-baseline is about to rewrite must not read as a
+    # verdict, so a shortfall is reported as movement instead of failure.
+    tolerated = frozenset(
+        [_STATUS_BELOW_BASELINE] if args.update_baseline else [])
 
     if args.audit_only:
-        audits = audit(packages, args.build_base)
+        audits = audit(packages, args.build_base, baseline=baseline,
+                       implementations=implementations)
         print('*** --audit-only: nothing was re-run; the ages below are how '
               'old this evidence is ***', flush=True)
-        print(format_report(audits, notes=notes, show_age=True))
-        return 0 if all(a.ok for a in audits) else 1
+        print(format_report(audits, notes=notes, show_age=True,
+                            tolerated=tolerated))
+        rc = 0 if all(a.ok or a.status in tolerated for a in audits) else 1
+        if args.update_baseline:
+            rc |= _update_baseline(baseline_path, baseline, audits,
+                                   prune=not narrowed)
+        return 1 if (rc or baseline_error) else 0
 
     if narrowed:
         print('*** PARTIAL RUN: only {} -- not a whole-workspace verdict ***'
@@ -579,15 +938,24 @@ def main(argv=None):
                       '--test-result-base', str(args.build_base)],
                      cwd=str(repo_root))
 
-    audits = audit(packages, args.build_base, min_mtime=started)
-    print(format_report(audits, notes=notes))
-    rc_audit = 0 if all(a.ok for a in audits) else 1
+    audits = audit(packages, args.build_base, min_mtime=started,
+                   baseline=baseline, implementations=implementations)
+    print(format_report(audits, notes=notes, tolerated=tolerated))
+    rc_audit = 0 if all(a.ok or a.status in tolerated for a in audits) else 1
+
+    rc_baseline = 1 if baseline_error else 0
+    if baseline_error:
+        print(f'error: {baseline_error}')
+    if args.update_baseline:
+        rc_baseline |= _update_baseline(baseline_path, baseline, audits,
+                                        prune=not narrowed)
 
     stages = {
         'colcon test': rc_test,
         'workspace-tooling tests': rc_tooling,
         'colcon test-result': rc_result,
         'test integrity audit': rc_audit,
+        'test-count baseline': rc_baseline,
     }
     failed = [name for name, rc in stages.items() if rc]
     if failed:

@@ -12,6 +12,11 @@ ros-jazzy-desktop = "*"
 colcon-common-extensions = "*"
 # Workspace source management
 python = "*"
+# The workspace-tooling suite shells out to real `git init`/`git add` (the
+# guard decides package ownership from the git index), so git must come from
+# the environment rather than leaking in from the host: on a container built
+# from `pixi install` alone there is no ambient git and those tests error.
+git = "*"
 
 # TODO (verify availability on robostack-jazzy; source-build in this env if missing):
 #   ros-jazzy-moveit                (MoveIt 2 — confirmed present on channel)

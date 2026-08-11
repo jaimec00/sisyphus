@@ -88,6 +88,14 @@ merges, then pruned. The nightly job cleans stragglers.
 ## Automated checks
 - **GitHub CI (PRs):** light guards — fails if `docs/features/` is non-empty
   (ephemeral docs must be deleted at merge). Heavy tests run on the laptop.
+- **Test-integrity guard (`pixi run test`):** refuses to call a hollow run
+  green — a package with no result file, zero collected tests, or an
+  all-skipped suite fails. It also **ratchets**: `scripts/test_baseline.json`
+  records each package's non-linter test count, and dropping below it fails,
+  as does a package that grows implementation code while its only tests are
+  ament linters. When tests are legitimately added or removed, re-cut the
+  floor and commit it in the same PR:
+  `pixi run python scripts/check_test_integrity.py --update-baseline`.
 - **Laptop nightly cron:** runs the full suite on `main`, reports regressions.
 - **Sisyphus (Pi) cron:** polls open PR statuses + manager comments (escalations,
   follow-ups, retros), squash-merges green PRs (escalating to Jaime only when a merge is genuinely tricky), answers escalations.

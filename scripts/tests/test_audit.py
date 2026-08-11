@@ -33,6 +33,10 @@ timestamp="2026-08-10T04:17:40.162289-04:00" hostname="olivia">{cases}\
 CASE = '<testcase classname="pkg.test.test_thing" name="test_thing" \
 time="0.001" />'
 
+# What the ament linter tests every package carries look like in a result.
+LINTER_CASE = '<testcase classname="pkg.test.test_flake8" name="test_flake8" \
+time="0.001" />'
+
 # What pytest writes for a test skipped by e.g. ``pytest.importorskip``.
 SKIPPED_CASE = '<testcase classname="pkg.test.test_thing" name="test_thing" \
 time="0.001"><skipped type="pytest.skip" message="could not import \
@@ -51,14 +55,20 @@ file."/>
 
 
 def write_result(build_base, package, *, tests, errors=0, failures=0,
-                 skipped=0, name='pytest.xml'):
-    """Write a pytest-shaped JUnit result for ``package`` and return its path."""
+                 skipped=0, linters=0, name='pytest.xml'):
+    """Write a pytest-shaped JUnit result for ``package`` and return its path.
+
+    ``tests`` is the total collected count; ``skipped`` and ``linters`` say
+    how many of those cases are skips and ament linter tests respectively,
+    and the rest are ordinary tests of the package's own behaviour.
+    """
     directory = Path(build_base) / package
     directory.mkdir(parents=True, exist_ok=True)
     path = directory / name
     path.write_text(PYTEST_RESULT.format(
         tests=tests, errors=errors, failures=failures, skipped=skipped,
-        cases=SKIPPED_CASE * skipped + CASE * (tests - skipped)))
+        cases=(SKIPPED_CASE * skipped + LINTER_CASE * linters
+               + CASE * (tests - skipped - linters))))
     return path
 
 
