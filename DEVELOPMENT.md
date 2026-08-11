@@ -35,21 +35,24 @@ state substrate and the trigger.
    Code manager in `tmux`. There is **no backfill cron / Actions-runner
    trigger** — work is only ever started by an explicit call to the script.
 3. **Context** — `context-explorer` explores the repo → `context.md`.
-4. **Implement** — `implementer` builds the feature + tests, commits in small
+4. **Rule** — the manager decides context-explorer's open questions as explicit
+   **manager rulings**, recorded in `status.md`, *before* dispatching the
+   implementer; a genuine design fork escalates to Sisyphus instead.
+5. **Implement** — `implementer` builds the feature + tests, commits in small
    increments, writes `implementation.md`.
-5. **Red-team** — `red-team` (read-only) reviews source + tests vs. acceptance
+6. **Red-team** — `red-team` (read-only) reviews source + tests vs. acceptance
    criteria → `red_team.md` (severity rubric).
-6. **Fix** — `implementer` addresses BLOCK items (≤2 rounds; surviving NOTES →
+7. **Fix** — `implementer` addresses BLOCK items (≤2 rounds; surviving NOTES →
    follow-up **comment on the issue**; Sisyphus files them).
-7. **Test** — `test-runner` runs the suite, reporting pass/fail + log path only.
-   Loop 4–7 until green.
-8. **PR** — the manager opens a **squash-merge** PR (full local suite passes;
+8. **Test** — `test-runner` runs the suite, reporting pass/fail + log path only.
+   Loop 5–8 until green.
+9. **PR** — the manager opens a **squash-merge** PR (full local suite passes;
    light GitHub CI runs guards). The `docs/features/<slug>/` docs stay for review;
    the manager posts a **retro comment on the PR**.
-9. **Merge** — when green, Sisyphus **deletes the ephemeral `docs/features/<slug>/`
-   docs** (the CI "docs clean" gate then passes), picks order, and squash-merges
-   (no manual approval gate — green is the gate; Sisyphus merges on its own judgment — from the PR description, comments, and green CI, not by re-running tests — and asks Jaime only when a merge is genuinely tricky). Other open worktrees then rebase
-   on main, re-green, and take their turn.
+10. **Merge** — when green, Sisyphus **deletes the ephemeral `docs/features/<slug>/`
+    docs** (the CI "docs clean" gate then passes), picks order, and squash-merges
+    (no manual approval gate — green is the gate; Sisyphus merges on its own judgment — from the PR description, comments, and green CI, not by re-running tests — and asks Jaime only when a merge is genuinely tricky). Other open worktrees then rebase
+    on main, re-green, and take their turn.
 
 `status.md` tracks phase/round/blockers so any agent (or a restart) resumes
 deterministically.
