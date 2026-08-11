@@ -98,7 +98,12 @@ def test_the_binding_carries_a_placeholder_account_not_a_credential():
 
 
 def test_the_fragment_contains_no_secret():
-    """A credential must never reach this repo, in any key or any value."""
+    """A credential must never reach this repo, in any key or any value.
+
+    The detector is checked against a token-shaped sample first: a scan that
+    cannot recognise the thing it is looking for is worse than no scan.
+    """
+    assert TOKEN_SHAPE.search('"botToken": "8123456789:AAH_notARealTokenButShaped"')
     text = json.dumps(FRAGMENT)
     assert not TOKEN_SHAPE.search(text), 'something token-shaped is in the fragment'
     for key, value in walk(FRAGMENT):
