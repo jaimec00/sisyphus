@@ -152,6 +152,10 @@ that is already in the observation:
 - near the robot: take `robot.pose.position` and offset it by ~0.4 m;
 - back where something was: you saw its pose before you picked it up.
 
+Putting a second object down on the same surface? Slide the spot ~0.15 m to
+the side of the first one. Nothing stops you dropping it exactly where the
+last one went, and nothing good comes of it.
+
 Then check the result. `out_of_reach` means the pose is fine but you are not
 close enough — `navigate_to` the nearest location and repeat the same `place`.
 
@@ -180,7 +184,8 @@ call navigate_to({"location": "table"})
 -> ok. "cup_1" is still there: the table is not clear yet.
 
 call grasp({"object_id": "cup_1"})
--> ok. Then navigate to the kitchen and place it the same way.
+-> ok. Then navigate to the kitchen and place it beside the book, not on top
+   of it: the same pose with y slid over by 0.15 m.
 ```
 
 Report: "Table's clear — the book and the cup are on the kitchen counter."

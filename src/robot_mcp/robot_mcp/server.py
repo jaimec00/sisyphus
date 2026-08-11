@@ -47,7 +47,6 @@ from robot_mcp.tools import OBSERVATION_TOOL, RESET_TOOL, TOOL_NAMES, TOOLS
 from robot_safety import (
     KeepOutBoxGuard,
     NullCollisionGuard,
-    SafetyConfigError,
     SafetyEvent,
     SafetyLayer,
     SafetyLimits,
@@ -146,22 +145,23 @@ def default_safety_layer(limits: SafetyLimits | None = None) -> SafetyLayer:
     never come from two different reads of the file.
 
     A limits file with no regions is a configuration choice, not a broken
-    server: ``KeepOutBoxGuard.from_limits`` refuses to build a guard that would
-    check nothing, and that refusal alone falls back to
-    :class:`~robot_safety.NullCollisionGuard`.  Any *other* configuration error
-    is left to raise -- a malformed limits file must not quietly become a
-    permissive server.
+    server, so that one case is answered *before* asking -- with the same
+    ``NullCollisionGuard`` ``KeepOutBoxGuard.from_limits`` would have refused
+    to build.  **Nothing is caught here**: a malformed limits file raises out
+    of this function rather than quietly becoming a permissive server, and it
+    stays that way whatever ``robot_safety`` learns to validate next.
 
-    Still stub geometry (a floor half-space, no robot model, no swept volume);
-    real collision checking is a later feature.
+    Still stub geometry: it judges commanded target poses against axis-aligned
+    boxes.  No robot model, no mesh, no swept volume, so a *carried* object or
+    a driving base is not checked -- real collision geometry is a later
+    feature (invariant 5).
     """
     if limits is None:
         limits = SafetyLimits.defaults()
-    try:
-        guard = KeepOutBoxGuard.from_limits(limits)
-    except SafetyConfigError:
-        guard = NullCollisionGuard()
-    return SafetyLayer(limits=limits, collision_guard=guard)
+    if not limits.keep_out_boxes:
+        return SafetyLayer(limits=limits, collision_guard=NullCollisionGuard())
+    return SafetyLayer(
+        limits=limits, collision_guard=KeepOutBoxGuard.from_limits(limits))
 
 
 class SkillToolRouter:

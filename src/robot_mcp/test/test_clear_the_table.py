@@ -50,6 +50,12 @@ MAX_STEPS = 8
 #: How far above a support surface to release a carried object.
 DROP_CLEARANCE = 0.10
 
+#: How far to the side of the previous drop to put the next object down.  The
+#: Mock has no collision model, so stacking two rigid bodies at one point would
+#: "work" -- and would be neither what the prompt teaches nor what a Sim
+#: backend would tolerate.
+SIDE_BY_SIDE = 0.15
+
 #: The travel range the shipped safety limits allow.
 COLUMN = SafetyLimits.defaults().column
 
@@ -76,18 +82,21 @@ def clutter(observation: dict) -> list[dict]:
     return sorted(nearby, key=lambda item: _distance(item['pose']['position'], base))
 
 
-def support_pose(observation: dict, label: str = 'counter') -> dict:
+def support_pose(observation: dict, label: str = 'counter', offset_y: float = 0.0) -> dict:
     """Return a pose just above the nearest surface labelled ``label``.
 
     The answer to "``place`` wants metric coordinates and I am an LLM": derive
     them from a pose already in the observation instead of inventing numbers.
+    ``offset_y`` slides the spot along the surface, which is how a second
+    object gets put down *beside* the first rather than on top of it.
     """
     base = observation['robot']['pose']['position']
     surfaces = [item for item in observation['objects'] if item['label'] == label]
     assert surfaces, f'no {label!r} in the scene to put anything on'
     nearest = min(surfaces, key=lambda item: _distance(item['pose']['position'], base))
     spot = nearest['pose']['position']
-    return Pose.from_xyz(spot['x'], spot['y'], spot['z'] + DROP_CLEARANCE).to_dict()
+    return Pose.from_xyz(
+        spot['x'], spot['y'] + offset_y, spot['z'] + DROP_CLEARANCE).to_dict()
 
 
 async def call(client, name: str, arguments: dict | None = None) -> dict:
@@ -101,13 +110,17 @@ async def call(client, name: str, arguments: dict | None = None) -> dict:
     return payload(result)
 
 
-async def clear_the_table(client, place_pose=None) -> list[str]:
-    """Drive the chore to completion, returning the ids actually put away.
+async def clear_the_table(client, place_pose=None) -> dict[str, dict]:
+    """Drive the chore to completion, returning ``{id: the pose it was put at}``.
 
     One tool call per step, each one's returned observation deciding the next
     -- the loop D4 asks for and D21 hands to OpenClaw's native turn loop.
+
+    Returning the *commanded* poses is what lets the caller assert where each
+    object ended up exactly, rather than asserting it is no longer near
+    something.
     """
-    put_away = []
+    put_away: dict[str, dict] = {}
     for _ in range(MAX_STEPS):
         at_table = await call(client, 'navigate_to', {'location': TABLE})
         assert at_table['status'] == 'ok', at_table['reason']
@@ -121,10 +134,12 @@ async def clear_the_table(client, place_pose=None) -> list[str]:
 
         carried = await call(client, 'navigate_to', {'location': KITCHEN})
         assert carried['status'] == 'ok', carried['reason']
-        pose = support_pose(carried['observation']) if place_pose is None else place_pose
+        pose = (
+            support_pose(carried['observation'], offset_y=len(put_away) * SIDE_BY_SIDE)
+            if place_pose is None else place_pose)
         placed = await call(client, 'place', {'pose': pose})
         assert placed['status'] == 'ok', placed['reason']
-        put_away.append(target)
+        put_away[target] = pose
     raise AssertionError(f'the loop did not terminate in {MAX_STEPS} rounds: {put_away}')
 
 
@@ -147,19 +162,23 @@ async def test_clear_the_table_end_to_end_over_mcp(backend):
         final = await call(client, 'navigate_to', {'location': TABLE})
 
     assert sorted(put_away) == sorted(expected)
-    # The acceptance criterion, read the way the agent reads it: standing at
-    # the table, there is nothing left to pick up.
-    assert clutter(final['observation']) == []
-    # ...and the objects are in the kitchen, not deleted or still in a gripper.
-    kitchen_x = 2.0
-    for object_id in put_away:
+    # "Cleared" stated positively and exactly: every object that started on the
+    # table is now unheld, at the very pose the driver commanded for it, and no
+    # two of them are in the same place. No proximity margin decides this --
+    # an object that merely drifted out of some radius would fail it.
+    positions = []
+    for object_id, pose in put_away.items():
         item = next(
             entry for entry in final['observation']['objects']
             if entry['object_id'] == object_id)
         assert item['held_by'] is None
-        assert item['pose']['position']['x'] == pytest.approx(kitchen_x, abs=0.6)
+        assert item['pose']['position'] == pose['position'], object_id
+        positions.append(tuple(sorted(item['pose']['position'].items())))
+    assert len(set(positions)) == len(positions), 'two objects were stacked in one spot'
     for gripper in final['observation']['robot']['grippers']:
         assert gripper['held_object_id'] is None
+    # ...and read the way the agent reads it, there is nothing left to pick up.
+    assert clutter(final['observation']) == []
 
 
 async def test_every_step_of_the_run_is_readable_back_as_a_skill_result(backend):

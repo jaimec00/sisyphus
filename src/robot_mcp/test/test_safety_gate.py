@@ -126,9 +126,9 @@ async def test_the_default_gate_reads_one_limit_set_for_envelope_and_geometry():
 def test_a_limits_file_with_no_regions_yields_a_null_guard_not_a_dead_server():
     """Configuring no keep-out region is a choice; it must not break startup.
 
-    ``KeepOutBoxGuard.from_limits`` deliberately refuses to build a guard that
-    would veto nothing.  That refusal is the *only* one swallowed here -- and
-    it degrades to the honest null guard rather than to no server at all.
+    Answered before asking, so nothing is caught: a guard over no regions
+    would veto nothing (``KeepOutBoxGuard.from_limits`` refuses to build one),
+    and the honest answer is the null guard rather than no server at all.
     """
     boxless = SafetyLimits.from_yaml(
         'column: {min_height: 0.0, max_height: 1.2}\n'
