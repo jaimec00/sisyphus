@@ -42,7 +42,13 @@ from robot_skills import (
     SKILL_TYPES,
 )
 
-__all__ = ['policy_for', 'SKILL_POLICIES', 'SkillPolicy', 'unclassified_skills']
+__all__ = [
+    'policy_for',
+    'SKILL_POLICIES',
+    'SkillPolicy',
+    'unclassified_skills',
+    'unrecognised_reason',
+]
 
 
 @dataclass(frozen=True)
@@ -99,15 +105,48 @@ SKILL_POLICIES: Mapping[str, SkillPolicy] = MappingProxyType({
 })
 
 
+def unrecognised_reason(skill: Skill) -> str | None:
+    """Return why this layer cannot classify ``skill``, or ``None`` if it can.
+
+    Three ways a skill can be unrecognisable, and the caller's log wants to
+    tell them apart:
+
+    * its wire name is not in the shared registry at all;
+    * the name is registered, but this object is not that type -- a
+      name-squatter whose fields are not the ones the policy promises.  The
+      policy table is keyed by name, so without this check a squatter would be
+      handed the real skill's policy and the layer would reach for a field it
+      does not have, raising ``AttributeError`` from inside a gate whose
+      contract is to *return* refusals;
+    * it is a genuine registered skill that nobody has classified yet.
+
+    All three mean the same thing to the gate -- refuse -- which is why they
+    share one event kind and differ only in ``detail``.
+    """
+    registered = SKILL_TYPES.get(skill.name)
+    if registered is None:
+        return f'{skill.name!r} is not a skill in the shared registry'
+    if not isinstance(skill, registered):
+        return (
+            f'{type(skill).__name__} claims the wire name {skill.name!r}, which belongs '
+            f'to {registered.__name__}, so its shape is not the one that name promises')
+    if skill.name not in SKILL_POLICIES:
+        return f'{skill.name!r} is not classified by this safety layer'
+    return None
+
+
 def policy_for(skill: Skill) -> SkillPolicy | None:
     """Return how this layer treats ``skill``, or ``None`` if it is unclassified.
 
     ``None`` is not "nothing applies" -- that is a :class:`SkillPolicy` with no
     flags set, and it is written out for the skills that mean it.  ``None``
     means *this layer has no opinion recorded*, which the gate turns into a
-    refusal.
+    refusal.  Derived from :func:`unrecognised_reason` so the verdict and the
+    logged explanation cannot disagree.
     """
-    return SKILL_POLICIES.get(skill.name)
+    if unrecognised_reason(skill) is not None:
+        return None
+    return SKILL_POLICIES[skill.name]
 
 
 def unclassified_skills(registry: Mapping[str, type[Skill]] = SKILL_TYPES) -> tuple[str, ...]:

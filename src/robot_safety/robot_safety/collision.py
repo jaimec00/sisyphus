@@ -50,7 +50,23 @@ def target_pose(skill: Skill) -> Pose | None:
 
 @runtime_checkable
 class CollisionGuard(Protocol):
-    """Anything that can veto a skill on geometric grounds."""
+    """Anything that can veto a skill on geometric grounds.
+
+    Two obligations on an implementor, both enforced by the layer:
+
+    1. **Abort, never rewrite.**  Return an event with no ``clamped_value``.
+       Nudging a 6-DoF goal out of the way would put the object somewhere
+       nobody asked for, which is worse than refusing; a returned clamp record
+       raises ``ValueError`` out of ``SafetyLayer.filter``.  Returning anything
+       that is not a :class:`SafetyEvent` or ``None`` raises ``TypeError``.
+    2. **Be total.**  ``check`` is called on *every* skill the gate accepts so
+       far, including ones with no Cartesian target, and it must answer rather
+       than raise.  An exception is not caught: it propagates out of ``filter``
+       and no motion follows.  That is the right failure -- a guard that
+       crashed checked nothing -- but it is an outage, not a refusal, so a
+       guard that cannot decide should return ``None`` (clear) or an event
+       (abort) on purpose rather than by accident.
+    """
 
     def check(self, skill: Skill, state: SafetyState) -> SafetyEvent | None:
         """Return a :class:`SafetyEvent` to abort the skill, or ``None`` if clear."""

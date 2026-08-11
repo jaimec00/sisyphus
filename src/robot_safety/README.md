@@ -2,7 +2,11 @@
 
 The **dynamic-safety layer** (D4, mandatory from day one): it sits between
 brain-issued skills and the backend and **clamps or aborts** them, returning a
-structured safety event rather than raising (D17).
+structured safety event (D17). Every *safety verdict* is a returned value —
+nobody has to catch an exception to learn that a motion is unsafe. Exceptions
+are reserved for the other kind of problem: a caller passing the wrong type, or
+an injected collision guard breaking its protocol. See `SafetyLayer.filter`'s
+docstring for the exact list.
 
 Split by *kind* of limit, not by component:
 

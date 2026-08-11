@@ -48,7 +48,13 @@ from robot_safety.limits import (
     SafetyConfigError,
     SafetyLimits,
 )
-from robot_safety.policy import policy_for, SKILL_POLICIES, SkillPolicy, unclassified_skills
+from robot_safety.policy import (
+    policy_for,
+    SKILL_POLICIES,
+    SkillPolicy,
+    unclassified_skills,
+    unrecognised_reason,
+)
 from robot_safety.state import MotionAxis, SafetyState
 
 __all__ = [
@@ -72,4 +78,5 @@ __all__ = [
     'SkillPolicy',
     'target_pose',
     'unclassified_skills',
+    'unrecognised_reason',
 ]

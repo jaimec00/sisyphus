@@ -40,6 +40,7 @@ from safety_fixtures import (
     make_limits,
     make_observation,
     make_state,
+    NameSquattingSkill,
     UnclassifiedSkill,
 )
 
@@ -381,6 +382,23 @@ def test_a_skill_this_layer_cannot_classify_is_refused(layer):
     assert isinstance(verdict, SafetyEvent)
     assert verdict.kind is SafetyEventKind.UNCLASSIFIED_SKILL
     assert 'wipe_surface' in verdict.detail
+
+
+def test_a_skill_of_the_wrong_shape_for_its_name_is_refused_not_crashed_on(layer):
+    """The gate returns a refusal where it would otherwise raise AttributeError.
+
+    ``NameSquattingSkill`` claims the ``grasp`` wire name without a ``side``
+    field.  Looking the policy up by name alone would hand it ``Grasp``'s
+    policy, and the force check would then read ``skill.side`` off an object
+    that has none -- an exception escaping a method whose contract is to return
+    structured verdicts.
+    """
+    verdict = layer.filter(NameSquattingSkill(), make_state())
+
+    assert isinstance(verdict, SafetyEvent)
+    assert verdict.kind is SafetyEventKind.UNCLASSIFIED_SKILL
+    assert 'NameSquattingSkill' in verdict.detail
+    assert 'grasp' in verdict.detail
 
 
 def test_an_unclassified_skill_is_refused_even_when_everything_reads_nominal(layer):

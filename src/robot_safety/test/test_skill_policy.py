@@ -21,9 +21,15 @@ waved through -- lives in ``test_safety_layer.py``.
 from dataclasses import fields, is_dataclass
 
 import pytest
-from robot_safety import policy_for, SKILL_POLICIES, SkillPolicy, unclassified_skills
+from robot_safety import (
+    policy_for,
+    SKILL_POLICIES,
+    SkillPolicy,
+    unclassified_skills,
+    unrecognised_reason,
+)
 from robot_skills import Skill, SKILL_TYPES
-from safety_fixtures import EXAMPLE_SKILLS, UnclassifiedSkill
+from safety_fixtures import EXAMPLE_SKILLS, NameSquattingSkill, UnclassifiedSkill
 
 
 def test_every_registered_skill_has_a_policy():
@@ -73,6 +79,33 @@ def test_each_flag_implies_the_field_the_layer_will_reach_for(name):
         assert 'pose' in names, name
 
 
+@pytest.mark.parametrize('name', sorted(SKILL_POLICIES))
+def test_each_judgeable_field_implies_the_flag_that_judges_it(name):
+    """The converse of the check above, and the one that closes the hole.
+
+    "Flag implies field" catches a policy that promises more than the skill
+    can deliver.  It does *not* catch the dangerous direction: a skill that
+    carries a pose but was classified as a bare ``SkillPolicy()`` is invisible
+    to the collision guard while every other test stays green -- the same
+    permissive-by-default gap the policy table exists to close, reached by
+    mis-classification instead of by omission.
+
+    ``side`` is deliberately **not** checked in this direction, and the
+    asymmetry is a decision, not an oversight: R11 says ``OpenGripper`` carries
+    a ``side`` and must never be force-gated, because opening is the remedy for
+    over-force.  A carried ``side`` therefore cannot imply ``closes_jaws``.
+    """
+    policy = SKILL_POLICIES[name]
+    names = {field.name for field in fields(SKILL_TYPES[name])}
+
+    if 'pose' in names:
+        assert policy.has_cartesian_target, (
+            f'{name} commands a pose that no collision guard would ever see')
+    if 'height' in names:
+        assert policy.clamps_column_height, (
+            f'{name} carries a height that nothing would clamp')
+
+
 def test_the_clamped_scalar_is_the_column_height_and_only_that():
     """Exactly one field is rewritten; anything else is a design change.
 
@@ -102,3 +135,25 @@ def test_the_stand_in_skill_does_not_pollute_the_shared_registry():
     """The fixture stands for a gap; it must not become part of the vocabulary."""
     assert UnclassifiedSkill.name not in SKILL_TYPES
     assert isinstance(UnclassifiedSkill(), Skill)
+
+
+def test_a_registered_name_on_the_wrong_type_gets_no_policy():
+    """Lookup is by name, so the name has to be checked against the type.
+
+    Otherwise a name-squatter is handed the real skill's policy and the layer
+    reaches for a field it does not have -- an ``AttributeError`` from inside a
+    gate whose whole contract is to *return* structured refusals.
+    """
+    squatter = NameSquattingSkill()
+
+    assert squatter.name in SKILL_POLICIES
+    assert policy_for(squatter) is None
+    assert 'grasp' in unrecognised_reason(squatter)
+    assert 'NameSquattingSkill' in unrecognised_reason(squatter)
+
+
+def test_the_three_ways_of_being_unrecognisable_read_differently():
+    """One verdict, three explanations: the log has to say which happened."""
+    assert unrecognised_reason(EXAMPLE_SKILLS['grasp']) is None
+    assert 'not a skill in the shared registry' in unrecognised_reason(UnclassifiedSkill())
+    assert 'not the one that name promises' in unrecognised_reason(NameSquattingSkill())

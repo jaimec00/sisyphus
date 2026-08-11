@@ -92,6 +92,30 @@ class UnclassifiedSkill(Skill, register=False):
         return cls(target=data['target'])
 
 
+@dataclass(frozen=True)
+class NameSquattingSkill(Skill, register=False):
+    """A skill claiming a registered wire name while having the wrong shape.
+
+    The policy table is keyed by wire name, so this is how a lookup by name
+    could hand an object the *real* skill's policy and then reach for a field
+    it does not have.  ``grasp`` promises ``object_id`` and ``side``; this one
+    has neither.
+    """
+
+    name: ClassVar[str] = 'grasp'
+
+    target: str = 'counter'
+
+    def _payload(self) -> dict[str, Any]:
+        """Return the skill's arguments, as any skill must be able to."""
+        return {'target': self.target}
+
+    @classmethod
+    def _from_payload(cls, data: Mapping[str, Any]) -> Self:
+        """Rebuild the stand-in from its dict form."""
+        return cls(target=data['target'])
+
+
 def make_gripper(
     side: Side,
     state: GripperState = GripperState.OPEN,

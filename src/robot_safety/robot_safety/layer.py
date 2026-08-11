@@ -40,7 +40,7 @@ from dataclasses import dataclass
 from robot_safety.collision import CollisionGuard, NullCollisionGuard
 from robot_safety.events import SafetyEvent, SafetyEventKind
 from robot_safety.limits import MotionLimits, SafetyLimits
-from robot_safety.policy import policy_for, SkillPolicy
+from robot_safety.policy import policy_for, SkillPolicy, unrecognised_reason
 from robot_safety.state import MotionAxis, SafetyState
 from robot_skills import ExtendColumn, Side, SIDE_ORDER, Skill
 
@@ -172,9 +172,24 @@ class SafetyLayer:
         executed.  A :class:`ClampedCall` means execute ``call.skill`` --
         which is the very object passed in unless ``call.was_clamped``.
 
-        Raises ``TypeError`` for arguments of the wrong type: that is a
-        programming error in the caller, not an unsafe robot, and silently
-        turning it into a safety event would hide it.
+        **Raise versus return, the rule:** every *safety verdict* is a returned
+        value, and every *programming or integration error* is an exception.
+        A caller must never have to catch something to learn that a motion is
+        unsafe, and must never be able to mistake a broken wiring-up for a
+        clean refusal.  So this method raises in exactly three cases, all of
+        them "somebody's code is wrong", none of them "the robot is unsafe":
+
+        * ``TypeError`` -- ``skill`` is not a :class:`~robot_skills.skills.Skill`
+          or ``state`` is not a :class:`SafetyState`;
+        * ``TypeError`` -- the injected collision guard's ``check`` returned
+          something that is neither a :class:`SafetyEvent` nor ``None``;
+        * ``ValueError`` -- that guard returned a *clamp record* (an event with
+          a ``clamped_value``); guards abort, they never rewrite.
+
+        A fourth case is not ours to raise: whatever an injected guard raises
+        propagates out of here untouched.  That is deliberate and fail-closed
+        -- a guard that crashed checked nothing, so no motion should follow --
+        and swallowing it would turn a broken guard into a clean pass.
         """
         if not isinstance(skill, Skill):
             raise TypeError(f'skill must be a Skill, got {type(skill).__name__}')
@@ -224,11 +239,10 @@ class SafetyLayer:
         """
         if policy is not None:
             return None
+        reason = unrecognised_reason(skill) or 'unclassified'
         return SafetyEvent(
             kind=SafetyEventKind.UNCLASSIFIED_SKILL,
-            detail=(
-                f'{skill.name!r} is not classified by this safety layer; refusing a '
-                'command whose limits nobody has decided'),
+            detail=f'{reason}; refusing a command whose limits nobody has decided',
         )
 
     def _check_collision(
