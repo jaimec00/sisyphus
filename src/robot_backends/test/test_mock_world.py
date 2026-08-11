@@ -23,6 +23,34 @@ def test_default_world_supports_the_briefs_scenario():
     assert world.start_pose == world.locations[world.start_location]
 
 
+def test_the_table_holds_more_than_one_graspable_object_to_clear():
+    """Clearing the table must be a *loop*, so the table needs a second thing.
+
+    With one object there, an agent that grasps once and reports "done" looks
+    correct, and the whole point of the first milestone (D21) is the
+    perceive -> act -> re-perceive loop.  The reach arithmetic is asserted, not
+    eyeballed: each object must be grabbable from the ``table`` stand point at
+    the starting column height, or the loop would need an ``extend_column``
+    step nobody wrote a prompt for.
+    """
+    world = default_world()
+    stand = world.locations['table']
+    on_table = [
+        spec for spec in world.objects
+        if spec.graspable and (spec.pose.position - stand.position).norm() < 1.0
+    ]
+
+    assert len(on_table) >= 2, [spec.object_id for spec in on_table]
+    for spec in on_table:
+        reachable = [
+            side for side in (Side.LEFT, Side.RIGHT)
+            if (spec.pose.position - world.robot.shoulder(
+                stand, world.start_column_height, side)).norm()
+            <= world.robot.reach_radius
+        ]
+        assert reachable, f'{spec.object_id} is unreachable from the table'
+
+
 def test_world_is_immutable_and_defensively_copied():
     """A backend cannot be reconfigured behind its own back."""
     locations = {'dock': Pose.from_xyz(0.0, 0.0, 0.0)}

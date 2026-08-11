@@ -174,14 +174,22 @@ def default_world() -> MockWorld:
     """Return the standard demo apartment used by the Mock backend and tests.
 
     Four named locations (``charger``, ``kitchen``, ``table``,
-    ``living_room``) and six objects, including the graspable ``mug_1`` on the
-    kitchen counter that the end-to-end scenario carries to the table.  Object
-    poses are chosen so that reaching one requires standing at the right
+    ``living_room``) and seven objects, including the graspable ``mug_1`` on
+    the kitchen counter that the end-to-end scenario carries to the table.
+    Object poses are chosen so that reaching one requires standing at the right
     location: grasping ``mug_1`` from the charger is out of reach.
 
     The kitchen holds three graspable objects (``mug_1``, ``plate_1``,
     ``bowl_1``) so both grippers can be filled and a third grasp still tried,
     plus the ungraspable ``counter_1`` they stand on.
+
+    The table holds **two** graspable objects (``book_1``, ``cup_1``), which is
+    what makes "clear the table" a *loop* rather than a single grasp: a brain
+    driving this world has to notice there is a second thing left.  Both are
+    within reach of either shoulder from the ``table`` stand point at the
+    starting column height (0.3 m puts a shoulder at z = 0.8 m; the furthest of
+    the two is ~0.41 m away, well inside the 0.85 m reach), so neither needs an
+    ``extend_column`` first.
     """
     return MockWorld(
         locations={
@@ -198,6 +206,7 @@ def default_world() -> MockWorld:
             ObjectSpec(
                 'counter_1', 'counter', Pose.from_xyz(2.40, 0.00, 0.45), graspable=False),
             ObjectSpec('book_1', 'book', Pose.from_xyz(0.30, 2.10, 0.75), graspable=True),
+            ObjectSpec('cup_1', 'cup', Pose.from_xyz(0.30, 1.90, 0.75), graspable=True),
             ObjectSpec('sofa_1', 'sofa', Pose.from_xyz(-2.00, 1.60, 0.40), graspable=False),
         ),
         start_column_height=0.3,
