@@ -1,12 +1,12 @@
 # Household Robot — Project Overview
 
-Source of truth for Jaime's project: build an **autonomous household-chore robot**. Seeded 2026-08-09; harness architecture + software stack settled same day (see `decisions.md`).
+Source of truth for Jaime's project: build an **autonomous household-chore robot**. Seeded 2026-08-09; harness architecture + software stack settled same day (see `decisions.md`). **Brain-location pivoted 2026-08-11 — the brain IS the OpenClaw Telegram agent itself, not a custom harness (see D21); scope is a slow low-cost chore robot, not a frontier competitor (D22).**
 
 ## Goal
-An autonomous household-chore robot driven by an LLM "brain." Target chores (deliberately **not** a single MVP): dishes, organizing/tidying, cleaning up, folding clothes + putting them away, eventually vacuuming. Optimize physical + software design for **LLM operability over raw speed** ("operational first, not too reactive").
+An autonomous household-chore robot driven by an LLM "brain." Target chores (deliberately **not** a single MVP): dishes, organizing/tidying, cleaning up, folding clothes + putting them away, eventually vacuuming. Optimize physical + software design for **LLM operability over raw speed** ("operational first, not too reactive"). **Scope (D22): a slow, low-cost robot that eventually gets some chores done — explicitly not competing with the frontier; classical/scripted skills first, learned skills only where unavoidable.**
 
 ## Reality check (grounding)
-Even well-funded commercial humanoids (1X NEO, $20k) still rely on human teleoperation for many of these tasks as of early 2026; laundry-folding is an industry-wide unsolved benchmark. Realistic path: **teleoperation-first data collection → learned skills on a narrowing subset**, on a cheap extendable dual-arm wheeled base, with an LLM planner on top. Full autonomy on all target chores is at/beyond the current frontier.
+Even well-funded commercial humanoids (1X NEO, $20k) still rely on human teleoperation for many of these tasks as of early 2026; laundry-folding is an industry-wide unsolved benchmark. Realistic path: **teleoperation-first data collection → learned skills on a narrowing subset**, on a cheap extendable dual-arm wheeled base, with an LLM planner on top. Full autonomy on all target chores is at/beyond the current frontier — and we are **not** chasing that frontier (D22): the near-term win is the LLM-planner + skill-API + sim loop working end-to-end, plus classical pick-and-place of rigid objects on cheap hardware, with teleop filling the gaps.
 
 ## Physical design (working target)
 - **Four-wheel mobile base** (wheels, not legs — cheaper, stable; LG CLOiD validates the wheeled-home form).
@@ -14,10 +14,12 @@ Even well-funded commercial humanoids (1X NEO, $20k) still rely on human teleope
 - **Tight torso; two extendable arms**, each with an elbow, claw/gripper end-effector. (Field converged on 2 arms; **>2 deferred** as a research risk — coordination + cost + cheap-servo stall-burn.)
 - **Head with RGB-D camera + mic** (mic post-MVP). **Standard camera placement** (wrist + front), **not 360** — keeps compatibility with off-the-shelf VLAs. Extra cams for navigation only.
 
-## Harness architecture (settled 2026-08-09)
+## Harness architecture (settled 2026-08-09; brain implementation pivoted 2026-08-11 — D21)
 Hierarchical: **slow LLM brain over fast local skills.** Layers:
+
+> **Brain implementation (D21):** the brain is the **OpenClaw Telegram agent**, which drives the skills below as **MCP tools**. The layered design here is unchanged — only *who runs the brain* changed (OpenClaw's native tool-call loop replaces a custom harness; no tag-parser).
 1. **Perception:** RGB-D camera → detector + depth → **structured scene JSON with grounded coordinates** (object id, label, 3D pose in base frame, graspable flag) — NOT prose captions. Depth camera required.
-2. **Brain** (slow planning cadence; text LLM acceptable given structured perception): scene JSON + semantic map + robot state → emits **skill/pose commands** in a tag/tool-call format, e.g. `<grasp mug_1>`, `<move_gripper right 0.32,0.10,0.85>`, `<navigate_to kitchen_counter>`.
+2. **Brain** (the OpenClaw agent; slow planning cadence; text LLM fine given structured perception): scene JSON + semantic map + robot state → issues **skill/pose commands as native MCP tool-calls**, e.g. `grasp(mug_1)`, `move_gripper(right, 0.32,0.10,0.85)`, `navigate_to(kitchen_counter)`. (The earlier `<grasp mug_1>` tag format is obsoleted by native tool-calling — D21.)
 3. **Safety/clamp layer:** reject or clamp illegal/unsafe commands — joint limits, collision checks, gripper **force limits**, velocity caps, e-stop. Present from day one.
 4. **Skills** (fast, local): IK/MoveIt for reaching; closed-loop grasp primitive (or learned policy) at contact; Nav2 for driving.
 5. **Feedback:** every skill returns status + fresh observation, **event-driven** (not a fire-and-forget timer), fed back to the brain. Closed loop.
@@ -26,23 +28,22 @@ Hierarchical: **slow LLM brain over fast local skills.** Layers:
 - **Localization: semantic map** via SLAM (Nav2). LLM reasons in named places (`kitchen_counter`, `dishwasher`, `laundry_basket`); the nav stack maintains metric pose. No hand-typed coordinates to the LLM.
 - **System prompt contents:** skill API (names/args/units/limits) + observation format + current state (joint positions, grippers, battery, room) + safety envelope + 2–3 worked examples. Not raw DoF prose.
 
-## System topology / control plane (settled 2026-08-09)
-Three tiers:
-- **Pi — OpenClaw chat bot:** user-facing Telegram relay. Owns **user preferences** (natural home: conversational + already has memory); passes relevant prefs into each task. Not a ROS node.
-- **Laptop — robot-agent service (OUR harness):** long-lived **FastAPI** service = the perceive-decide-act brain. Holds the ROS 2 connection, the map, and loaded models. **Not** a second OpenClaw bot.
-- **Cloud — LLM API:** the brain's reasoning, called from the laptop.
+## System topology / control plane (settled 2026-08-09; brain-location pivoted 2026-08-11 — D21)
+Three tiers (**D21** — the brain is the OpenClaw agent, not a custom service):
+- **Pi — OpenClaw brain-bot:** the user-facing Telegram agent that **is the robot's brain**. Owns **user preferences** (native OpenClaw memory), plans, and drives the robot by calling its skills as **MCP tools**, reading structured results back. A conversational agent, not a ROS node.
+- **Laptop — robot-side service:** hosts the **`robot_mcp` tool server** + skill impls + the safety/clamp layer + perception + the ROS 2 connection, the map, and loaded models/sim. The body + reflexes + senses, exposed through the one **skill-API seam**. **Not** the brain; not a second OpenClaw bot.
+- **Cloud — LLM API:** the brain's reasoning, called by the OpenClaw agent.
 
-**Flow:** user → Pi bot → `POST /task {goal, chat_id}` over the **WireGuard VPN** → laptop acks a `task_id` → agent runs the loop → pushes progress/"done" back to the Pi bot via callback/webhook → bot relays to user.
+**Flow:** user → OpenClaw brain-bot (Telegram) → **MCP tool-call** to the robot-side service (over the **WireGuard VPN** / local socket) → skill executes, **safety-clamped** → structured `SkillResult` + fresh `Observation` returned → the agent's tool-loop replans and calls the next skill → until done → replies to the user (+ optional confirming photo).
 
-**Per-task loop:** coarse **plan** once → execute **one atomic step** (a ROS 2 **action**: goal→feedback→result, cancelable) → **re-perceive** (structured scene JSON + pose from the map) → **replan/adjust** → repeat until done → report completion (+ optional confirming photo, LLM's choice).
+**Per-task loop:** the OpenClaw agent's **native turn loop IS the loop** — coarse **plan** → call **one skill** (MCP tool) → read the returned observation → **replan/adjust** → repeat until done. No custom orchestration to build.
 
 **Design rules:**
-- **Async, not blocking** (tasks take minutes) — fire-and-callback.
-- **Warm persistent service**, not cold spin-up per task (keeps ROS/map/models loaded).
-- **Two memories:** world-state (map/objects) = a queried **store/DB**, needed day one; user-preferences = persistent, injected into the system prompt, grows over time.
-- **Plan-and-execute with replanning** (not pure greedy, not rigid upfront).
-- **Guards (mandatory for a home robot):** max-steps + per-task timeout + stuck-detection; user **stop/cancel** interrupts mid-step; **heartbeat/dead-man** halts if the Pi↔laptop link drops; **one task at a time** (state machine `idle → running(task_id) → done/failed`).
-- **Backend-agnostic:** same service drives **MuJoCo now**, real robot later (Mock→Sim→Real). **First milestone:** the whole flow (Telegram → task API → loop → callback → "done") running in **sim, no hardware**.
+- **Warm robot-side service** (keeps ROS/map/models/sim loaded); the OpenClaw agent handles the conversational, event-driven front.
+- **Two memories:** world-state (map/objects) = a queried **store/DB**, needed day one (owned by the robot-side service); user-preferences = **OpenClaw's native memory**, grows over time.
+- **Plan-and-execute with replanning** (not pure greedy, not rigid upfront) — emergent from the agent's tool-loop.
+- **Guards (mandatory for a home robot) live server-side, below the tool boundary — never trusted to the LLM:** max-steps + timeout + stuck-detection; user **stop/cancel** interrupts; **heartbeat/dead-man** halts if the Pi↔laptop link drops; **e-stop**; **one task at a time**. (If OpenClaw can't drive these from the agent side, that is exactly a D21 trigger to add the custom service — but the *enforcement* belongs in the robot-side service regardless.)
+- **Backend-agnostic:** same skills drive **Mock now**, MuJoCo next, real robot later (Mock→Sim→Real). **First milestone:** the whole flow (Telegram → OpenClaw agent → MCP skill calls → **Mock** backend → reply) running with **no hardware and no custom harness**.
 
 ## Software stack (settled 2026-08-09)
 - **Framework:** ROS 2 **Jazzy** (Ubuntu 24.04). [TODO: confirm laptop is 24.04 → Jazzy; if 22.04 → Humble.]
@@ -92,9 +93,9 @@ household-robot/
 - **Buy vs rent:** rent first; buy a used RTX 3090/4090 only if GPU spend exceeds ~$150–200/mo sustained.
 
 ## Reuse map / fork strategy (settled 2026-08-09)
-Estimate: **~85% of the software stack already exists** and should be reused/forked; the novel **~15%** is the LLM harness itself. Reusing the right things does **not** force different hardware — it matches the planned dual-SO-101 + wheeled base + RGB-D.
+Estimate: **~85% of the software stack already exists** and should be reused/forked; the novel **~15%** is the LLM brain + glue — and under **D21** the brain itself is largely **OpenClaw**, shrinking our build further to the skill API + MCP surface, safety, perception glue, robot description, and prompt design. Reusing the right things does **not** force different hardware — it matches the planned dual-SO-101 + wheeled base + RGB-D.
 
-Strategy: **don't fork one monolith.** Consume frameworks as dependencies, fork *one* ROS 2 robot reference for description+bringup, build the brain.
+Strategy: **don't fork one monolith.** Consume frameworks as dependencies, fork *one* ROS 2 robot reference for description+bringup, and **expose the skills to the OpenClaw brain via `robot_mcp`** (D21) — build a custom brain only if OpenClaw proves lacking.
 
 | Layer | Exists? | Action |
 |---|---|---|
@@ -103,7 +104,8 @@ Strategy: **don't fork one monolith.** Consume frameworks as dependencies, fork 
 | Full mobile-manipulator ref (hardware + ROS bringup) | Yes | **Fork ONE.** Evaluate **AhaRobot** first (aha-robot.github.io — $1k dual-arm, open ROS + firmware + CAD + dataset + arXiv), then the "ROS 2 + dual SO-101 + browser HMI" bimanual project, then **youfork** (github.com/youtalk/youfork — clean ROS 2 bringup pattern). |
 | Mechanical BOM/STL | Yes | Crib XLeRobot (Vector-Wangel/XLeRobot), AhaRobot, Nori (arXiv 2605.16537). |
 | Perception (grounded scene JSON) | Models yes | Reuse Grounding DINO + SAM + depth; **build** the scene-JSON glue. |
-| LLM harness / brain (tag commands, skill API, feedback loop, semantic map) | Barely | **Build.** Crib **Stretch AI** (Hello Robot) architecture — closest open analogue. This is the project's IP. |
+| LLM brain (planner, feedback loop) | Use OpenClaw | **Use the OpenClaw agent as the brain (D21)** — native tool-calling + memory. Stretch AI = architecture reference only. Build a custom harness only if OpenClaw proves lacking. |
+| Skill API + MCP surface, safety layer, perception→scene-JSON glue, robot description, prompt design | Build | **Build — this is the remaining IP** (D21). The seam the OpenClaw brain drives, plus the body/reflexes/senses below it. |
 | Skill/VLA models to crib later | Yes | Pi0/Pi0.5, GR00T N1.7, Gemini Robotics-ER, OpenVLA, Octo. |
 
 **Do NOT fork XLeRobot wholesale:** it's LeRobot/Python (not ROS 2 — framework mismatch), **fixed-height** (IKEA cart base, no lift — contradicts our extendable-column differentiator), and low-spec (~40 cm reach, <1 kg/arm). Use it as a BOM/mechanics crib only.
@@ -120,8 +122,9 @@ Strategy: **don't fork one monolith.** Consume frameworks as dependencies, fork 
 - Depth-camera model (RealSense-class) selection.
 
 ## Next steps
-1. Confirm laptop Ubuntu version → pin ROS 2 distro.
-2. Stand up ROS 2 + MuJoCo + MoveIt + Foxglove on the laptop; get the **Mock-backend harness loop** running (LLM → tag parse → mock skill → observation).
-3. Define the `RobotBackend` interface + initial skill API (`navigate_to`, `move_gripper`, `grasp`, `place`, `extend_column`, `open/close_gripper`).
-4. Build a URDF/MJCF of the robot (4-wheel base + column + 2 arms) for MuJoCo.
-5. GitHub repo skeleton (structure, license, CI) — pending explicit go-ahead.
+1. **First milestone (D21):** stand up a dedicated **OpenClaw `robot` agent** whose system prompt carries the skill API + observation format + safety envelope + worked examples; wire it to **`robot_mcp`** over the **Mock** backend; prove end-to-end — text "clear the table" → tool-calls `navigate_to`/`grasp`/`place` in a loop against Mock, safety-clamped, replies. No FastAPI, no tag-parser.
+2. Expand `robot_mcp` to expose the full skill set (`navigate_to`, `move_gripper`, `grasp`, `place`, `extend_column`, `open/close_gripper`, `get_observation`) over the `RobotBackend` seam; land the **safety/clamp layer** server-side (D17).
+3. Add the **world-state store** (map/objects) queried by the robot-side service.
+4. Confirm laptop Ubuntu version → pin ROS 2 distro; then swap Mock → **MuJoCo** behind the same skills.
+5. Build a URDF/MJCF of the robot (4-wheel base + custom column + 2 arms) for MuJoCo.
+6. Classical skills first (D22): MoveIt pick-and-place of rigid objects + Nav2; learned skills only where unavoidable.
