@@ -40,8 +40,9 @@ before any non-trivial work.
 5. **Reuse** frameworks (MoveIt 2, Nav2, MuJoCo) as dependencies; don't reinvent.
 
 ## Development loop (per feature, per worktree)
-context (sonnet) → implement + tests (opus) → red-team (opus, read-only) →
-fix (≤2 rounds) → test-runner (sonnet) → repeat until green → PR.
+context (sonnet) → manager rules on open questions → implement + tests (opus) →
+red-team (opus, read-only) → fix (≤2 rounds) → test-runner (sonnet) →
+repeat until green → PR.
 Full narrative in `DEVELOPMENT.md`; orchestration in `.claude/commands/run-feature.md`.
 
 ## Red-team severity rubric
