@@ -16,7 +16,21 @@ Worktree: `/home/sisyphus/worktrees/i46-first-milestone-openclaw-robot-agent-rob
 | 6 | red-team → `red_team.md` | done — **3 BLOCK, 7 NOTE**. Every hypothesis about the safety wiring itself was checked and cleared (R1's abort path, R3's chokepoint, R12's exception scope, the milestone test's non-vacuity, R10's arithmetic, the drift guards' vacuity traps, the secret scanner). All three BLOCKs are claims that outrun their evidence, not defects in running code. |
 | 7 | fix rounds (≤2) | **round 1 done, all 3 BLOCKs closed** — `77381fd` (B1: the milestone test now states the guard's real scope and *asserts* the carried-object gap instead of commenting it away), `2ae80df` (B2: `reset` withheld from the agent in the fragment and the prompt; the drift test became `exposed == TOOL_NAMES - WITHHELD_TOOLS`, a name→reason mapping), `efd6197` (B3: `robot_mcp/README.md` names all four absent guards and why the three things that *look* like bounds are not), `89553e7` (N1–N3), `05c2a5e` (docs + baseline). N4/N5 folded in; **N5 was verified empirically** — `bash -lc` on the shipped args puts one JSON-RPC frame and nothing else on stdout, pixi's warning on stderr; the ssh hop itself is untestable here (`laptop` is the Pi's alias). N6/N7 declined → surviving NOTES for Sisyphus. **Round 2 not needed.** |
 | 8 | test-runner (`pixi run test`) | **PASS** — `pixi run build` exit 0, `pixi run test` exit 0; 588 tests, 0 errors / 0 failures / 0 skipped, 561 non-linter across 9 packages, every package at `vs-base: +0` or better, none flagged. Log: `.dev/runs/i46-openclaw-robot-agent/20260811-184324/test.log` |
-| 9 | rebase on current main, open PR, report "ready" | pending |
+| 8b | test-runner re-run after fix round 1 | **PASS** — build exit 0, test exit 0; 589 tests, 0 errors / 0 failures / 0 skipped, 562 non-linter, every package `vs-base: +0`. Log: `.dev/runs/i46-openclaw-robot-agent/20260811-190227/test.log` |
+| 9 | rebase on current main, open PR, report "ready" | **done** — `origin/main` had not moved (`f9ee2b7`), 0 commits behind, so no rebase was needed. Branch pushed; **PR #50** open and `MERGEABLE`. |
+| 10 | outward comments (manager-only) | **done** — follow-ups F1–F12 on issue #46 (`#issuecomment-5259871402`); retro on PR #50 (`#issuecomment-5259874300`) |
+
+## Final state
+**Ready for Sisyphus.** PR: https://github.com/jaimec00/sisyphus/pull/50
+
+The `docs-clean` CI check reads **fail** — expected and correct: this directory is still
+present for review, and Sisyphus deletes it at merge. That guard is CI's only check;
+the authoritative test gate is the laptop `pixi run test` run above.
+
+**Do not read the live Telegram leg as verified.** OpenClaw is not installed on this
+laptop and the Pi is unreachable from it, so the config fragment's field names are
+documentation-derived, the SSH hop is untested, and nothing here proves an LLM closes
+the loop. `src/robot_brain/README.md` carries the numbered Pi-side procedure for that run.
 
 ## Blockers
 None.
