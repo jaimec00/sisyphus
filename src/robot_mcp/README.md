@@ -14,7 +14,8 @@ Pure Python over the official MCP SDK (`mcp >= 2.0`), stdio transport, backed by
   than shipping a tool whose schema lies.
 - `tools.py` — the catalogue: one tool per entry in `SKILL_TYPES`, plus
   `get_observation` and `reset`, which are backend calls, not skills.
-- `server.py` — `build_server(backend=None)` and the stdio entry point.
+- `server.py` — `build_server(backend=None, safety=None)`, the safety gate on
+  the skill path, and the stdio entry point.
 
 ## The tools
 | tool | arguments | returns |
@@ -40,19 +41,60 @@ result carrying `status: "failed"` plus a `code` — not an error. Only a
 malformed *call* (arguments the skill seam rejects, or a tool that does not
 exist) comes back with `isError`, carrying the seam's own message.
 
+## The safety gate
+
+Every **skill** tool call passes through `robot_safety.SafetyLayer` before the
+backend sees it (D4/D17, invariant 3). The verdict is taken inside the router's
+lock, against an observation sampled inside that same lock, so nothing can move
+the world between "judged" and "executed". `get_observation` and `reset` do not
+go through it — they command no motion.
+
+| verdict | what the agent gets |
+|---|---|
+| pass-through | the backend's result, byte-identical to no gate at all |
+| clamp | the **rewritten** skill runs; `skill` shows what actually ran and the clamp's own words are appended to `reason` (backend note first, `; `-joined) |
+| abort | nothing runs; `status: "failed"`, `code: "rejected"`, `reason` is the safety event's own `detail`, and `observation` is the untouched pre-call world |
+
+No field was added to `SkillResult` for this: the payload is still exactly
+`SkillResult.to_dict()` at `schema_version: 1`, and `rejected` is the
+safety-owned member of `FailureCode` (`SAFETY_EVENT_CODES`), so an agent tells
+"the motion was stopped" from "pick a different goal" without string matching.
+
+`build_server(backend=None, safety=None)`: `safety=None` means the shipped
+`limits.yaml` defaults, **never "no gate"** — a non-`SafetyLayer` argument is a
+`TypeError`, and there is no argument, env var or code path that yields an
+ungated server.
+
+**What actually bites today, honestly.** `SafetyState` is built from the
+backend's observation and nothing else, because no backend in this repo
+publishes telemetry — there is no e-stop line, no measured axis speed and no
+jaw-force reading anywhere. So of the layer's six checks, against the Mock:
+
+- **live:** the `extend_column` height clamp (the shipped `[0.0, 1.2]` m
+  travel range) and the unclassified-skill refusal;
+- **wired and reachable, but silent until a backend measures something:**
+  e-stop, per-axis velocity caps, gripper over-force. They are not fiction —
+  the layer checks them on every call — but with no reading available they
+  cannot fire, and pretending otherwise would be the worst kind of safety
+  theatre;
+- **off by default:** collision geometry. `SafetyLayer()` defaults to
+  `NullCollisionGuard`, so the `keep_out_boxes` in `limits.yaml` (e.g.
+  `below_floor`) are **not** enforced unless a guard is injected:
+  `build_server(backend, SafetyLayer(collision_guard=KeepOutBoxGuard.from_limits(SafetyLimits.defaults())))`.
+
 ## Run it
 
 From a clean checkout, with no colcon build:
 
 ```bash
-cd <repo> && PYTHONPATH=<repo>/src/robot_skills:<repo>/src/robot_backends:<repo>/src/robot_mcp \
+cd <repo> && PYTHONPATH=<repo>/src/robot_skills:<repo>/src/robot_backends:<repo>/src/robot_safety:<repo>/src/robot_mcp \
   pixi run --frozen python -m robot_mcp
 ```
 
 Concretely, for a checkout at `/home/sisyphus/worktrees/main`:
 
 ```bash
-cd /home/sisyphus/worktrees/main && PYTHONPATH=/home/sisyphus/worktrees/main/src/robot_skills:/home/sisyphus/worktrees/main/src/robot_backends:/home/sisyphus/worktrees/main/src/robot_mcp \
+cd /home/sisyphus/worktrees/main && PYTHONPATH=/home/sisyphus/worktrees/main/src/robot_skills:/home/sisyphus/worktrees/main/src/robot_backends:/home/sisyphus/worktrees/main/src/robot_safety:/home/sisyphus/worktrees/main/src/robot_mcp \
   pixi run --frozen python -m robot_mcp
 ```
 
@@ -69,7 +111,7 @@ It speaks MCP on stdin/stdout and logs nothing there, so point a client at it:
         "python", "-m", "robot_mcp"
       ],
       "env": {
-        "PYTHONPATH": "/home/sisyphus/worktrees/main/src/robot_skills:/home/sisyphus/worktrees/main/src/robot_backends:/home/sisyphus/worktrees/main/src/robot_mcp"
+        "PYTHONPATH": "/home/sisyphus/worktrees/main/src/robot_skills:/home/sisyphus/worktrees/main/src/robot_backends:/home/sisyphus/worktrees/main/src/robot_safety:/home/sisyphus/worktrees/main/src/robot_mcp"
       }
     }
   }
@@ -107,9 +149,11 @@ default. One server owns one backend for its lifetime, and `reset` is the only
 way back to the seed world.
 
 ## Deliberately absent
-**No cancellation, no `/stop`, no e-stop.** The skill interface is synchronous
-and instantaneous: when a tool call returns, the motion is over, so there is no
-in-flight command to cancel. Giving the agent a cancel tool would require an
-async execution model, which is a design decision this package does not get to
-make (see the issue's out-of-scope list). The safety layer, when it lands, sits
-below this server on the skill seam — never bypassed by it.
+**No cancellation, no `/stop`, no e-stop tool.** The skill interface is
+synchronous and instantaneous: when a tool call returns, the motion is over, so
+there is no in-flight command to cancel. Giving the agent a cancel tool would
+require an async execution model, which is a design decision this package does
+not get to make (see the issue's out-of-scope list). The safety layer's e-stop
+check runs on every call, but nothing in this repo can engage the line yet — an
+e-stop the *agent* could trip would be the wrong shape anyway (D21: enforcement
+lives below the tool boundary, never in the LLM's hands).

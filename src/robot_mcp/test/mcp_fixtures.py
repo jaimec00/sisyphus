@@ -18,17 +18,24 @@ from mcp.client import Client
 import mcp_types as types
 from robot_backends import RobotBackend
 from robot_mcp import build_server
+from robot_safety import SafetyLayer
 
 
 @asynccontextmanager
-async def connected(backend: RobotBackend) -> AsyncIterator[Client]:
+async def connected(
+    backend: RobotBackend, safety: SafetyLayer | None = None,
+) -> AsyncIterator[Client]:
     """Yield an MCP client connected in-process to a server driving ``backend``.
 
     ``Client(server)`` is the SDK's own in-process transport: a real client
     session (initialize, list_tools, call_tool) with no subprocess to wait on.
     ``test_stdio_transport.py`` covers the wire itself.
+
+    ``safety`` is passed straight through to :func:`~robot_mcp.build_server`,
+    so a test that leaves it out drives the *default* gate -- the one a
+    deployment gets -- rather than a permissive test-only one.
     """
-    async with Client(build_server(backend)) as client:
+    async with Client(build_server(backend, safety)) as client:
         yield client
 
 

@@ -10,6 +10,9 @@
   <buildtool_depend>ament_python</buildtool_depend>
   <depend>robot_skills</depend>
   <depend>robot_backends</depend>
+  <!-- Every skill tool call is gated by robot_safety before the backend runs
+       it (D4/D17): a runtime dependency, not a test one. -->
+  <depend>robot_safety</depend>
 
   <test_depend>ament_copyright</test_depend>
   <test_depend>ament_flake8</test_depend>
