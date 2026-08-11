@@ -18,6 +18,9 @@ import os
 import subprocess
 import sys
 
+from robot_mcp.tools import FIXED_TOOL_NAMES
+from robot_skills import SKILL_TYPES
+
 PROBE = """
 import sys
 
@@ -62,7 +65,9 @@ def test_the_server_serves_tools_without_ros():
     )
 
     assert completed.returncode == 0, completed.stderr
-    assert completed.stdout.strip() == '9'
+    # Derived, not a literal: adding a skill to the seam must not break a test
+    # about ROS isolation.
+    assert completed.stdout.strip() == str(len(SKILL_TYPES) + len(FIXED_TOOL_NAMES))
 
 
 #: Module roots this package may not reach for, at import time or lazily.

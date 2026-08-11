@@ -230,11 +230,16 @@ async def test_an_unexpected_backend_failure_is_reported_not_raised(reference):
 
 
 async def test_concurrent_calls_share_one_consistent_backend(backend):
-    """Overlapping calls see one world, and one of them wins the mug.
+    """Four in-flight calls share one backend and one consistent world.
 
-    The SDK dispatches tool calls in a task group, so this is the interleaving
-    the router's lock exists for: whatever the ordering, the mug is grasped
+    The SDK dispatches tool calls in a task group, so all four are outstanding
+    at once against the same backend: whatever the ordering, the mug is grasped
     exactly once and every loser gets an attributable refusal.
+
+    This does not *prove* the router's lock. Today's Mock never yields inside
+    ``execute``, so the calls cannot interleave mid-skill however the scheduler
+    runs them; what is pinned down here is that one server means one world and
+    that the concurrent path returns coherent, attributable results.
     """
     results = {}
 
