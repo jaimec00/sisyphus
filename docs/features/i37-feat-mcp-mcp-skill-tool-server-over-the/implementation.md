@@ -157,3 +157,14 @@ sourcing `install/setup.bash`) was verified too.
 - `pixi run test`: **307 tests, 0 errors, 0 failures, 0 skipped; audit passed
   for all 9 packages** (`robot_mcp`: 55 tests). `pixi run build` builds all 8
   packages clean.
+- Red-team round 1: **no BLOCKs**, 10 NOTEs (`red_team.md`). Two were elected
+  for an immediate fix because they sit on rubric-BLOCK categories and were
+  test-only: NOTE 6 (`test_no_ros_runtime.py` hard-coded the tool count `9`, so
+  adding a skill would have failed a ROS-isolation test — now derived from
+  `SKILL_TYPES` + the fixed tools) and NOTE 8 (the stdio round trip had no
+  timeout and could hang CI instead of failing — now bounded by
+  `anyio.fail_after(30)`, verified to fire). The concurrency test's docstring
+  was also reworded to stop claiming it proves the router's lock. The remaining
+  eight NOTEs survive untouched and the manager is routing them to issue #37 as
+  follow-ups; the ones this doc already anticipated are listed under *Known
+  limits* above.
