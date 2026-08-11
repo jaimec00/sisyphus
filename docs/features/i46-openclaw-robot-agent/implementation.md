@@ -201,15 +201,96 @@ that check, for whoever runs it there.
 landed after the baseline was last written), `robot_brain 0 → 37`,
 `robot_mcp 52 → 67`, `robot_backends 59 → 60`.
 
+## Red-team round 1 — what changed
+
+All three BLOCKs were claims that outran their evidence, and all three are
+fixed as text plus assertions. Nothing in the running safety path changed.
+
+**B1 — the keep-out guard *is* routable around, and the test said otherwise.**
+The red team's arithmetic is right: `NavigateTo` has
+`has_cartesian_target=False`, so the guard never looks, while
+`_carry_held_objects` re-poses the held object onto the gripper — landing it at
+`(2.30, ±0.10, 0.75)`, inside the test's own box, before the `place` is ever
+refused. I fixed the *claim*, not the guard: the test now says what the guard
+actually does (judges the commanded target pose of a cartesian skill) and
+**asserts the limitation** — the carried object's position is proven to be
+inside the forbidden box while the place into it is refused, with a note that
+if the assertion ever fails, the guard grew a swept-volume check and the test
+should be rewritten to celebrate it. `robot_mcp/README.md` gains the gap next
+to the other honest limitations: a chore can move an object *through* a region
+without a verdict; closing that is MoveIt's swept-volume work (invariant 5).
+
+**B2 — `reset` withheld from the agent, and the test turned into a
+classification.** `toolFilter.include` drops `reset`; the prompt drops its row
+and every mention of it and instead states plainly that there is no undo. The
+config assertion is now `exposed == TOOL_NAMES - WITHHELD_TOOLS`, where
+`WITHHELD_TOOLS` maps a tool name to the reason it is withheld (shared in
+`brain_fixtures.py`, since both the config suite and the prompt suite need it).
+Drift protection is intact in both directions — a tool added to the seam fails
+both suites until somebody decides which side it belongs on — but the half that
+made "hand every future tool to the LLM" the path of least resistance is gone.
+`WITHHELD_TOOLS` names are asserted to be real tools carrying a real reason, so
+the list cannot go stale or become a shrug, and the prompt's vocabulary guard
+now rejects a withheld tool's name as firmly as a fictional one. Rationale is
+in `robot_brain/README.md`. **I agree with the ruling**: against Mock it is
+harmless, but this is the boundary a Sim/Real backend will front, where
+`reset()` is real motion and real lost state.
+
+**B3 — the mandatory guards are absent, and now say so.** Not built (they are
+deferred D16 items and out of #46's scope). `robot_mcp/README.md`'s
+"Deliberately absent" section now names max-steps, chore timeout,
+stuck-detection and one-task-at-a-time, and — the part that matters — why the
+three things that *look* like bounds are not: a prompt sentence is not
+enforcement, `requestTimeoutMs` bounds a call rather than a chore, and the
+router's lock serializes calls rather than tasks. `robot_brain/README.md`
+mirrors one paragraph. Manager files it as **F10**.
+
+**NOTEs fixed in the same round.**
+
+- **N1** — `default_safety_layer` answers the no-regions case with
+  `if not limits.keep_out_boxes:` and catches nothing at all, so "any other
+  error still raises" is structural rather than a fact about how many `raise`
+  statements another package currently has.
+- **N2** — the milestone's headline assertion no longer rests on a 0.19 m
+  margin. The driver returns `{object_id: the pose it was commanded to}`, and
+  the test asserts each cleared object is unheld and at *exactly* that
+  position, with no two objects sharing a spot. `clutter(...) == []` stays as
+  the secondary, agent's-eye reading.
+- **N3** — each drop slides `0.15 m` to the side of the last, and the prompt
+  teaches the same. Stacking two rigid bodies at one point is a Mock artefact
+  nobody should learn from.
+- **N4** — README step 6 now says to check the agent can still *reply* on
+  Telegram, and that `tools.allow` is the first thing to relax if not.
+- **N5 — verified, and here is exactly what was observed.** I extracted the
+  shipped `args` array from the fragment, substituted this worktree's path, and
+  ran the **inner command through `bash -lc`** with stdout and stderr captured
+  separately: stdout was **1024 bytes, one line, first byte `{`** — a single
+  JSON-RPC frame and nothing else; `pixi`'s manifest warning went to stderr
+  (676 bytes). A bare `bash -lc true` on this account produced **0 bytes on
+  stdout and 0 on stderr**, so the login shell itself is silent here. The
+  `ssh` hop remains unverified and cannot be tested from this machine: `ssh -T
+  laptop` fails with `Could not resolve hostname laptop` — that alias is the
+  *Pi's*. So the form ships unchanged, and `robot_brain/README.md` step 4 now
+  states precisely which half was checked, which was not, and to drop `-l` if
+  a login shell on the real machines turns out to print anything.
+
+**N6 and N7 were declined by the manager** and survive as NOTES for Sisyphus:
+the vocabulary guard is a bag of words rather than a grammar (documented
+tradeoff), and `_gated_execute` costs one extra `get_observation()` per call
+(correctness over micro-optimisation on Mock).
+
 ## Commands run, and their outcomes
 
 | command | result |
 |---|---|
 | `pixi run build` | 8 packages finished, clean |
 | `pixi run test` (before R12) | 584 tests, 0 errors, 0 failures, 0 skipped |
-| `pixi run test` (after R12) | **588 tests, 0 errors, 0 failures, 0 skipped**; audit passed, all stages passed |
-| `pixi run python scripts/check_test_integrity.py --update-baseline` | 4 packages changed, then `robot_mcp 67 → 71` after R12; both written from a green run |
-| per-package `pytest` (fast loop) | robot_skills 109, robot_backends 63, robot_safety 179, robot_mcp 74, robot_brain 40 |
+| `pixi run test` (after R12) | 588 tests, 0 errors, 0 failures, 0 skipped |
+| `pixi run test` (after red-team round 1) | **589 tests, 0 errors, 0 failures, 0 skipped**; audit passed, all stages passed |
+| `pixi run python scripts/check_test_integrity.py --update-baseline` | three times, each from a green run: the initial re-cut (4 packages), `robot_mcp 67 → 71` after R12, `robot_brain 37 → 38` after round 1 |
+| per-package `pytest` (fast loop) | robot_skills 109, robot_backends 63, robot_safety 179, robot_mcp 74, robot_brain 41 |
+| shipped `args[4]` under `bash -lc`, streams split | stdout: one 1024-byte JSON-RPC frame; stderr: pixi's warning. `bash -lc true`: 0 bytes on both |
+| `ssh -T -o BatchMode=yes laptop true` | `Could not resolve hostname laptop` — the ssh hop is the Pi's to verify |
 | documented stdio command, stdout/stderr split | stdout: one JSON-RPC frame; stderr: pixi's manifest warning |
 
 The one intermediate red: `scripts/tests/test_ratchet.py` failed once
@@ -275,6 +356,14 @@ R12 narrowed the first of them:
   from config that vetoes nothing is a dead parameter). That package's
   decision, not this feature's. Paths: `src/robot_safety/robot_safety/layer.py`,
   `src/robot_safety/robot_safety/collision.py`.
+- **F10 — the PROJECT.md-mandatory server-side guards are unbuilt** (max-steps,
+  chore timeout, stuck-detection, one-task-at-a-time). Deferred D16 items, now
+  documented as absent rather than implied present (B3). Paths:
+  `src/robot_mcp/robot_mcp/server.py`, `docs/design/PROJECT.md`.
+- **F11 — the keep-out guard judges commanded target poses only**, so a
+  carried object or a driving base passes through a region unjudged (B1).
+  Needs swept-volume collision against the base's route — MoveIt's job.
+  Paths: `src/robot_safety/robot_safety/collision.py`.
 - **F9 — the OpenClaw config fragment hard-codes
   `/home/sisyphus/worktrees/main`** in `PYTHONPATH` and `--manifest-path`, and
   the SSH alias `laptop` must resolve on the Pi. Left as-is per the manager;

@@ -112,6 +112,16 @@ is where you find out if this build spells them the same.
    One JSON-RPC frame must come back on stdout and **nothing else** — no
    banner, no motd, no warning. If the shell prints anything of its own, fix
    that first: it will corrupt the MCP stream.
+
+   What *has* been checked, on the laptop, is the half that does not need the
+   Pi: the exact command the fragment ships, run through `bash -lc` (login
+   shell and all), puts a single JSON-RPC frame on stdout and nothing else —
+   `pixi`'s manifest warning goes to stderr, and this account's profile files
+   print nothing at all. What is **not** checked is the `ssh` hop itself: the
+   `laptop` alias does not resolve from the laptop, so only the Pi can run
+   this step. If a login shell on your machines does turn out to print
+   something, drop the `-l` (use `bash -c` with an absolute `pixi` path)
+   rather than trying to document around it.
 5. **Add the Telegram account on the Pi, with the `openclaw` CLI** — the bot
    token is a secret and is never committed to this repo. Then set the
    binding's `match.accountId` to that account's id (the fragment ships
