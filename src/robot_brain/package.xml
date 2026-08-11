@@ -3,13 +3,22 @@
 <package format="3">
   <name>robot_brain</name>
   <version>0.0.0</version>
-  <description>LLM harness: planner loop, prompt assembly, tag/command parsing (the brain).</description>
+  <description>The brain: the OpenClaw agent operating prompt and its config (D21).</description>
   <maintainer email="hejaca00@gmail.com">Jaime</maintainer>
   <license>MIT</license>
 
   <buildtool_depend>ament_python</buildtool_depend>
-  <depend>rclpy</depend>
 
+  <!-- The brain is an OpenClaw agent, not a ROS node (D21): this package ships
+       its prompt and config, and nothing here runs on a ROS graph. -->
+
+  <!-- The prompt is held to the live seam by this package's drift tests: the
+       tool catalogue, the safety limits and the seed world are all read from
+       the packages that own them rather than copied into the prompt's tests. -->
+  <test_depend>robot_mcp</test_depend>
+  <test_depend>robot_safety</test_depend>
+  <test_depend>robot_backends</test_depend>
+  <test_depend>robot_skills</test_depend>
   <test_depend>ament_copyright</test_depend>
   <test_depend>ament_flake8</test_depend>
   <test_depend>ament_pep257</test_depend>

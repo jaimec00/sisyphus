@@ -1,0 +1,59 @@
+{
+  "mcp": {
+    "servers": {
+      "robot": {
+        "enabled": true,
+        "transport": "stdio",
+        "command": "ssh",
+        "args": [
+          "-T",
+          "laptop",
+          "bash",
+          "-lc",
+          "PYTHONPATH=/home/sisyphus/worktrees/main/src/robot_skills:/home/sisyphus/worktrees/main/src/robot_backends:/home/sisyphus/worktrees/main/src/robot_safety:/home/sisyphus/worktrees/main/src/robot_mcp exec pixi run --frozen --manifest-path /home/sisyphus/worktrees/main/pixi.toml python -m robot_mcp"
+        ],
+        "env": {},
+        "requestTimeoutMs": 120000,
+        "toolFilter": {
+          "include": [
+            "close_gripper",
+            "extend_column",
+            "get_observation",
+            "grasp",
+            "move_gripper",
+            "navigate_to",
+            "open_gripper",
+            "place"
+          ]
+        }
+      }
+    }
+  },
+  "agents": {
+    "entries": {
+      "robot": {
+        "default": false,
+        "name": "robot",
+        "workspace": "~/.openclaw/agents/robot",
+        "skills": [],
+        "sandbox": {
+          "mode": "read-only"
+        },
+        "tools": {
+          "allow": [
+            "mcp__robot__*"
+          ]
+        }
+      }
+    }
+  },
+  "bindings": [
+    {
+      "agentId": "robot",
+      "match": {
+        "channel": "telegram",
+        "accountId": "REPLACE_WITH_TELEGRAM_ACCOUNT_ID"
+      }
+    }
+  ]
+}

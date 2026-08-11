@@ -323,12 +323,15 @@ def test_the_real_skeleton_packages_are_still_read_as_skeletons():
     modules = guard.implementation_map(
         source_dir, guard.find_source_packages(source_dir))
 
-    for name in ('robot_brain', 'robot_bringup', 'robot_description',
-                 'robot_perception'):
+    for name in ('robot_bringup', 'robot_description', 'robot_perception'):
         assert modules.get(name) == (), f'{name} is no longer a skeleton'
     assert modules['robot_skills'], 'robot_skills holds implementation code'
     assert modules['robot_backends'], 'robot_backends holds implementation'
     assert modules['robot_safety'], 'robot_safety holds the clamp layer'
+    # robot_brain left the skeleton list when it became the home of the
+    # OpenClaw agent's prompt and config (D21): it now holds loader code and
+    # owes -- and has -- real tests, which is exactly what this guard is for.
+    assert modules['robot_brain'], 'robot_brain holds the brain assets and loaders'
 
 
 # --- the baseline file -----------------------------------------------------

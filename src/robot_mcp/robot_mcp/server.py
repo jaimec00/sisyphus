@@ -12,7 +12,7 @@ skill to act.  Everything the agent sees is the seam's own wire format
 (``SkillResult.to_dict`` / ``Observation.to_dict``, version-stamped per D18):
 this module adds no vocabulary of its own and reformats nothing into prose.
 
-Two things it does own, because MCP has no opinion on them:
+Three things it does own, because MCP has no opinion on them:
 
 * **what counts as an error.**  A backend *refusal* (grasping thin air) is a
   perfectly normal tool result carrying ``status: "failed"`` and a ``code`` --
@@ -25,10 +25,16 @@ Two things it does own, because MCP has no opinion on them:
   :func:`~robot_skills.skill_from_dict` and returns
   ``to_dict()`` verbatim, so validation and wire format stay defined in
   exactly one place (invariant 1).
+* **the safety gate.**  This is the brain-facing seam (D21), so every skill
+  tool call goes through :class:`~robot_safety.SafetyLayer` *before* the
+  backend sees it (D4/invariant 3).  The gate is injectable so a test or a
+  deployment can tighten it, and there is deliberately no way -- argument, env
+  var or code path -- to obtain a server without one.
 
 Pure Python: no ROS graph is needed to run or test it (``test_no_ros_runtime``).
 """
 
+from dataclasses import replace
 import json
 from typing import Any, Mapping
 
@@ -38,9 +44,31 @@ from mcp.server.stdio import stdio_server
 import mcp_types as types
 from robot_backends import MockBackend, RobotBackend
 from robot_mcp.tools import OBSERVATION_TOOL, RESET_TOOL, TOOL_NAMES, TOOLS
-from robot_skills import JsonDict, SerializationError, skill_from_dict, SKILL_KEY, SKILL_TYPES
+from robot_safety import (
+    KeepOutBoxGuard,
+    NullCollisionGuard,
+    SafetyEvent,
+    SafetyLayer,
+    SafetyLimits,
+    SafetyState,
+)
+from robot_skills import (
+    JsonDict,
+    SerializationError,
+    Skill,
+    skill_from_dict,
+    SKILL_KEY,
+    SKILL_TYPES,
+    SkillResult,
+)
 
-__all__ = ['build_server', 'main', 'run_stdio', 'SkillToolRouter']
+__all__ = [
+    'build_server',
+    'default_safety_layer',
+    'main',
+    'run_stdio',
+    'SkillToolRouter',
+]
 
 #: Server identity reported to the client during initialization.
 SERVER_NAME = 'robot_mcp'
@@ -56,7 +84,10 @@ INSTRUCTIONS = (
     'status "failed" with a code explaining why (for example unknown_object '
     'or out_of_reach); it is not an error, and the scene is unchanged. Skills '
     'are synchronous: when the call returns, the motion is done. There is no '
-    'way to cancel one.'
+    'way to cancel one. A safety layer below these tools may clamp a command '
+    '(it still runs -- the returned "skill" is what actually ran and "reason" '
+    'says what was changed) or refuse it outright with the code "rejected", in '
+    'which case nothing moved.'
 )
 
 #: Error labels for the machine-readable envelope of a failed call.
@@ -99,20 +130,81 @@ def _error_result(error: str, message: str) -> types.CallToolResult:
     )
 
 
+def default_safety_layer(limits: SafetyLimits | None = None) -> SafetyLayer:
+    """Return the gate a server with no injected ``safety`` runs behind.
+
+    The whole of ``limits.yaml``, enforced: the envelope *and* the keep-out
+    geometry configured beside it.  ``SafetyLayer()`` on its own defaults to
+    :class:`~robot_safety.NullCollisionGuard`, which is the honest default for
+    a package with no robot model -- but it would leave the shipped
+    ``keep_out_boxes`` declared and not working at the one seam an LLM is on
+    the other side of, and the file says in its own words that the entry exists
+    "so the seam ships working, not merely declared".  So this server builds
+    the guard from the same limit set it gives the layer: **one**
+    :class:`~robot_safety.SafetyLimits`, so the envelope and the geometry can
+    never come from two different reads of the file.
+
+    A limits file with no regions is a configuration choice, not a broken
+    server, so that one case is answered *before* asking -- with the same
+    ``NullCollisionGuard`` ``KeepOutBoxGuard.from_limits`` would have refused
+    to build.  **Nothing is caught here**: a malformed limits file raises out
+    of this function rather than quietly becoming a permissive server, and it
+    stays that way whatever ``robot_safety`` learns to validate next.
+
+    Still stub geometry: it judges commanded target poses against axis-aligned
+    boxes.  No robot model, no mesh, no swept volume, so a *carried* object or
+    a driving base is not checked -- real collision geometry is a later
+    feature (invariant 5).
+    """
+    if limits is None:
+        limits = SafetyLimits.defaults()
+    if not limits.keep_out_boxes:
+        return SafetyLayer(limits=limits, collision_guard=NullCollisionGuard())
+    return SafetyLayer(
+        limits=limits, collision_guard=KeepOutBoxGuard.from_limits(limits))
+
+
 class SkillToolRouter:
-    """Dispatch MCP tool calls onto one backend.
+    """Dispatch MCP tool calls onto one backend, through the safety gate.
 
     One router owns one backend for the life of the server, so the world an
     agent builds up across calls persists (and ``reset`` is the only way back).
     The SDK runs handlers concurrently and a backend is a stateful, non
     reentrant world model, so every backend call is serialized on one lock:
-    two interleaved grasps must not read the same pre-grasp world.
+    two interleaved grasps must not read the same pre-grasp world.  The safety
+    verdict is taken inside that same lock, against an observation sampled
+    inside it, so no other call can move the world between "judged" and
+    "executed".
+
+    The gate is a :class:`~robot_safety.SafetyLayer` and cannot be ``None``:
+    the LLM is on the other side of this seam and D21 puts enforcement below
+    the tool boundary, never in the prompt.
     """
 
-    def __init__(self, backend: RobotBackend) -> None:
-        """Wrap ``backend``; it is the only mutable state the server has."""
+    def __init__(self, backend: RobotBackend, safety: SafetyLayer | None = None) -> None:
+        """Wrap ``backend`` behind ``safety`` (:func:`default_safety_layer` if none).
+
+        An injected layer is used **as given** -- nothing is layered on top of
+        a caller's own guard, because a gate that quietly adds checks the
+        caller did not ask for is as surprising as one that drops them.
+
+        ``safety`` is type-checked rather than duck-typed: "anything with a
+        ``filter``" would make a no-op stand-in an accepted way to build an
+        ungated server, which is precisely the thing invariant 3 forbids.
+        """
+        if safety is None:
+            safety = default_safety_layer()
+        if not isinstance(safety, SafetyLayer):
+            raise TypeError(
+                f'safety must be a SafetyLayer, got {type(safety).__name__}')
         self._backend = backend
+        self._safety = safety
         self._lock = anyio.Lock()
+
+    @property
+    def safety(self) -> SafetyLayer:
+        """Return the gate every skill call passes through."""
+        return self._safety
 
     async def list_tools(self, context: Any, params: Any) -> types.ListToolsResult:
         """Return the whole catalogue (it is small, so pagination is moot)."""
@@ -155,8 +247,47 @@ class SkillToolRouter:
                 f'{name}: {SKILL_KEY!r} is not an argument -- the tool name is the skill')
         skill = skill_from_dict({SKILL_KEY: name, **arguments})
         async with self._lock:
-            result = self._backend.execute(skill)
+            result = self._gated_execute(skill)
         return result.to_dict()
+
+    def _gated_execute(self, skill: Skill) -> SkillResult:
+        """Run ``skill`` through the safety layer, then (if allowed) the backend.
+
+        Called with the lock held.  Three outcomes, all reported in the seam's
+        own wire format so the agent needs no second vocabulary to read them
+        (D18): the payload of a skill tool is a ``SkillResult`` dict, whatever
+        safety decided.
+
+        * **abort** -- ``filter`` returned an event, so nothing executes and the
+          result is a failure carrying the event's own ``detail``, under the
+          shared code the event maps onto (``rejected``, the safety half of
+          :class:`~robot_skills.FailureCode`).  The observation reported is the
+          one the verdict was taken against: nothing ran, so nothing moved, and
+          re-reading it would only invite the two to disagree.
+        * **clamp** -- the *rewritten* skill executes, so ``result['skill']``
+          shows the agent what actually ran rather than what it asked for, and
+          each clamp's ``detail`` is appended to the backend's own note.  A
+          successful result's ``reason`` is exactly this: an informational
+          note, which is where "you asked for 9 m, you got 1.2 m" belongs.
+        * **pass-through** -- the backend's result, untouched.  The layer hands
+          back the caller's own skill object when it changed nothing, so this
+          path is byte-identical to calling the backend directly.
+        """
+        state = SafetyState(observation=self._backend.get_observation())
+        verdict = self._safety.filter(skill, state)
+        if isinstance(verdict, SafetyEvent):
+            return SkillResult.failure(
+                skill, state.observation, verdict.failure_code, verdict.detail)
+        result = self._backend.execute(verdict.skill)
+        if not verdict.was_clamped:
+            return result
+        notes = [event.detail for event in verdict.clamps]
+        if result.reason:
+            notes.insert(0, result.reason)
+        # ``replace`` rather than a rebuild: every other field -- status, code,
+        # the skill that ran, the fresh observation -- travels across unread,
+        # so a field added to SkillResult cannot be silently dropped here.
+        return replace(result, reason='; '.join(notes))
 
 
 def _reject_arguments(name: str, arguments: Mapping[str, Any]) -> None:
@@ -167,13 +298,22 @@ def _reject_arguments(name: str, arguments: Mapping[str, Any]) -> None:
             f'{name} takes no arguments, got: {", ".join(sorted(arguments))}')
 
 
-def build_server(backend: RobotBackend | None = None) -> Server:
+def build_server(
+    backend: RobotBackend | None = None,
+    safety: SafetyLayer | None = None,
+) -> Server:
     """Return a server exposing ``backend`` (a fresh Mock by default) as tools.
 
     The backend is injectable so a test can hold the very object the server
     drives, and so a later Sim/Real backend needs no change here (D9).
+
+    ``safety`` is injectable for the same reason -- a deployment with a real
+    robot model wants its own collision guard, and a test wants to drive the
+    abort path -- but ``None`` means :func:`default_safety_layer` (the whole of
+    the shipped ``limits.yaml``, geometry included), never *no gate*.  There is
+    no way to build an ungated server (invariant 3).
     """
-    router = SkillToolRouter(MockBackend() if backend is None else backend)
+    router = SkillToolRouter(MockBackend() if backend is None else backend, safety)
     return Server(
         SERVER_NAME,
         version=SERVER_VERSION,
@@ -183,9 +323,12 @@ def build_server(backend: RobotBackend | None = None) -> Server:
     )
 
 
-async def run_stdio(backend: RobotBackend | None = None) -> None:
+async def run_stdio(
+    backend: RobotBackend | None = None,
+    safety: SafetyLayer | None = None,
+) -> None:
     """Serve one stdio client until it disconnects."""
-    server = build_server(backend)
+    server = build_server(backend, safety)
     async with stdio_server() as (read_stream, write_stream):
         await server.run(read_stream, write_stream, server.create_initialization_options())
 

@@ -14,7 +14,9 @@ Pure Python over the official MCP SDK (`mcp >= 2.0`), stdio transport, backed by
   than shipping a tool whose schema lies.
 - `tools.py` — the catalogue: one tool per entry in `SKILL_TYPES`, plus
   `get_observation` and `reset`, which are backend calls, not skills.
-- `server.py` — `build_server(backend=None)` and the stdio entry point.
+- `server.py` — `build_server(backend=None, safety=None)`,
+  `default_safety_layer()`, the safety gate on the skill path, and the stdio
+  entry point.
 
 ## The tools
 | tool | arguments | returns |
@@ -40,19 +42,78 @@ result carrying `status: "failed"` plus a `code` — not an error. Only a
 malformed *call* (arguments the skill seam rejects, or a tool that does not
 exist) comes back with `isError`, carrying the seam's own message.
 
+## The safety gate
+
+Every **skill** tool call passes through `robot_safety.SafetyLayer` before the
+backend sees it (D4/D17, invariant 3). The verdict is taken inside the router's
+lock, against an observation sampled inside that same lock, so nothing can move
+the world between "judged" and "executed". `get_observation` and `reset` do not
+go through it — they command no motion.
+
+| verdict | what the agent gets |
+|---|---|
+| pass-through | the backend's result, byte-identical to no gate at all |
+| clamp | the **rewritten** skill runs; `skill` shows what actually ran and the clamp's own words are appended to `reason` (backend note first, `; `-joined) |
+| abort | nothing runs; `status: "failed"`, `code: "rejected"`, `reason` is the safety event's own `detail`, and `observation` is the untouched pre-call world |
+
+No field was added to `SkillResult` for this: the payload is still exactly
+`SkillResult.to_dict()` at `schema_version: 1`, and `rejected` is the
+safety-owned member of `FailureCode` (`SAFETY_EVENT_CODES`), so an agent tells
+"the motion was stopped" from "pick a different goal" without string matching.
+
+`build_server(backend=None, safety=None)`: `safety=None` means
+`default_safety_layer()` — the *whole* of the shipped `limits.yaml`, envelope
+and keep-out geometry, built from one `SafetyLimits` so the two cannot come
+from different reads of the file. **Never "no gate"**: a non-`SafetyLayer`
+argument is a `TypeError`, and there is no argument, env var or code path that
+yields an ungated server. An injected `safety=` is used exactly as given —
+nothing is layered on top of a caller's own guard.
+
+**What actually bites today, honestly.** `SafetyState` is built from the
+backend's observation and nothing else, because no backend in this repo
+publishes telemetry — there is no e-stop line, no measured axis speed and no
+jaw-force reading anywhere. So of the layer's six checks, against the Mock:
+
+- **live:** the `extend_column` height clamp (the shipped `[0.0, 1.2]` m
+  travel range), the unclassified-skill refusal, and the `keep_out_boxes`
+  configured in `limits.yaml` — a `move_gripper` or `place` target inside
+  `below_floor` is aborted by the default server, with the region's label in
+  the reason. That geometry is still a **stub**: one floor half-space checked
+  against the *goal* pose. There is no robot model, no mesh and no swept
+  volume here, so it stops a hallucinated target, not a collision. **It judges
+  commanded target poses only** — `navigate_to` commands no pose, so driving
+  the base through a region is not checked, and neither is whatever the
+  grippers are carrying while it drives. A chore can therefore move an object
+  *through* (or park it in) a keep-out region without a verdict ever being
+  taken; only the explicit `place`/`move_gripper` target is judged.
+  `test_clear_the_table.py` asserts exactly that gap rather than papering over
+  it. Closing it needs a swept-volume check against the base's route, which is
+  MoveIt's job (invariant 5) and a later feature;
+- **wired and reachable, but silent until a backend measures something:**
+  e-stop, per-axis velocity caps, gripper over-force. They are not fiction —
+  the layer checks them on every call — but with no reading available they
+  cannot fire, and pretending otherwise would be the worst kind of safety
+  theatre.
+
+(`SafetyLayer()` constructed on its own still defaults to
+`NullCollisionGuard` — the honest default for a package with no robot model.
+Making the configured regions live is *this* server's decision, taken in
+`default_safety_layer()`, because this is the seam the LLM is on the other
+side of.)
+
 ## Run it
 
 From a clean checkout, with no colcon build:
 
 ```bash
-cd <repo> && PYTHONPATH=<repo>/src/robot_skills:<repo>/src/robot_backends:<repo>/src/robot_mcp \
+cd <repo> && PYTHONPATH=<repo>/src/robot_skills:<repo>/src/robot_backends:<repo>/src/robot_safety:<repo>/src/robot_mcp \
   pixi run --frozen python -m robot_mcp
 ```
 
 Concretely, for a checkout at `/home/sisyphus/worktrees/main`:
 
 ```bash
-cd /home/sisyphus/worktrees/main && PYTHONPATH=/home/sisyphus/worktrees/main/src/robot_skills:/home/sisyphus/worktrees/main/src/robot_backends:/home/sisyphus/worktrees/main/src/robot_mcp \
+cd /home/sisyphus/worktrees/main && PYTHONPATH=/home/sisyphus/worktrees/main/src/robot_skills:/home/sisyphus/worktrees/main/src/robot_backends:/home/sisyphus/worktrees/main/src/robot_safety:/home/sisyphus/worktrees/main/src/robot_mcp \
   pixi run --frozen python -m robot_mcp
 ```
 
@@ -69,7 +130,7 @@ It speaks MCP on stdin/stdout and logs nothing there, so point a client at it:
         "python", "-m", "robot_mcp"
       ],
       "env": {
-        "PYTHONPATH": "/home/sisyphus/worktrees/main/src/robot_skills:/home/sisyphus/worktrees/main/src/robot_backends:/home/sisyphus/worktrees/main/src/robot_mcp"
+        "PYTHONPATH": "/home/sisyphus/worktrees/main/src/robot_skills:/home/sisyphus/worktrees/main/src/robot_backends:/home/sisyphus/worktrees/main/src/robot_safety:/home/sisyphus/worktrees/main/src/robot_mcp"
       }
     }
   }
@@ -107,9 +168,32 @@ default. One server owns one backend for its lifetime, and `reset` is the only
 way back to the seed world.
 
 ## Deliberately absent
-**No cancellation, no `/stop`, no e-stop.** The skill interface is synchronous
-and instantaneous: when a tool call returns, the motion is over, so there is no
-in-flight command to cancel. Giving the agent a cancel tool would require an
-async execution model, which is a design decision this package does not get to
-make (see the issue's out-of-scope list). The safety layer, when it lands, sits
-below this server on the skill seam — never bypassed by it.
+
+**No max-steps, no chore timeout, no stuck-detection, no one-task-at-a-time.**
+`PROJECT.md` §"System topology" is explicit that these live server-side, below
+the tool boundary, "never trusted to the LLM" — and they are **not built**.
+They are the deferred D16 items, and this package ships none of them. What
+exists today is not equivalent:
+
+- the only step bound is a sentence in the agent's prompt (`robot_brain`'s
+  `AGENTS.md`: three failures at the same step is a report, not a fourth
+  attempt). That is defence in depth from the layer PROJECT.md says must not
+  be the enforcement;
+- `requestTimeoutMs` in the OpenClaw config bounds **one tool call**, not a
+  chore. A loop of individually-fast calls runs forever under it;
+- the router's `anyio.Lock` serializes **calls**, not *tasks*. Two chores
+  started from two messages interleave into one world, coherently per call and
+  incoherently overall.
+
+So an agent that misreads a refusal can loop indefinitely and nothing here
+stops it. Against Mock that costs nothing; it is a real gap before Sim, and a
+hard blocker before Real. Recorded as a follow-up rather than left implied.
+
+**No cancellation, no `/stop`, no e-stop tool.** The skill interface is
+synchronous and instantaneous: when a tool call returns, the motion is over, so
+there is no in-flight command to cancel. Giving the agent a cancel tool would
+require an async execution model, which is a design decision this package does
+not get to make (see the issue's out-of-scope list). The safety layer's e-stop
+check runs on every call, but nothing in this repo can engage the line yet — an
+e-stop the *agent* could trip would be the wrong shape anyway (D21: enforcement
+lives below the tool boundary, never in the LLM's hands).

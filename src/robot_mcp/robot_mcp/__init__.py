@@ -31,11 +31,18 @@ Or drive one in-process, as the tests do::
 """
 
 from robot_mcp.schemas import no_arguments_schema, schema_for_type, skill_schema
-from robot_mcp.server import build_server, main, run_stdio, SkillToolRouter
+from robot_mcp.server import (
+    build_server,
+    default_safety_layer,
+    main,
+    run_stdio,
+    SkillToolRouter,
+)
 from robot_mcp.tools import OBSERVATION_TOOL, RESET_TOOL, TOOL_NAMES, TOOLS
 
 __all__ = [
     'build_server',
+    'default_safety_layer',
     'main',
     'no_arguments_schema',
     'OBSERVATION_TOOL',
