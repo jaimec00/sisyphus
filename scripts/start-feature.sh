@@ -68,6 +68,7 @@ tmux has-session -t "$tmux_name" 2>/dev/null && die "tmux session already runnin
 
 # the command the detached manager will run
 inner="export PATH=\"\$HOME/.local/bin:\$HOME/.pixi/bin:\$PATH\"; \
+export CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS=0; \
 cd '$wt'; \
 mkdir -p '$logdir'; \
 echo '[bootstrap] pixi install (provision env before first agent action)...' | tee -a '$log'; \
@@ -85,7 +86,7 @@ if [ "$DRY_RUN" = "1" ]; then
   echo "[dry-run] tmux:     $tmux_name"
   echo "[dry-run] log:      $log"
   echo "[dry-run] manager command:"
-  echo "  claude --model $MODEL --permission-mode bypassPermissions --output-format stream-json --verbose -p '/run-feature $ISSUE'"
+  echo "  CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS=0 claude --model $MODEL --permission-mode bypassPermissions --output-format stream-json --verbose -p '/run-feature $ISSUE'"
   exit 0
 fi
 

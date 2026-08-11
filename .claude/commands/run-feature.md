@@ -18,30 +18,58 @@ the run is resumable.
    missing body as a **hard stop**, not a silent pass. If the issue is
    missing/unclear, stop and escalate to Sisyphus. (The brief is the issue, not a
    file.)
-2. Dispatch **context-explorer** → `context.md`.
-3. **Rule on open questions:** read the open questions `context.md` leaves and
+2. **Provision new dependencies first, then probe the real API.** If the feature
+   adds a **new third-party dependency**, install it in the worktree now
+   (`pixi add …`) and probe the **installed** package by *executing* against it —
+   `python -c` imports, `inspect.signature`, `dir()`, reading the installed
+   source. Do this **before** step 3 and before any ruling. Every ruling that
+   touches that dependency must quote **execute-verified** signatures and
+   behavior; never training-recalled API. (In #37 `mcp` turned out to be a 2.x
+   rewrite — `mcp.server.fastmcp` and `mcp.types` are gone — and every agent's
+   recalled API was wrong; only empirical probing caught it.)
+3. Dispatch **context-explorer** → `context.md`. **Do not mutate the worktree
+   while it is reading** — no `pixi add`, no installs, no edits. A concurrent
+   `pixi add` in #37 made the explorer report a bogus `pixi.toml`/`pixi.lock`
+   mismatch and a missing `.pixi/` env. Sequence provisioning (step 2) and
+   exploration; never overlap them.
+4. **Rule on open questions:** read the open questions `context.md` leaves and
    decide each one yourself as an explicit **manager ruling**, recorded in
    `status.md` (and/or `context.md`) **before** dispatching the implementer — lock
    the design up front rather than leaving it to be discovered mid-implementation.
-   Rulings cover in-scope questions only; a genuine **design fork** still
-   escalates to Sisyphus per the escalation rule below.
-4. Dispatch **implementer** → code + tests + `implementation.md`.
-5. Dispatch **red-team** → `red_team.md`.
-6. If BLOCK items exist: resume **implementer** to fix. Max **2** red-team↔fix
+   Rulings are **binding but not assumed correct**: a downstream agent that
+   believes a ruling is wrong **escalates to you in-process** — it must neither
+   silently deviate nor comply into a bug. (#37's ruling R5 prescribed a dict
+   merge whose order let a caller-supplied `skill` argument override the tool
+   name — a confused-deputy bug, authored by the manager, that the implementer
+   caught and escalated.) Rulings cover in-scope questions only; a genuine
+   **design fork** still escalates to Sisyphus per the escalation rule below.
+5. Dispatch **implementer** → code + tests + `implementation.md`.
+6. Dispatch **red-team** → `red_team.md`. Prompt it with **where to look
+   hardest**: name your own rulings and judgment calls as explicit targets
+   ("attack R5 — does that merge order let a caller override the tool name?")
+   with concrete failure hypotheses, not a generic "review this."
+7. If BLOCK items exist: resume **implementer** to fix. Max **2** red-team↔fix
    rounds; surviving NOTES → a **follow-up comment on the issue** (Sisyphus files
    the issues; do not create them yourself).
-7. Dispatch **test-runner**. If FAIL: resume implementer (may read the logs) →
-   back to steps 5/7 as needed until green.
-8. When green against **current** main: open a **squash-merge** PR, ensure the
+8. Dispatch **test-runner**. If FAIL: resume implementer (may read the logs) →
+   back to steps 6/8 as needed until green.
+9. When green against **current** main: open a **squash-merge** PR, ensure the
    full local suite passes, and report "ready" to Sisyphus with the PR link.
    **Do NOT merge, and do NOT delete the `docs/features/<slug>/` docs** — they
    stay for review; Sisyphus deletes them at merge (the CI "docs clean" check
    reads as failing until then — expected).
-9. **Comments** (manager-only, outward):
-   - **Follow-ups** (new work uncovered, incl. surviving NOTES) → comment on the
-     **issue** (title + rationale + affected paths). Sisyphus files them.
-   - **Retro** (workflow / agent-feature / "would've made dev easier" suggestions)
-     → comment on the **PR**. Sisyphus reads it via cron.
+10. **Comments** (manager-only, outward):
+    - **Follow-ups** (new work uncovered, incl. surviving NOTES) → comment on the
+      **issue** (title + rationale + affected paths). Sisyphus files them.
+    - **Retro** (workflow / agent-feature / "would've made dev easier" suggestions)
+      → comment on the **PR**. Sisyphus reads it via cron.
+
+**A stopped worker is resumed, not respawned.** If a worker subagent is
+terminated mid-run, recover it from its transcript (`claude --resume
+<session-id>`) instead of dispatching a fresh one — a fresh worker re-derives the
+design and may re-litigate settled rulings. Before judging what is missing,
+inspect the on-disk state it left (commits **and** untracked files) and
+build/source the env before running its tests.
 
 Escalate to Sisyphus only for a real blocker or a genuine design fork. As the
 worktree manager, **you are the only one who converses outward** — post a comment
