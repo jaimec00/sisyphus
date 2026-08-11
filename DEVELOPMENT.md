@@ -13,6 +13,11 @@ canonical**; this document defers to it.
   worktree. Runs the loop below, dispatching worker subagents. Reports "ready".
 - **Worker subagents (laptop)** — `context-explorer` (sonnet),
   `implementer` (opus), `red-team` (opus, read-only), `test-runner` (sonnet).
+- **Operational agent (laptop, Claude Code)** — one-shot agent for
+  bypass-the-loop operational/meta changes (docs, `.claude`, scripts). Sisyphus
+  hands it a change prompt; it authors the change, opens the PR, and **merges it
+  itself**. Dispatched via `scripts/start-op.sh`; loop in
+  `.claude/commands/run-op.md`.
 
 ## Where it runs
 Code, git, pixi env, and tests live on the **laptop**; **Claude Code** is the
@@ -52,7 +57,10 @@ deterministically.
 ## Change management & staying current
 Every change to `main` — features **and** Sisyphus's briefs/docs/ops — goes
 through a PR; no direct pushes. No manual approval gate; green checks are the
-gate. Operational/meta PRs are self-merged by Sisyphus without the full loop.
+gate. Operational/meta PRs bypass the full loop but are **not** authored or merged by
+Sisyphus directly: Sisyphus writes a change prompt and dispatches an **operational
+agent** (`scripts/start-op.sh`, the `/run-op` loop) that authors the change, opens
+the PR, and squash-merges it (`docs`/`.claude`/`scripts` scope only, never `src/`).
 Because main moves, agents `fetch`+`rebase origin/main` before work and after any
 merge — never build on stale main.
 
