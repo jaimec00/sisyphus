@@ -51,7 +51,7 @@ state substrate and the trigger.
    the manager posts a **retro comment on the PR**.
 10. **Merge** — when green, Sisyphus **deletes the ephemeral `docs/features/<slug>/`
     docs** (the CI "docs clean" gate then passes), picks order, and squash-merges
-    (no manual approval gate — green is the gate; Sisyphus merges on its own judgment — from the PR description, comments, and green CI, not by re-running tests — and asks Jaime only when a merge is genuinely tricky). Other open worktrees then rebase
+    (no manual approval gate — green is the gate, meaning docs-clean CI **plus** the laptop suite having run green in the loop; Sisyphus merges on its own judgment — from the PR description, comments, and those checks, not by re-running tests — and asks Jaime only when a merge is genuinely tricky). Other open worktrees then rebase
     on main, re-green, and take their turn.
 
 `status.md` tracks phase/round/blockers so any agent (or a restart) resumes
@@ -86,8 +86,17 @@ Run/test logs go to gitignored `.dev/runs/<slug>/<ts>/`, kept until the PR
 merges, then pruned. The nightly job cleans stragglers.
 
 ## Automated checks
-- **GitHub CI (PRs):** light guards — fails if `docs/features/` is non-empty
-  (ephemeral docs must be deleted at merge). Heavy tests run on the laptop.
+- **GitHub CI (PRs):** one light guard — fails if `docs/features/` is non-empty
+  (ephemeral docs must be deleted at merge). CI has **no pixi/RoboStack env**, so
+  `pixi run test` never runs on GitHub; "CI green" means *docs-clean passed*,
+  nothing more. Provisioning a CI pixi env was **explicitly declined** (Jaime,
+  2026-08-11) in favor of the laptop-as-gate model below — cheaper, and it matches
+  where the code, env, and tests live. Revisit only if the trust model (#16)
+  demands a GitHub-side gate.
+- **The test gate is the laptop.** The authoritative gate is `test-runner` running
+  the full `pixi run test` suite — including the test-integrity guard and
+  per-package ratchet below — inside the run loop, before the manager signals
+  "ready".
 - **Test-integrity guard (`pixi run test`):** refuses to call a hollow run
   green — a package with no result file, zero collected tests, or an
   all-skipped suite fails. It also **ratchets**: `scripts/test_baseline.json`
@@ -127,6 +136,7 @@ How a run actually starts and how Sisyphus learns it finished.
   Without it, delivery falls back to the default account, which is a different bot.
 
 ## Budgets & safety
-Per-feature agent/token caps. Merges require green checks (tests + red-team + CI);
-Sisyphus merges — no manual approval gate. No force-push to main; no destructive
+Per-feature agent/token caps. Merges require green checks — the laptop test suite
+and red-team inside the loop, plus docs-clean CI on GitHub (see *Automated
+checks*); Sisyphus merges — no manual approval gate. No force-push to main; no destructive
 actions without Jaime.

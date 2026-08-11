@@ -68,6 +68,17 @@ red-team + CI) are the gate; a green PR is mergeable. Two kinds:
   `docs/`, root `*.md`, `.claude/`, `scripts/`, ops tooling — **never `src/`**
   (that is the feature loop).
 
+**What "green" means — the laptop is the test gate.** GitHub CI has **no
+pixi/RoboStack environment**, so `pixi run test` (and its test-integrity guard +
+per-package ratchet) **never runs on GitHub**. GitHub Actions enforces exactly one
+thing: the **docs-clean guard** (`.github/workflows/guards.yml`). "CI green"
+therefore means *docs-clean passed* — not *tests passed*. The authoritative test
+gate is the **laptop `test-runner`** running the full `pixi run test` suite inside
+the run loop, before the manager signals "ready". Giving CI a pixi env was
+**explicitly declined** (Jaime, 2026-08-11) in favor of this laptop-as-gate model:
+cheaper, and it matches where the code, env, and tests actually live. Revisit only
+if the trust model (#16) demands a GitHub-side gate.
+
 ## Staying current with `main`
 `main` moves as PRs merge, so worktrees fall behind. Never build on stale main:
 - Create each worktree from the latest `origin/main`; `git fetch origin` before
@@ -99,8 +110,8 @@ Only the worktree manager comments outward; workers escalate to it in-process.
 The worktree manager opens the PR and signals "ready" (green against **current**
 main) — it does **not** merge and does **not** delete its `docs/features/<slug>/`
 docs (they stay for review). **At merge, Sisyphus deletes those ephemeral docs**
-(CI fails while `docs/features/` is non-empty — that check *is* the final gate),
-then **squash-merges** and chooses order. Jaime has **delegated the merge decision to Sisyphus**: Sisyphus merges green PRs on its own judgment — judging readiness from the **PR description**, the manager's "ready" signal and the **PR/issue comments** (red-team, retro, follow-ups), **CI being green**, and what makes sense for **merge order**. **Sisyphus does not re-run tests** — the test-runner already ran the suite inside the loop; testing is not Sisyphus's responsibility. It escalates a merge to Jaime **only when it is genuinely tricky** (a risky or ambiguous change, a design fork, or low confidence). Other open worktrees then rebase on main
+(CI fails while `docs/features/` is non-empty — that guard is CI's *only* check),
+then **squash-merges** and chooses order. Jaime has **delegated the merge decision to Sisyphus**: Sisyphus merges green PRs on its own judgment — judging readiness from the **PR description**, the manager's "ready" signal and the **PR/issue comments** (red-team, retro, follow-ups), **docs-clean CI being green**, **the laptop `pixi run test` suite having run green inside the loop**, and what makes sense for **merge order**. **Sisyphus does not re-run tests** — the test-runner already ran the suite inside the loop; testing is not Sisyphus's responsibility. It escalates a merge to Jaime **only when it is genuinely tricky** (a risky or ambiguous change, a design fork, or low confidence). Other open worktrees then rebase on main
 and re-green before their turn. Never force-push main; never delete branches
 others depend on.
 
