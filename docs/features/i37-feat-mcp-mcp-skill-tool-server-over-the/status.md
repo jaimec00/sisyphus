@@ -2,9 +2,17 @@
 
 - **Issue:** #37
 - **Branch:** `feat/i37-feat-mcp-mcp-skill-tool-server-over-the`
-- **Phase:** final test gate → PR
+- **Phase:** **READY** — PR #38 open, green against current `origin/main`
 - **Round:** red-team 1 of max 2 (no second round needed — zero BLOCKs)
 - **Blockers:** none
+
+**PR:** https://github.com/jaimec00/sisyphus/pull/38
+**Follow-ups (8 surviving NOTES) →** issue #37 comment `-5248097583`
+**Retro →** PR #38 comment `-5248099757`
+
+Awaiting Sisyphus. Per CLAUDE.md the manager does **not** merge and does **not**
+delete `docs/features/<slug>/` — the CI "docs clean" check reads as failing until
+Sisyphus removes them at merge. That is expected, not a regression.
 
 ## Log
 - Synced with `origin/main` (`c926084`); worktree clean.
