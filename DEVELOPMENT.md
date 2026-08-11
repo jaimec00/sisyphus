@@ -60,10 +60,11 @@ deterministically.
 ## Change management & staying current
 Every change to `main` — features **and** Sisyphus's briefs/docs/ops — goes
 through a PR; no direct pushes. No manual approval gate; green checks are the
-gate. Operational/meta PRs bypass the full loop but are **not** authored or merged by
+gate. Operational/meta PRs bypass the full loop but are **not** authored by
 Sisyphus directly: Sisyphus writes a change prompt and dispatches an **operational
-agent** (`scripts/start-op.sh`, the `/run-op` loop) that authors the change, opens
-the PR, and squash-merges it (`docs`/`.claude`/`scripts` scope only, never `src/`).
+agent** (`scripts/start-op.sh`, the `/run-op` loop) that authors the change and opens
+the PR (`docs`/`.claude`/`scripts` scope only, never `src/`); **Sisyphus merges it**,
+as it does every PR.
 Because main moves, agents `fetch`+`rebase origin/main` before work and after any
 merge — never build on stale main.
 

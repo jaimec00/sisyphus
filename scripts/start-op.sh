@@ -3,9 +3,10 @@
 #
 # Operational/meta changes — briefs, docs, agent-rule / .claude tweaks, ops
 # tooling — no longer go through the full feature loop and are no longer authored
-# or merged by Sisyphus directly. Sisyphus writes a change prompt and dispatches a
+# by Sisyphus directly. Sisyphus writes a change prompt and dispatches a
 # DETACHED Claude Code "operational agent" (the /run-op loop) that authors the
-# change, opens a PR, and squash-merges it. Mirrors start-feature.sh.
+# change and opens a PR; Sisyphus reviews and merges it (operational PRs are no
+# longer self-merged). Mirrors start-feature.sh.
 #
 # Usage:   start-op.sh <slug> "<change prompt>"
 #          start-op.sh <slug> -f <brief-file>
