@@ -19,9 +19,10 @@ from dataclasses import replace
 from mcp_fixtures import connected, payload
 import pytest
 from robot_backends import MockBackend, MockWorld, RobotModel
-from robot_mcp import build_server, SkillToolRouter
+from robot_mcp import build_server, default_safety_layer, SkillToolRouter
 from robot_safety import (
     KeepOutBoxGuard,
+    NullCollisionGuard,
     SafetyEvent,
     SafetyEventKind,
     SafetyLayer,
@@ -36,6 +37,9 @@ COLUMN = SafetyLimits.defaults().column
 
 #: A gripper target well below the floor, inside the shipped keep-out region.
 UNDERGROUND = Pose.from_xyz(0.30, 0.10, -0.50)
+
+#: The keep-out regions the shipped limits configure, read from the file.
+KEEP_OUT_BOXES = SafetyLimits.defaults().keep_out_boxes
 
 
 class RecordingBackend(MockBackend):
@@ -86,6 +90,55 @@ class VetoGuard:
 def keep_out_layer() -> SafetyLayer:
     """Return a layer whose collision guard enforces the shipped keep-out boxes."""
     return SafetyLayer(collision_guard=KeepOutBoxGuard.from_limits(SafetyLimits.defaults()))
+
+
+async def test_the_default_server_enforces_the_configured_keep_out_geometry():
+    """No injection: ``build_server()``'s own gate refuses a sub-floor target.
+
+    The whole point of the shipped ``keep_out_boxes`` -- "so the seam ships
+    working, not merely declared" (``limits.yaml``) -- is that they are live
+    where an LLM is on the other side.  A default server whose guard checked no
+    geometry would make that entry dead configuration, and nothing else in the
+    workspace would notice.
+    """
+    backend = RecordingBackend()
+
+    async with connected(backend) as client:
+        result = payload(await client.call_tool(
+            'move_gripper', {'side': 'left', 'pose': UNDERGROUND.to_dict()}))
+
+    assert result['status'] == 'failed'
+    assert result['code'] == 'rejected'
+    # Named, so an operator can find the region in limits.yaml and change it.
+    assert 'below_floor' in result['reason'], result['reason']
+    assert backend.executed == []
+
+
+async def test_the_default_gate_reads_one_limit_set_for_envelope_and_geometry():
+    """The clamp and the guard cannot disagree about which file they came from."""
+    layer = default_safety_layer()
+
+    assert isinstance(layer.collision_guard, KeepOutBoxGuard)
+    assert layer.collision_guard.boxes == KEEP_OUT_BOXES
+    assert layer.limits.column == SafetyLimits.defaults().column
+
+
+def test_a_limits_file_with_no_regions_yields_a_null_guard_not_a_dead_server():
+    """Configuring no keep-out region is a choice; it must not break startup.
+
+    ``KeepOutBoxGuard.from_limits`` deliberately refuses to build a guard that
+    would veto nothing.  That refusal is the *only* one swallowed here -- and
+    it degrades to the honest null guard rather than to no server at all.
+    """
+    boxless = SafetyLimits.from_yaml(
+        'column: {min_height: 0.0, max_height: 1.2}\n'
+        'velocity: {base: 0.6, column: 0.15, arm: 0.5}\n'
+        'gripper: {max_force: 40.0}\n')
+
+    layer = default_safety_layer(boxless)
+
+    assert isinstance(layer.collision_guard, NullCollisionGuard)
+    assert layer.limits is boxless
 
 
 async def test_the_default_server_clamps_an_out_of_range_column_height(backend, reference):
@@ -251,3 +304,20 @@ async def test_an_injected_layer_is_the_one_that_judges(backend):
 
     assert result['skill']['height'] == 0.4
     assert result['observation']['robot']['column_height'] == 0.4
+
+
+async def test_an_injected_layer_is_used_as_given_not_added_to(backend):
+    """Nothing is layered on top of a caller's own guard.
+
+    A caller that injects a layer with no geometry check gets exactly that:
+    the sub-floor target the *default* server refuses reaches the backend
+    here, and is refused by the backend's own reachability rule instead. A
+    gate that quietly added checks nobody asked for would be as surprising as
+    one that dropped them.
+    """
+    async with connected(backend, SafetyLayer(collision_guard=NullCollisionGuard())) as client:
+        result = payload(await client.call_tool(
+            'move_gripper', {'side': 'left', 'pose': UNDERGROUND.to_dict()}))
+
+    assert result['status'] == 'failed'
+    assert result['code'] == 'out_of_reach'

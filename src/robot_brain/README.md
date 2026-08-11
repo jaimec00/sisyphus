@@ -77,9 +77,14 @@ is where you find out if this build spells them the same.
    - `mcp.servers.robot`
    - `agents.entries.robot`
    - one entry appended to the top-level `bindings` array.
-3. **Point the launch command at your checkout.** The fragment's `args` hard-
-   code `/home/sisyphus/worktrees/main`; edit both the `PYTHONPATH` and the
-   `--manifest-path` if the laptop's repo lives elsewhere. All four packages
+3. **Point the launch command at your checkout — you almost certainly have to
+   edit this.** The fragment hard-codes `/home/sisyphus/worktrees/main` in
+   **three** places inside `mcp.servers.robot.args`: the four `PYTHONPATH`
+   entries, the `--manifest-path`, and the `ssh` destination alias `laptop`
+   (which must resolve on the *Pi's* `~/.ssh/config`, not on the laptop's).
+   None of those three was verified against a real Pi from this repo. Change
+   every one that does not match your machines; a stale path here fails as
+   "the agent has no tools", not as a readable error. All four packages
    (`robot_skills`, `robot_backends`, `robot_safety`, `robot_mcp`) must be on
    `PYTHONPATH` — `robot_safety` is a runtime dependency since the safety gate
    landed, and without it the server does not import at all.
@@ -113,7 +118,10 @@ is where you find out if this build spells them the same.
 8. **Prove the gate is server-side**: ask it to "raise the column to two
    metres". The tool result must come back `ok` with `skill.height` of `1.2`
    and a `reason` saying it was clamped — the clamp happens below the tool
-   boundary, so no prompt wording can talk the agent past it.
+   boundary, so no prompt wording can talk the agent past it. Then ask it to
+   "put your hand a metre underground": that one must come back
+   `status: "failed"`, `code: "rejected"`, naming the `below_floor` keep-out
+   region.
 
 ## What is tested here, and what is not
 
@@ -122,8 +130,10 @@ is where you find out if this build spells them the same.
   *this* repo's server over stdio without a pty, carries every package the
   server needs, exposes exactly the tools that exist, and holds no credential.
 - **Not tested, anywhere:** that OpenClaw accepts the fragment, that the SSH
-  leg works from the Pi, and that an LLM given this prompt actually clears the
-  table. The first two are step 4/6 above. For the third, the closest
+  leg works from the Pi, that any of the three hard-coded paths in step 3 are
+  right for your machines, and that an LLM given this prompt actually clears
+  the table. Nothing in this repo has ever run against a real Pi; the first
+  three are steps 3/4/6 above. For the third, the closest
   automated stand-in is
   `src/robot_mcp/test/test_clear_the_table.py`, which drives the whole chore
   over real MCP calls with a deterministic driver in place of the model — it

@@ -44,7 +44,15 @@ from mcp.server.stdio import stdio_server
 import mcp_types as types
 from robot_backends import MockBackend, RobotBackend
 from robot_mcp.tools import OBSERVATION_TOOL, RESET_TOOL, TOOL_NAMES, TOOLS
-from robot_safety import SafetyEvent, SafetyLayer, SafetyState
+from robot_safety import (
+    KeepOutBoxGuard,
+    NullCollisionGuard,
+    SafetyConfigError,
+    SafetyEvent,
+    SafetyLayer,
+    SafetyLimits,
+    SafetyState,
+)
 from robot_skills import (
     JsonDict,
     SerializationError,
@@ -55,7 +63,13 @@ from robot_skills import (
     SkillResult,
 )
 
-__all__ = ['build_server', 'main', 'run_stdio', 'SkillToolRouter']
+__all__ = [
+    'build_server',
+    'default_safety_layer',
+    'main',
+    'run_stdio',
+    'SkillToolRouter',
+]
 
 #: Server identity reported to the client during initialization.
 SERVER_NAME = 'robot_mcp'
@@ -117,6 +131,39 @@ def _error_result(error: str, message: str) -> types.CallToolResult:
     )
 
 
+def default_safety_layer(limits: SafetyLimits | None = None) -> SafetyLayer:
+    """Return the gate a server with no injected ``safety`` runs behind.
+
+    The whole of ``limits.yaml``, enforced: the envelope *and* the keep-out
+    geometry configured beside it.  ``SafetyLayer()`` on its own defaults to
+    :class:`~robot_safety.NullCollisionGuard`, which is the honest default for
+    a package with no robot model -- but it would leave the shipped
+    ``keep_out_boxes`` declared and not working at the one seam an LLM is on
+    the other side of, and the file says in its own words that the entry exists
+    "so the seam ships working, not merely declared".  So this server builds
+    the guard from the same limit set it gives the layer: **one**
+    :class:`~robot_safety.SafetyLimits`, so the envelope and the geometry can
+    never come from two different reads of the file.
+
+    A limits file with no regions is a configuration choice, not a broken
+    server: ``KeepOutBoxGuard.from_limits`` refuses to build a guard that would
+    check nothing, and that refusal alone falls back to
+    :class:`~robot_safety.NullCollisionGuard`.  Any *other* configuration error
+    is left to raise -- a malformed limits file must not quietly become a
+    permissive server.
+
+    Still stub geometry (a floor half-space, no robot model, no swept volume);
+    real collision checking is a later feature.
+    """
+    if limits is None:
+        limits = SafetyLimits.defaults()
+    try:
+        guard = KeepOutBoxGuard.from_limits(limits)
+    except SafetyConfigError:
+        guard = NullCollisionGuard()
+    return SafetyLayer(limits=limits, collision_guard=guard)
+
+
 class SkillToolRouter:
     """Dispatch MCP tool calls onto one backend, through the safety gate.
 
@@ -135,14 +182,18 @@ class SkillToolRouter:
     """
 
     def __init__(self, backend: RobotBackend, safety: SafetyLayer | None = None) -> None:
-        """Wrap ``backend`` behind ``safety`` (the shipped defaults by default).
+        """Wrap ``backend`` behind ``safety`` (:func:`default_safety_layer` if none).
+
+        An injected layer is used **as given** -- nothing is layered on top of
+        a caller's own guard, because a gate that quietly adds checks the
+        caller did not ask for is as surprising as one that drops them.
 
         ``safety`` is type-checked rather than duck-typed: "anything with a
         ``filter``" would make a no-op stand-in an accepted way to build an
         ungated server, which is precisely the thing invariant 3 forbids.
         """
         if safety is None:
-            safety = SafetyLayer()
+            safety = default_safety_layer()
         if not isinstance(safety, SafetyLayer):
             raise TypeError(
                 f'safety must be a SafetyLayer, got {type(safety).__name__}')
@@ -258,8 +309,9 @@ def build_server(
 
     ``safety`` is injectable for the same reason -- a deployment with a real
     robot model wants its own collision guard, and a test wants to drive the
-    abort path -- but ``None`` means *the shipped defaults*, never *no gate*.
-    There is no way to build an ungated server (invariant 3).
+    abort path -- but ``None`` means :func:`default_safety_layer` (the whole of
+    the shipped ``limits.yaml``, geometry included), never *no gate*.  There is
+    no way to build an ungated server (invariant 3).
     """
     router = SkillToolRouter(MockBackend() if backend is None else backend, safety)
     return Server(

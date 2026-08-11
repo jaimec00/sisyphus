@@ -13,6 +13,7 @@ the one file touched outside the owned paths.
 | `5eb609b` | `test_clear_the_table.py` — the milestone end-to-end test |
 | `843a925` | `src/robot_brain`: prompt, config fragment, loaders, drift guards, README |
 | `f431b56` | `scripts/test_baseline.json` re-cut (F7) |
+| (R12) | the shipped `keep_out_boxes` made live at the default server |
 
 ### 1. The safety gate (R1–R4)
 
@@ -66,6 +67,34 @@ Decisions taken inside the rulings:
 (R4), no new `SkillResult` field and no edit to `src/robot_skills` (R1). The
 existing `test_tool_calls.py` passes **unchanged**, which is the pass-through
 proof.
+
+#### R12 — the configured keep-out geometry is live at the default server
+
+I raised the gap (a default `SafetyLayer()` uses `NullCollisionGuard`, so
+`limits.yaml`'s `below_floor` region was declared-but-inert at the one seam the
+LLM is behind) rather than closing it unilaterally; the manager ruled to close
+it, in `robot_mcp` only. `default_safety_layer(limits=None)` builds **one**
+`SafetyLimits.defaults()` and hands the same object to both
+`SafetyLayer(limits=…)` and `KeepOutBoxGuard.from_limits(…)`, so the envelope
+and the geometry cannot come from two different reads of the file. A limits set
+with no regions makes `from_limits` raise `SafetyConfigError` — the *only*
+error swallowed, and it degrades to `NullCollisionGuard()` rather than failing
+server construction; any other error still raises, because a malformed limits
+file must not quietly become a permissive server. An injected `safety=` is used
+exactly as given; nothing is layered on top of a caller's guard.
+
+Four tests: the **default** server (`build_server()`, no arguments, driven
+through the real MCP client) aborts a sub-floor `move_gripper` with
+`status: "failed"`, `code: "rejected"` and `below_floor` in the reason, with
+the backend's execute log empty; the default layer's guard is a
+`KeepOutBoxGuard` holding exactly the shipped boxes and the same column limits;
+a box-less limits file yields a `NullCollisionGuard` and a working server; and
+an injected null-guard layer lets the same sub-floor target through to the
+backend (which refuses it `out_of_reach`), proving injection wins entirely.
+
+**`SafetyLayer()`'s own default guard was not changed.** Whether `robot_safety`
+should default to enforcing its configured regions is that package's decision,
+not this feature's — it stays as follow-up **F8** for Sisyphus to file.
 
 ### 2. `default_world()` (R10)
 
@@ -177,41 +206,46 @@ landed after the baseline was last written), `robot_brain 0 → 37`,
 | command | result |
 |---|---|
 | `pixi run build` | 8 packages finished, clean |
-| `pixi run test` | **584 tests, 0 errors, 0 failures, 0 skipped**; audit passed, all stages passed |
-| `pixi run python scripts/check_test_integrity.py --update-baseline` | 4 packages changed, written from a green run |
-| per-package `pytest` (fast loop) | robot_skills 109, robot_backends 63, robot_safety 179, robot_mcp 70, robot_brain 40 |
+| `pixi run test` (before R12) | 584 tests, 0 errors, 0 failures, 0 skipped |
+| `pixi run test` (after R12) | **588 tests, 0 errors, 0 failures, 0 skipped**; audit passed, all stages passed |
+| `pixi run python scripts/check_test_integrity.py --update-baseline` | 4 packages changed, then `robot_mcp 67 → 71` after R12; both written from a green run |
+| per-package `pytest` (fast loop) | robot_skills 109, robot_backends 63, robot_safety 179, robot_mcp 74, robot_brain 40 |
 | documented stdio command, stdout/stderr split | stdout: one JSON-RPC frame; stderr: pixi's manifest warning |
 
 The one intermediate red: `scripts/tests/test_ratchet.py` failed once
 `robot_brain` gained code — see below. Fixed in the same commit that caused it.
 
-## Outside the owned paths — flagged, not silent
+## Outside the owned paths — forced, flagged, not scope creep
 
-1. **`scripts/tests/test_ratchet.py`** listed `robot_brain` among the packages
-   asserted to be *skeletons*. R5 ends that status deliberately, and the test's
-   own docstring says a skeleton growing code is "worth stopping for" — so the
-   package moved from the skeleton list to the has-implementation list (it now
-   has 37 real tests, which is exactly what the guard demands of it). One-line
-   change plus a comment; nothing about the guard's behaviour changed.
-2. **`src/robot_safety/README.md`** — its status paragraph still said "wiring
-   into the brain loop [is a] separate feature". Replaced with who calls the
-   layer now, and an honest note that only the MCP seam is gated and that three
-   checks cannot fire without telemetry. Documentation only; no code in
-   `robot_safety` was touched.
+Both edits below were *made red by this feature* and could not be left alone;
+neither adds capability, and the manager has confirmed keeping them.
+
+1. **`scripts/tests/test_ratchet.py`** asserts an inventory of which packages
+   are skeletons, and it listed `robot_brain`. R5 deliberately ends that
+   status, so the moment `robot_brain` gained `agent.py` the workspace-tooling
+   suite went **red** (`AssertionError: robot_brain is no longer a skeleton`).
+   The guard's own docstring names this exactly: "either a skeleton package
+   grew code (and now owes real tests) or the detection became too eager". It
+   is the first case, and the package pays what the guard demands — 37 real
+   tests. The fix is one line (move the name from the skeleton list to the
+   has-implementation list) plus a comment saying why. **No behaviour of the
+   guard changed**, and the alternative — leaving it red — would have broken
+   the whole test gate for an unrelated package.
+2. **`src/robot_safety/README.md`** — its status paragraph asserted that
+   "wiring into the brain loop [is a] separate feature". This feature *is* that
+   wiring, so the sentence became **false on merge**. Replaced with who calls
+   the layer now, plus the honest limits (only the MCP seam is gated; three
+   checks cannot fire without telemetry). Documentation only — **no code in
+   `robot_safety` was touched**, and the package stays read-only per the brief.
 
 ## Things a reviewer should look at hardest
 
-- **The default server's collision guard is `NullCollisionGuard`.** R3 says
-  `safety=None` means `SafetyLayer()`, and `SafetyLayer()`'s own default guard
-  checks no geometry — so the `below_floor` keep-out box that ships in
-  `limits.yaml` is **not enforced** by a default `robot_mcp` server. I followed
-  R3 literally rather than silently substituting
-  `KeepOutBoxGuard.from_limits(SafetyLimits.defaults())`, documented the gap in
-  `robot_mcp/README.md`, and raise it here: if the manager wants the shipped
-  keep-out boxes live at the seam, that is a one-line change to `build_server`
-  and a ruling I would rather have than assume. (`robot_safety`'s own docstring
-  argues a guard built from config that vetoes nothing is worse than none —
-  which cuts *for* wiring it, since the config does configure a region.)
+- **The keep-out geometry is live but it is still a stub.** Since R12 the
+  default server enforces `limits.yaml`'s regions, which is a real check on a
+  hallucinated target — but it tests the *goal pose* against axis-aligned
+  boxes. No robot model, no mesh, no swept volume, one configured half-space.
+  Read `robot_mcp/README.md`'s "what actually bites today" as the accurate
+  statement of coverage; anything stronger would be overselling it.
 - **Composed `reason` strings are prose, not structure.** A consumer that wants
   to know *what* was clamped must read English or diff the skill it sent
   against `result['skill']`. That is R1's deliberate deferral (F3), but it is
@@ -229,13 +263,23 @@ The one intermediate red: `scripts/tests/test_ratchet.py` failed once
 
 ## Surviving follow-ups (manager posts; I file nothing)
 
-F1–F7 from `status.md` all stand. Two more surfaced during implementation:
+F1–F7 from `status.md` all stand. Two more surfaced during implementation, and
+R12 narrowed the first of them:
 
-- **F8 — the shipped `keep_out_boxes` are inert at the MCP seam** (the
-  `NullCollisionGuard` default above). Paths: `src/robot_mcp/robot_mcp/server.py`,
-  `src/robot_safety/robot_safety/limits.yaml`.
+- **F8 — should `SafetyLayer()` itself default to enforcing its configured
+  keep-out boxes?** R12 closed the gap at the MCP seam
+  (`robot_mcp.default_safety_layer`), so this is no longer a hole in the
+  product; what remains is `robot_safety`'s own choice of default, which every
+  *other* future caller inherits. `robot_safety`'s docstring argues both sides
+  (a null guard is honest for a package with no robot model; a guard built
+  from config that vetoes nothing is a dead parameter). That package's
+  decision, not this feature's. Paths: `src/robot_safety/robot_safety/layer.py`,
+  `src/robot_safety/robot_safety/collision.py`.
 - **F9 — the OpenClaw config fragment hard-codes
-  `/home/sisyphus/worktrees/main`** in three places (`PYTHONPATH`,
-  `--manifest-path`). Fine for one operator, wrong the moment the laptop's
-  checkout moves; a generator or an env-var indirection would fix it. Paths:
+  `/home/sisyphus/worktrees/main`** in `PYTHONPATH` and `--manifest-path`, and
+  the SSH alias `laptop` must resolve on the Pi. Left as-is per the manager;
+  `robot_brain/README.md` step 3 now calls out all three explicitly, says none
+  was verified against a real Pi, and warns that a stale path fails as "the
+  agent has no tools" rather than as a readable error. A generator or an
+  env-var indirection would fix it properly. Paths:
   `src/robot_brain/robot_brain/openclaw/openclaw.robot.json`.
