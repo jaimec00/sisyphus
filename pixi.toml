@@ -30,3 +30,6 @@ build = "colcon build --symlink-install"
 test = "python scripts/check_test_integrity.py"
 # Re-read the results already in build/ without re-running anything.
 test-audit = "python scripts/check_test_integrity.py --audit-only"
+
+[pypi-dependencies]
+mcp = ">=2.0.0, <3"
