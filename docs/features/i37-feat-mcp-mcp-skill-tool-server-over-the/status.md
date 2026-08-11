@@ -2,8 +2,8 @@
 
 - **Issue:** #37
 - **Branch:** `feat/i37-feat-mcp-mcp-skill-tool-server-over-the`
-- **Phase:** manager rulings recorded → implement
-- **Round:** —
+- **Phase:** final test gate → PR
+- **Round:** red-team 1 of max 2 (no second round needed — zero BLOCKs)
 - **Blockers:** none
 
 ## Log
@@ -17,6 +17,55 @@
   (see R2). `pixi add --pypi "mcp>=2.0.0,<3"` → `mcp==2.0.0` installed;
   `pixi.lock` diff is **purely additive** (1174 insertions, 0 deletions).
 - Manager rulings R1–R12 recorded (below) — design locked before implementation.
+- Implementer round 1 → `ec025a7` (`robot_mcp` package skeleton + SKILL_TYPES-derived
+  tool server). Run was cut short by a harness background-wait timeout, **not** by
+  a defect: 53–54 tests pass; the only failures are mechanical (`test_flake8`,
+  127 issues — mostly E501 + import ordering; `test_copyright`, missing ament
+  headers). `README.md` (criterion 6) and `implementation.md` were never written.
+- Implementer resumed to clear lint, add copyright headers, write `README.md`
+  + `implementation.md`, track the test files, and green `pixi run test`.
+- Implementer round 2 → `4e8f0bb` (tests + README), `2869fdb` (implementation.md).
+  flake8/copyright/pep257 fixed by real import-ordering and header additions —
+  no `noqa` blankets, no linter-config loosening.
+- **Manager amendment to R5.** The implementer flagged that R5's prescribed
+  `skill_from_dict({SKILL_KEY: params.name, **arguments})` merge order lets a
+  caller-supplied `skill` argument override the tool name (calling `grasp` with
+  `{'skill': 'navigate_to', ...}` would run `navigate_to`) — a confused-deputy
+  bug in the **ruling**, not in the code. It kept the prescribed construction and
+  added an explicit guard rejecting a `skill` argument
+  (`src/robot_mcp/robot_mcp/server.py:150-155`, covered by
+  `test_tool_calls.py:191`). **Manager: endorsed.** R5 is amended to require that
+  guard. This is the right call — it keeps all *field* validation in the seam
+  while rejecting the one key the seam cannot adjudicate, since the seam cannot
+  know which tool was invoked.
+- **test-runner: PASS** against current `origin/main` (`c926084`), which the
+  branch is still based on directly — no rebase needed.
+  307 tests / 0 errors / 0 failures / 0 skipped across 9 packages
+  (`robot_mcp` 55). `AUDIT PASSED: every expected package collected tests`.
+  Logs: `.dev/runs/i37-feat-mcp-mcp-skill-tool-server-over-the/20260810_213400/`.
+- **red-team round 1: BLOCK list empty**, 10 NOTEs → `red_team.md`. It verified
+  criterion-2 verbatim fidelity against the installed SDK source, traced eight
+  handler-escape paths, confirmed the R10 lock covers every backend mutation,
+  confirmed scope discipline, and judged the tests oracle-based rather than
+  self-comparing. It also confirmed the `skill`-key guard is correct/complete.
+- **Manager: elected 2 of the 10 NOTEs for a fix now**, both test-only and both
+  landing on rubric-**BLOCK** categories rather than style:
+  - NOTE 6 — `test_no_ros_runtime.py:65` hard-codes the tool count `'9'`, which
+    contradicts R4's extensibility claim (adding a skill would fail an unrelated
+    test) → **extensibility trap**.
+  - NOTE 8 — `test_stdio_transport.py` has no read timeout, so a server that
+    starts but never answers hangs the suite instead of failing it; on the Pi
+    that stalls CI rather than reporting → **inadequate test**.
+  Plus a comment-only reword of the concurrency test's overclaiming docstring
+  (NOTE 1). The other eight NOTEs are deliberately **not** fixed here — they go
+  to the issue as follow-ups so the PR diff stays reviewable.
+- Implementer round 3 → `28596a0` (test fixes), `987021b` (doc). NOTE 6 now
+  derives the expected tool count from `len(SKILL_TYPES) + len(FIXED_TOOL_NAMES)`;
+  NOTE 8 wraps the stdio exchange in `anyio.fail_after(30.0)` — and the
+  implementer **proved the bound bites** by temporarily setting it to 0.05s and
+  confirming a `TimeoutError` failure rather than a hang, then restoring it
+  (~1.4s actual runtime, ~20x headroom). Concurrency-test docstring reworded to
+  state what it actually pins down. The other eight NOTEs untouched.
 
 ---
 
