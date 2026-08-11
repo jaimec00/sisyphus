@@ -15,8 +15,11 @@ self-merge; Sisyphus merges those too.
 1. **Description** — what it claims to do.
 2. **PR/issue comments** — the manager's "ready" signal, red-team, retro, follow-ups
    (feature runs). For an `ops/op-*` PR the ready signal is simply GREEN CI + in scope.
-3. **CI is GREEN.**
-4. **Merge-order** sense against any other open PRs.
+3. **CI is GREEN** — note this is the **docs-clean guard only**. GitHub has no
+   pixi/RoboStack env, so `pixi run test` never runs there.
+4. **The laptop suite ran green inside the loop** — that is the real test gate
+   (feature runs); the manager's "ready" signal attests to it.
+5. **Merge-order** sense against any other open PRs.
 
 Do NOT re-run tests — the test-runner already ran the suite inside the loop.
 
