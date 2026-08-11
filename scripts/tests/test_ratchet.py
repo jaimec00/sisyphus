@@ -324,10 +324,11 @@ def test_the_real_skeleton_packages_are_still_read_as_skeletons():
         source_dir, guard.find_source_packages(source_dir))
 
     for name in ('robot_brain', 'robot_bringup', 'robot_description',
-                 'robot_perception', 'robot_safety'):
+                 'robot_perception'):
         assert modules.get(name) == (), f'{name} is no longer a skeleton'
     assert modules['robot_skills'], 'robot_skills holds implementation code'
     assert modules['robot_backends'], 'robot_backends holds implementation'
+    assert modules['robot_safety'], 'robot_safety holds the clamp layer'
 
 
 # --- the baseline file -----------------------------------------------------
