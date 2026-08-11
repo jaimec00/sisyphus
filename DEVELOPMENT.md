@@ -15,9 +15,9 @@ canonical**; this document defers to it.
   `implementer` (opus), `red-team` (opus, read-only), `test-runner` (sonnet).
 - **Operational agent (laptop, Claude Code)** — one-shot agent for
   bypass-the-loop operational/meta changes (docs, `.claude`, scripts). Sisyphus
-  hands it a change prompt; it authors the change, opens the PR, and **merges it
-  itself**. Dispatched via `scripts/start-op.sh`; loop in
-  `.claude/commands/run-op.md`.
+  hands it a change prompt; it authors the change and opens the PR, stopping at
+  an open, CI-green PR — **Sisyphus merges it**. Dispatched via
+  `scripts/start-op.sh`; loop in `.claude/commands/run-op.md`.
 
 ## Where it runs
 Code, git, pixi env, and tests live on the **laptop**; **Claude Code** is the
@@ -91,6 +91,32 @@ merges, then pruned. The nightly job cleans stragglers.
 - **Laptop nightly cron:** runs the full suite on `main`, reports regressions.
 - **Sisyphus (Pi) cron:** polls open PR statuses + manager comments (escalations,
   follow-ups, retros), squash-merges green PRs (escalating to Jaime only when a merge is genuinely tricky), answers escalations.
+
+## Dispatch, push-notify, and merge flow
+How a run actually starts and how Sisyphus learns it finished.
+
+- **Dispatch (pull-started).** Runs begin from the Pi via
+  `scripts/pi/dispatch.sh feature <issue> [slug]` or
+  `scripts/pi/dispatch.sh op <slug> (-f <brief-file> | "<prompt>")`. It SSHes to the
+  laptop launcher (`scripts/start-feature.sh` / `scripts/start-op.sh`), which starts the
+  manager or operational agent detached in tmux, and additionally spawns the Pi-side
+  push watcher for that run. `DRY_RUN=1` prints the plan and starts nothing (no watcher).
+- **Push notifier.** `scripts/pi/watch-run.sh` waits for the run's `EXIT=<code>` marker
+  in the run log — **not** tmux-session death, because the launcher leaves an idle
+  `exec bash` shell behind, so the session outlives the run. On the marker it fires
+  **one** wake to Sisyphus on the local Gateway, delivered via the `sisyphus` Telegram
+  account. Latency ~15s. Hard kills (OOM, `kill -9`, reboot) never write the marker, so
+  the watcher falls back to session-gone and wakes anyway.
+- **Backstop cron.** `sisyphus-pr-check-backstop` sweeps every 15 min. It is a pure
+  safety net for anything the push missed (Pi reboot, dead watcher, dropped SSH) — not
+  the primary path.
+- **Merge authority.** Sisyphus performs **every** merge. The cron never merges (it only
+  wakes Sisyphus); subagents and worktree managers never merge (they stop at an open,
+  green PR). Both the watcher and the cron reference
+  `.claude/commands/run-merge-eval.md` — the single canonical merge policy — instead of
+  embedding their own copy.
+- **Routing contract.** Any wake to Sisyphus **must** pin `--reply-account sisyphus`.
+  Without it, delivery falls back to the default account, which is a different bot.
 
 ## Budgets & safety
 Per-feature agent/token caps. Merges require green checks (tests + red-team + CI);
