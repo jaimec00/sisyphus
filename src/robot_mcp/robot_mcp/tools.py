@@ -20,9 +20,8 @@ than shipping a broken tool to an agent.
 import inspect
 
 import mcp_types as types
-from robot_skills import SKILL_TYPES, Skill
-
 from robot_mcp.schemas import no_arguments_schema, skill_schema
+from robot_skills import Skill, SKILL_TYPES
 
 __all__ = [
     'build_tools',

@@ -33,13 +33,12 @@ import json
 from typing import Any, Mapping
 
 import anyio
-import mcp_types as types
 from mcp.server.lowlevel import Server
 from mcp.server.stdio import stdio_server
+import mcp_types as types
 from robot_backends import MockBackend, RobotBackend
-from robot_skills import JsonDict, SerializationError, SKILL_KEY, skill_from_dict, SKILL_TYPES
-
 from robot_mcp.tools import OBSERVATION_TOOL, RESET_TOOL, TOOL_NAMES, TOOLS
+from robot_skills import JsonDict, SerializationError, skill_from_dict, SKILL_KEY, SKILL_TYPES
 
 __all__ = ['build_server', 'main', 'run_stdio', 'SkillToolRouter']
 

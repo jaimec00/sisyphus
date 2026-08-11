@@ -49,6 +49,7 @@ def no_arguments_schema() -> JsonDict:
         'additionalProperties': False,
     }
 
+
 #: The scalar field types the seam uses, and their JSON Schema equivalents.
 _SCALAR_SCHEMAS: Mapping[type, JsonDict] = MappingProxyType({
     str: {'type': 'string'},
