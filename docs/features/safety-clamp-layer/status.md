@@ -1,6 +1,6 @@
 # Status — `safety-clamp-layer` (issue #43)
 
-- **Phase:** red-team round 2 done (0 BLOCK) → final polish → test-runner
+- **Phase:** green — PR open, ready for Sisyphus
 - **Branch:** `feat/i43-robot-safety-dynamic-clamp-abort-safety`, based on `origin/main` @ `9236fef`
 - **Blockers:** none
 - **Escalations:** none
