@@ -59,13 +59,14 @@ Sisyphus's). There is **no manual approval gate** — green checks (tests +
 red-team + CI) are the gate; a green PR is mergeable. Two kinds:
 - **Feature PRs** run the full loop (context → implement → red-team → test).
 - **Operational/meta PRs** — briefs, docs, agent-rule / `.claude` tweaks, ops
-  tooling — bypass the full loop, but Sisyphus no longer authors or merges them
+  tooling — bypass the full loop, but Sisyphus no longer authors them
   directly. Sisyphus writes a change prompt and dispatches an **operational
   agent** — `scripts/start-op.sh <slug> "<prompt>"`, driving the
-  `.claude/commands/run-op.md` loop — which authors the change, opens the PR, and
-  **squash-merges it itself**. Operational scope only: `docs/`, root `*.md`,
-  `.claude/`, `scripts/`, ops tooling — **never `src/`** (that is the feature
-  loop).
+  `.claude/commands/run-op.md` loop — which authors the change and opens the PR.
+  The operational agent does **not** merge: **Sisyphus squash-merges operational
+  PRs** once CI is green, exactly as it does feature PRs. Operational scope only:
+  `docs/`, root `*.md`, `.claude/`, `scripts/`, ops tooling — **never `src/`**
+  (that is the feature loop).
 
 ## Staying current with `main`
 `main` moves as PRs merge, so worktrees fall behind. Never build on stale main:
