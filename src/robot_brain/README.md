@@ -154,6 +154,12 @@ is where you find out if this build spells them the same.
   and seed world; the fragment parses, names the agent consistently, launches
   *this* repo's server over stdio without a pty, carries every package the
   server needs, exposes exactly the tools that exist, and holds no credential.
+- **Not enforced anywhere, and not by this prompt:** max-steps, chore timeout,
+  stuck-detection and one-task-at-a-time. `PROJECT.md` requires them
+  server-side, "never trusted to the LLM"; they are unbuilt (deferred D16), and
+  `AGENTS.md`'s "three failed attempts is a report, not a fourth attempt" is
+  the agent being careful, **not** a guard. See `robot_mcp/README.md`'s
+  "Deliberately absent".
 - **Not tested, anywhere:** that OpenClaw accepts the fragment, that the SSH
   leg works from the Pi, that any of the three hard-coded paths in step 3 are
   right for your machines, and that an LLM given this prompt actually clears

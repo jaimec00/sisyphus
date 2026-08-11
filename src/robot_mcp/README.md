@@ -168,6 +168,27 @@ default. One server owns one backend for its lifetime, and `reset` is the only
 way back to the seed world.
 
 ## Deliberately absent
+
+**No max-steps, no chore timeout, no stuck-detection, no one-task-at-a-time.**
+`PROJECT.md` §"System topology" is explicit that these live server-side, below
+the tool boundary, "never trusted to the LLM" — and they are **not built**.
+They are the deferred D16 items, and this package ships none of them. What
+exists today is not equivalent:
+
+- the only step bound is a sentence in the agent's prompt (`robot_brain`'s
+  `AGENTS.md`: three failures at the same step is a report, not a fourth
+  attempt). That is defence in depth from the layer PROJECT.md says must not
+  be the enforcement;
+- `requestTimeoutMs` in the OpenClaw config bounds **one tool call**, not a
+  chore. A loop of individually-fast calls runs forever under it;
+- the router's `anyio.Lock` serializes **calls**, not *tasks*. Two chores
+  started from two messages interleave into one world, coherently per call and
+  incoherently overall.
+
+So an agent that misreads a refusal can loop indefinitely and nothing here
+stops it. Against Mock that costs nothing; it is a real gap before Sim, and a
+hard blocker before Real. Recorded as a follow-up rather than left implied.
+
 **No cancellation, no `/stop`, no e-stop tool.** The skill interface is
 synchronous and instantaneous: when a tool call returns, the motion is over, so
 there is no in-flight command to cancel. Giving the agent a cancel tool would
