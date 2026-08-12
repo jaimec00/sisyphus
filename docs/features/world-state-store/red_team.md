@@ -426,3 +426,289 @@ exit loudly at startup (covered at the store level, not at the CLI level).
    blanks), so a perception writer is not boxed in.
 5. **Reuse** — held; `robot_skills.serialization` is reused verbatim, stdlib
    `json`/`tempfile`/`os.replace` only, no new dependency.
+
+---
+---
+
+# Round 2 — review of the fix commit `12c49a1`
+
+Scoped to the fix commit. Round-1 findings already cleared are not re-reviewed;
+this section attacks the fixes themselves and sweeps for regressions.
+
+**Verdict: 1 BLOCK, and it is a one-line documentation fix in
+`docs/design/decisions.md` — the same false claim BLOCK-3 removed everywhere
+else, left standing in the one document that survives the merge.** Every other
+fix is correct, and three of them are better than what I asked for. Round 1's
+BLOCK-1/-2/-3 and promoted NOTE-1/-3 are all genuinely resolved, each with a test
+that fails on the un-fixed code.
+
+## BLOCK
+
+### R2-BLOCK-4 — `decisions.md` still carries the "opens no file at all" claim BLOCK-3 removed
+
+`docs/design/decisions.md:55` (inside D23):
+
+> **Persistence is opt-in.** `MockBackend()` and `python -m robot_mcp` with no
+> options open **no file at all**; …
+
+The fix commit corrected all four sites I listed (`robot_world/README.md:51-57`,
+`robot_backends/README.md:43-45`, `store.py:25-29`, `mock_backend.py:27-31`) —
+and they are now accurate — but D23 itself was missed. `MockBackend()` still
+opens `robot_world/default_world.json` (once per process, thanks to the new
+cache), and so does `python -m robot_mcp` with no options via
+`build_server(None)` → `MockBackend()`.
+
+**Why this is the BLOCK and the READMEs were not.** `docs/features/world-state-store/`
+is deleted at merge and the package READMEs can be corrected in any later PR, but
+`docs/design/decisions.md` is the **permanent, append-only** record — after this
+merges, D23 becomes the durable statement of the invariant, and it will be the
+thing a future contributor (or the MuJoCo/perception work) reasons from. Shipping
+a design-log entry that misstates its own invariant is exactly what BLOCK-3 was
+about, in the worst place for it. Editing it now is not an append-only violation:
+the entry is unmerged and belongs to this PR.
+
+**Fix.** One line — match the wording already used in the READMEs, e.g. "…with no
+options **never write a file**; the only file either opens is `robot_world`'s
+read-only shipped seed". Consider also making D23 record the seed==live refusal
+and the commit-then-clear ordering, since both are now load-bearing behaviour,
+but that is optional.
+
+## Fix-by-fix verification
+
+**1. BLOCK-2 — `_flush` reorder (`store.py:250-260`).** Correct.
+
+- `batch().__exit__` (`store.py:214-217`) decrements `_batch_depth` **before**
+  calling `_flush()`, so a raising commit cannot leak or corrupt the depth
+  counter: depth is already back to 0 and the store stays usable. Nested batches
+  behave the same (only the outermost flushes; the decrement precedes it at every
+  level). No depth defect.
+- **Exception masking is real but narrow and correct in priority.** Only after a
+  *previously failed* commit can `_pending` be true on entry to `execute`; a then-
+  refused skill flushes on the way out. If that flush succeeds, the file
+  self-heals and the `_SkillRefused` propagates normally into a failed
+  `SkillResult`. If it fails again, the `WorldStoreError` raised in the `finally`
+  replaces the in-flight `_SkillRefused` (chained via `__context__`) and
+  `execute` raises instead of returning a result. That is the right ordering — a
+  disk failure outranks a refusal — and it is loud (`SkillToolRouter.call_tool`
+  turns it into `isError`). See R2-NOTE-3 for the doc gap it leaves.
+- **`pending_write` (`store.py:129-138`) cannot corrupt anything**: read-only
+  property, returns an immutable `bool`, no setter, no aliasing. Its docstring
+  correctly states the three cases.
+- **The self-heal claim is proved, not asserted.**
+  `test_file_store.py:181-220` fails the first write, then asserts (a)
+  `pending_write is True`, (b) the file is *stale* — the mutation is only in
+  memory, (c) a *different* mutation afterwards lands **both** changes on disk,
+  (d) `pending_write is False` again. Assertion (a) fails on the pre-fix
+  ordering, so the test genuinely pins the fix rather than the behaviour.
+
+**2. NOTE-3 — path aliasing (`store.py:319-339`).** I could not defeat it in any
+way that matters.
+
+- Ordering is right: the check runs at `:296`, **before** `seed_document()` and
+  before the live file is created, so a misconfiguration creates nothing.
+- `Path.resolve()` is non-strict by default, so a live path whose **parent does
+  not exist** resolves fine (no exception) — verified against
+  `test_a_missing_live_file_is_created_from_the_seed` and
+  `test_a_missing_or_corrupt_seed_is_a_hard_error`, both of which still pass
+  through the guard without a false positive.
+- **Hardlinks** (distinct paths, same inode) are caught by the `samefile()`
+  fallback. **Symlinks** and `..` traversal are caught by `resolve()` and are
+  both tested (`test_file_store.py:231-240`). A **broken symlink** at the live
+  path still resolves to the seed's real path and is caught. On a
+  **case-insensitive** filesystem `exists()` is also case-insensitive, so the
+  `samefile()` fallback fires; irrelevant on the target platform anyway.
+- A symlink created *after* construction is not caught — no construction-time
+  check can catch that, and it is not a defect.
+- **It does not fire on the legitimate case**: two genuinely separate files with
+  identical contents differ under both `resolve()` and `samefile()`, pinned at
+  `test_file_store.py:242-245`.
+- The error is loud and attributable per R6: a `WorldStoreError` naming **both**
+  paths and the consequence ("or `reset()` would restore whatever the robot last
+  wrote"). Enforced in the store rather than only in the CLI, so every caller
+  benefits — better than what I suggested. Covered end-to-end through the parsed
+  CLI options at `test_world_state_options.py:130-136`.
+
+**3. `@lru_cache(maxsize=1)` on `default_seed_document` (`storage.py:115`).** Safe.
+I traced the whole reachable object graph rather than accepting the claim:
+
+- `WorldDocument` is `frozen=True`; `__post_init__` copies `locations` into a
+  **local** dict and wraps it in a `MappingProxyType`, so no caller ever holds a
+  reference to the backing dict; `objects` is a `tuple`; `start_location` /
+  `start_column_height` are `str`/`float`.
+- `WorldObject` is `frozen=True`, and `Point`, `Quaternion`, `Pose` are all
+  `@dataclass(frozen=True)` (`geometry.py:36,86,129`). Frozen all the way down —
+  the claim checks out.
+- Every consumer copies: `WorldStore._load` builds a **new** locations dict and a
+  new id→object dict (and `_replace`/`del` operate on the store's own dict, never
+  on the document's tuple); `document()` constructs a fresh `WorldDocument`;
+  `world_from_document` builds new `ObjectSpec`s and a new `MockWorld` which
+  copies + proxies again; `write_document` only reads via `to_dict()`.
+  `MockBackend` never mutates a document — it converts (`world_to_document`) or
+  rebuilds (`world_from_document`).
+- **No interaction with `reset()`.** `WorldStore.reset()` reloads (and copies)
+  from `_seed`; `FileWorldStore.reset()` goes through `seed_document()`, and
+  criterion 3's strong test uses an explicit `seed_path`, which bypasses the
+  cache entirely (`read_document`) — so the "rewrite the seed file mid-run" test
+  still proves what it proved. Nothing patches the shipped resource, so no test
+  is defeated by the cache. `lru_cache` does not cache exceptions, so a broken
+  install still raises on every call.
+- Cache poisoning **is** incidentally pinned: `test_default_seed.py:88-99` builds
+  a `FileWorldStore` from the shipped (now cached) seed, mutates and
+  `remove_object('sofa_1')`, then asserts `default_seed_document()` still has
+  `sofa_1`. See R2-NOTE-2 for why that coverage is fragile.
+
+**4. BLOCK-1 — `clean_environment()` (`mcp_fixtures.py:25-46`).** Complete, and
+the implementer's audit is sound — I re-derived it rather than taking it.
+
+- `INHERITED_ENV_TO_DROP` is the single source of truth and carries the *why*.
+  `server_parameters()` (`test_stdio_transport.py:43-44`) uses it;
+  `persisted_server()` (`test_world_state_persists.py:29`) builds on
+  `server_parameters()`; `test_world_state_persists.py:118` uses it directly;
+  `robot_mcp/test/test_no_ros_runtime.py:55` uses it. That is every
+  subprocess-spawning site in `robot_mcp`.
+- **The "other probes never reach `parse_args`" reasoning is correct.** Grepped
+  every `os.environ`/`getenv` in `src/`: the *only* readers of these two
+  variables anywhere in the tree are `server.py:367` and `:376`, inside
+  `parse_args`. The four other `dict(os.environ)` sites are the no-ROS probes in
+  `robot_backends` (`:48`, probe builds a `MockBackend()` directly — read it,
+  no `robot_mcp` import), `robot_world` (`:50`, probe uses an explicit
+  `FileWorldStore(tmpdir)`), `robot_safety` and `robot_brain` (unrelated
+  packages). None can reach `parse_args`, so none can be perturbed. Leaving them
+  alone was right.
+- **The guard test bites.** `test_world_state_options.py:106-127` sets all three
+  variables and asserts each is absent from **both** `server_parameters().env`
+  and `persisted_server(...).env`, iterating `INHERITED_ENV_TO_DROP` itself — so
+  reverting either pop, *or* removing an entry from the constant, fails it. It
+  also asserts `PYTHONPATH` survives and that `--world-state` is still how a
+  persisted server is asked for, so the fix cannot be "empty the environment".
+- Bonus: R1-NOTE-9 (the inert `PWD` line) was fixed properly — replaced with an
+  accurate comment about the inherited cwd (`test_world_state_persists.py:115-117`).
+
+**5. BLOCK-3 — rewording and rename.** Now literally true everywhere it appears.
+
+- `test_a_bare_backend_never_writes_a_file` (`test_mock_persistence.py:182-207`)
+  now patches **both** `write_document` and `read_document` in the `robot_world.store`
+  namespace to `pytest.fail`. It therefore fails on code that writes *and* on
+  code that reads a world file, while still allowing the seed-resource read
+  (which goes through `storage.default_seed_document`, not the patched name) —
+  correct targeting, and it tests its own name. The docstring states the
+  distinction explicitly. Same treatment in `test_atomic_write.py:136-141`.
+- The reworded claims hold **after** the cache too: "the only file it opens is
+  the read-only shipped seed" is true whether that happens once per process or
+  once per call, and `store.py:19-20`'s "reads the shipped seed **once**, and
+  after that touches nothing" became true *because* of the cache.
+- The one site still false is `decisions.md:55` → R2-BLOCK-4.
+
+**6. Promoted NOTE-1 — `backend.store`.** Better than I asked for: the docstring
+(`mock_backend.py:164-174`) names all three hazards (`held_by`, removing a held
+object, `store.reset()` mid-carry), says what the recovery is, and addresses the
+perception writer directly; and
+`test_mock_persistence.py:263-281` pins the whole cycle — desync → `ValueError`
+on the next observation → `reset()` recovers → `held_objects() == ()`.
+
+## Regression sweep
+
+Nothing round 1 cleared was weakened.
+
+- **Atomicity.** `storage.write_document` is byte-identical apart from the
+  `lru_cache` import; the six `test_atomic_write.py` tests are unchanged except
+  for the rename at `:136`. The new guard and the flush reorder sit strictly
+  above `write_document` and cannot affect the temp-file/`os.replace` mechanics.
+- **R2 / `_release_persisted_holds`.** Untouched (`mock_backend.py:257-264`), and
+  its two entry paths are unchanged: `__init__` → `_power_on` and `reset()` →
+  batch → `store.reset()` + `_power_on`. The power-cycle test
+  (`test_mock_persistence.py:89-111`) is unchanged and still asserts the release
+  reaches disk.
+- **Criterion 2** (`test_world_state_persists.py:51-88`) and **criterion 3**
+  (`test_file_store.py:63-81`) are unchanged in substance; criterion 2 is now
+  *stronger*, because BLOCK-1's fix removes the environment dependency that was
+  the one thing weakening it. Criterion 3's seed-rewrite test uses an explicit
+  seed path, so the cache does not touch it.
+- The aliasing guard introduces no false positives in the existing suite: the
+  missing-live-file, missing-seed and corrupt-seed tests all pass through it with
+  `seed_path` present but distinct, or absent entirely.
+- **Ratchet honest again**: `robot_backends` 73→74, `robot_mcp` 80→82,
+  `robot_world` 48→50; every other package unchanged. That is exactly the 5 new
+  tests the fix commit describes — nothing was dropped to make room.
+
+## Round-2 NOTEs
+
+### R2-NOTE-1 — The cache makes two "re-read from disk" statements false
+
+`FileWorldStore.seed_document()`'s docstring (`store.py:315-317`) says "**Re-read**
+the seed from disk, so `reset()` restores ground truth", and
+`robot_world/README.md:46` says the seed is "read when | construction and every
+`reset()`". Both are now false for the **shipped** seed: `read_seed_document(None)`
+returns the memoized document. Concrete consequence: a developer iterating on
+`default_world.json` in a symlink-installed checkout while a server runs will call
+`reset` and not see their edit until they restart the process — which is precisely
+what the docstring promises they will. (For an operator-supplied `--world-seed`
+the statement remains true, since that path goes through `read_document`.)
+NOTE rather than BLOCK because the cache's own docstring states its premise
+honestly and no acceptance criterion depends on the shipped seed being re-read.
+**Fix:** one clause — "re-reads an operator-supplied seed from disk; the shipped
+seed is memoized and picked up at process start".
+
+### R2-NOTE-2 — The cache's safety has no test of its own
+
+New global state, and the only thing standing between it and a poisoned process
+is `test_default_seed.py:88-99`, whose name and docstring are about the *file*
+being read-only, not about the cache — so someone "tidying" it to use an explicit
+`seed_path` would silently delete the cache's only guard. Cheap hardening:
+`assert default_seed_document() is default_seed_document()` (the cache contract
+itself), plus one line in that test's docstring saying it also proves the shared
+instance survives a store's mutations. Worth noting in passing that
+`default_seed_document.cache_clear()` exists implicitly and is the escape hatch
+for any future test that wants to swap the shipped seed.
+
+### R2-NOTE-3 — The reorder gives a *refused* skill a new (correct) way to write
+
+Two behaviours the reorder introduces, both desirable, neither documented: after a
+failed commit, (a) the next skill's batch exit flushes even if that skill was
+**refused**, so the file self-heals on a refusal, and (b) if that flush fails too,
+the `WorldStoreError` replaces the in-flight `_SkillRefused` and `execute` raises
+instead of returning a failed `SkillResult`. `_flush`'s new docstring covers the
+"stay dirty" reasoning but not either consequence, and
+`test_a_refused_skill_writes_nothing` (`test_mock_persistence.py:165`) is now
+strictly true only for a store that was clean on entry — its name over-generalises
+by exactly one case. One sentence in `batch()`'s docstring and one clause in that
+test's docstring.
+
+### R2-NOTE-4 — The aliasing guard cannot see the *shipped* seed
+
+`_refuse_seeding_from_the_live_file` returns early when `seed_path is None`
+(`store.py:329-330`), so `FileWorldStore('<site-packages>/robot_world/default_world.json')`
+— i.e. `--world-state` pointed at the shipped resource — is not refused, and the
+robot would write its live state over the seed. Far-fetched, contained by R9's
+"never an `importlib.resources` path" rule, and now partly masked by the cache
+(the running process keeps the pristine seed in memory), but it is the one
+aliasing case the new guard's docstring implies it covers and does not. A clause
+in the docstring is enough; comparing against `resources.files(...)` would be
+over-engineering.
+
+### R2-NOTE-5 — The guard's verdict is computed once, from `resolve()`
+
+Fine for absolute paths. For a **relative** live path, `resolve()` is evaluated
+against the CWD at construction while `_commit` → `write_document` re-resolves at
+every write, so a `chdir` after construction moves where writes land without
+re-checking the aliasing. This is a pre-existing property of relative paths rather
+than something the guard introduced — noting it only so nobody reads the guard as
+a durable guarantee. If it ever matters, store `Path(live_path).resolve()`
+(absolutised) rather than the path as written.
+
+## Round-2 test adequacy
+
+The 5 new tests are all substantive and each fails on the un-fixed code:
+`test_a_failed_commit_leaves_the_store_dirty_and_the_next_write_repairs_it`
+(fails on the old flag ordering at its very first assertion),
+`test_a_seed_that_is_the_live_file_is_refused` (three aliasing forms + the
+negative case), `test_a_spawned_server_never_inherits_the_worlds_environment`
+(iterates the constant, so it fails on a reverted pop *or* a shortened list),
+`test_seeding_from_the_live_file_is_refused` (the same guard through the parsed
+CLI), and `test_going_around_the_backend_through_the_store_is_loud` (the full
+desync → raise → `reset()` cycle). The two renamed tests now assert what their
+names claim. The only untested new mechanism is the `lru_cache` contract
+(R2-NOTE-2).
+
+**Bottom line: fix `decisions.md:55` and this is ready.** The round-2 NOTEs are
+all follow-ups; none of them should hold the PR.
