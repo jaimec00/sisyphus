@@ -77,7 +77,7 @@ echo '[bootstrap] pixi run install-openclaw (node/ is per-worktree and gitignore
 pixi run install-openclaw >>'$log' 2>&1 || echo '[bootstrap] install-openclaw returned nonzero; robot_brain OpenClaw tests will fail until it is rerun' | tee -a '$log'; \
 claude --model '$MODEL' --permission-mode bypassPermissions \
   --output-format stream-json --verbose \
-  -p '/run-feature $ISSUE' 2>&1 | tee '$log'; \
+  -p '/run-feature $ISSUE' 2>&1 | tee -a '$log'; \
 echo \"EXIT=\${PIPESTATUS[0]} (\$(date))\" | tee -a '$log'; \
 exec bash"
 

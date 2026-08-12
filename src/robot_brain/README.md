@@ -191,6 +191,19 @@ env.
    "all"` implies (`sandbox.backend` defaults to `docker`). If you widen
    `tools.allow` to anything that executes, revisit all of this.
 
+   **Do not delete `"mode": "off"` as a redundant default — it is an
+   override.** `off` is the default only for a *whole* config; this is a merge
+   fragment, and OpenClaw resolves an entry's mode as
+   `agents.list[].sandbox.mode ?? agents.defaults.sandbox.mode ?? "off"`
+   (`dist/config-Dy4vED5-.js:153`). An entry that says nothing therefore adopts
+   *your* global posture — and if that is `agents.defaults.sandbox: {mode:
+   "non-main"}`, which is what OpenClaw's own multi-agent example ships, the
+   robot is sandboxed with no gate and no tools, because a Telegram channel
+   session is always non-main. Stating the mode is what makes the fragment
+   self-contained. (The inert `tools.sandbox` gate *was* dropped as redundant;
+   that key is not an override, and the distinction is the whole point.)
+   `test_openclaw_config.py` fails if the key goes missing.
+
    **Then check the agent can still *answer*.** `doctor` warns that with a
    `robot__*`-only allowlist "the message tool is unavailable for that agent;
    explicit channel actions such as sendAttachment, upload-file, thread-reply,
@@ -234,7 +247,9 @@ env.
   the agent being careful, **not** a guard. See `robot_mcp/README.md`'s
   "Deliberately absent".
 - **Not tested, anywhere:** that *your* build of OpenClaw agrees with the one
-  pinned in this env, that the tool globs and the sandbox gate behave at
+  installed in this env (`install-openclaw` is unpinned, so "this env" is
+  whatever npm last resolved — the failure message names the build that
+  disagreed), that the tool globs and the sandbox gate behave at
   runtime the way `openclaw doctor` says they will, that the SSH leg works from
   the Pi, that any of the three hard-coded paths in step 3 are right for your
   machines, and that an LLM given this prompt actually clears the table.

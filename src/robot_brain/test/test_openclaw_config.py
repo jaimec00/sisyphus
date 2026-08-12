@@ -163,11 +163,23 @@ def sandbox_complaints(entry: dict) -> list[str]:
 
     A detector rather than a run of asserts, so that it can be shown to
     *detect*.  The shipped fragment has sandboxing off, which makes every rule
-    here vacuous for that fragment; a test that only ran them against the
+    below vacuous for that fragment; a test that only ran them against the
     fragment would be a test of nothing.
+
+    Read the rules as being about a **merged** config, not this file alone.
+    That is why an *absent* ``mode`` is a complaint rather than a synonym for
+    ``"off"``: OpenClaw resolves it as
+    ``agentSandbox?.mode ?? agents.defaults.sandbox?.mode ?? "off"``
+    (``dist/config-Dy4vED5-.js:153``), so an entry that says nothing adopts
+    whatever posture the operator's config already has.
     """
-    sandbox = entry.get('sandbox', {})
-    mode = sandbox.get('mode', 'off')
+    sandbox = entry.get('sandbox')
+    if not isinstance(sandbox, dict) or 'mode' not in sandbox:
+        return ['sandbox.mode is unset, so the merged entry inherits '
+                'agents.defaults.sandbox.mode from the operator config instead '
+                'of stating its own posture']
+
+    mode = sandbox['mode']
     gate = entry.get('tools', {}).get('sandbox', {}).get('tools', {})
     admitted = list(gate.get('alsoAllow', [])) + list(gate.get('allow', []))
     complaints = []
@@ -176,30 +188,55 @@ def sandbox_complaints(entry: dict) -> list[str]:
             complaints.append('workspaceAccess is inert while sandbox.mode is off')
         if gate:
             complaints.append('tools.sandbox is inert while sandbox.mode is off')
-    elif not any(admission in admitted for admission in SANDBOX_MCP_ADMISSIONS):
+        return complaints
+
+    if not any(admission in admitted for admission in SANDBOX_MCP_ADMISSIONS):
         complaints.append(
             f'sandbox.mode is {mode!r}, so bundled MCP tools are filtered out '
             f'unless the sandbox tool policy admits them: {gate}')
+    # ``workspaceAccess`` also defaults to "none" when unset
+    # (``dist/config-Dy4vED5-.js:156``), so an absent value is not neutral here.
+    workspace_access = sandbox.get('workspaceAccess', 'none')
+    if workspace_access != 'rw':
+        complaints.append(
+            f'sandbox.mode is {mode!r} with workspaceAccess {workspace_access!r}: '
+            'the effective workspace becomes the sandbox workspace '
+            '(dist/compact-DLB4d8IL.js:551) and a compaction turn can come back '
+            'without AGENTS.md')
     return complaints
 
 
 def test_the_sandbox_consistency_check_detects_what_it_forbids():
-    """The check below is only worth running if it actually catches something.
+    """The check above is only worth running if it actually catches something.
 
-    Both forbidden states are real and were observed.  Turning the sandbox on
-    without the gate is the one that bites: ``openclaw doctor`` on exactly that
-    fragment warns ``tools.sandbox.tools.alsoAllow (unset) does not include
-    "bundle-mcp" ... Sandboxed agents will filter bundled MCP tools before
-    provider requests``, i.e. a config that validates and quietly disarms the
-    robot.  The inert-key states are the milder half: a setting that reads like
-    a restriction and enforces nothing.
+    Every forbidden state below is real, and two of them are the states this
+    fix was talked into and then out of:
+
+    * **sandbox on, no gate** -- ``openclaw doctor`` on exactly that fragment
+      warns ``tools.sandbox.tools.alsoAllow (unset) does not include
+      "bundle-mcp" ... Sandboxed agents will filter bundled MCP tools before
+      provider requests``: a config that validates and quietly disarms the
+      robot.
+    * **sandbox on, ``workspaceAccess`` not ``"rw"``** -- the posture this
+      fix originally shipped, reversed because it can cost the brain its
+      operating prompt (see the shipped-settings test below).
+    * **no ``mode`` at all** -- the state that *looks* like the tidy version of
+      ``off`` and is in fact "whatever the operator does".
+    * the two inert-key states, which are the mild half: settings that read
+      like a restriction and enforce nothing.
     """
+    assert sandbox_complaints({'tools': {}})
+    assert sandbox_complaints({'sandbox': {'workspaceAccess': 'rw'}})
     assert sandbox_complaints({'sandbox': {'mode': 'all'}, 'tools': {}})
+    assert sandbox_complaints(
+        {'sandbox': {'mode': 'all', 'workspaceAccess': 'ro'},
+         'tools': {'sandbox': {'tools': {'alsoAllow': ['bundle-mcp']}}}})
     assert sandbox_complaints({'sandbox': {'mode': 'off', 'workspaceAccess': 'ro'}})
     assert sandbox_complaints(
         {'sandbox': {'mode': 'off'},
          'tools': {'sandbox': {'tools': {'alsoAllow': ['bundle-mcp']}}}})
-    # ...and does not cry wolf over either coherent configuration.
+    # ...and does not cry wolf over either coherent configuration.  The second
+    # is the reason the detector cannot simply forbid `mode != "off"`.
     assert sandbox_complaints({'sandbox': {'mode': 'off'}}) == []
     assert sandbox_complaints(
         {'sandbox': {'mode': 'all', 'workspaceAccess': 'rw'},
@@ -207,7 +244,7 @@ def test_the_sandbox_consistency_check_detects_what_it_forbids():
 
 
 def test_the_shipped_sandbox_settings_do_not_contradict_each_other():
-    """Sandboxing is **off**, deliberately, and the fragment says only that.
+    """Sandboxing is **off**, said out loud, and the fragment says only that.
 
     The first attempt at this fix turned it on (``mode: "all"`` +
     ``workspaceAccess: "ro"``) on the reasoning that it costs nothing while the
@@ -220,8 +257,15 @@ def test_the_shipped_sandbox_settings_do_not_contradict_each_other():
     brain.  A sandbox protecting nothing is not worth risking the operating
     prompt for, so ``mode: "off"``, and no inert companions.
 
-    Should that trade ever be revisited, the detector above is the thing that
-    stops the sandbox arriving without its tool gate.
+    **``"off"`` is written down rather than left to the default**, and that is
+    the one sandbox key here that must not be tidied away.  This is a merge
+    fragment: an entry with no ``mode`` inherits ``agents.defaults.sandbox.mode``
+    from the config it is merged into, and OpenClaw's own documented example
+    ships ``agents.defaults.sandbox: {mode: "non-main"}`` -- under which a
+    Telegram session is *always* non-main.  Dropping the key would hand such an
+    operator a sandboxed robot with no gate and no tools, which is precisely the
+    failure the detector above exists to prevent.  Deleting an inert key is
+    tidying; deleting an override is a behaviour change.
     """
     assert sandbox_complaints(agent()) == [], sandbox_complaints(agent())
 

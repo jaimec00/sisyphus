@@ -299,3 +299,58 @@ and make `DEVELOPMENT.md` say that `pixi run test` now requires it.
 - The `message`-tool / Telegram reply gap the implementer surfaced via
   `openclaw doctor` (a tool-policy decision, not #52's subject).
 - Remaining prose/style items.
+
+---
+
+# Round 2 — red-team → manager rulings (final fix round)
+
+`red_team.md` round 2: 1 BLOCK, 4 NOTEs. R12's bootstrap fix, the `mode:"off"`
+reversal, the hermeticity rewrite, the detector's PASS row and the ratchet were
+all cleared with reasoning recorded. This is fix round **2 of 2** (CLAUDE.md cap);
+whatever survives goes to the issue as a follow-up comment.
+
+## BLOCK-2 accepted — `"mode": "off"` is load-bearing and nothing said so
+
+`test_openclaw_config.py:170` defaults a missing `sandbox` to `off`. But this
+file is a **merge fragment**: an agent entry with no `sandbox` key does not get
+`off`, it inherits `agents.defaults.sandbox.mode` from whatever config it is
+merged into — and OpenClaw's own documented Example 3 ships
+`agents.defaults.sandbox: {mode: "non-main"}`, under which a Telegram session is
+always non-main. Delete the key and the detector says nothing, `config validate`
+passes, the suite is green, and the operator gets Bug B verbatim: a sandboxed
+robot with no `bundle-mcp` gate and zero tools.
+
+Worse, the deletion is the *likely* next edit, justified by the very argument
+R4-revised used to drop the inert gate ("off is the default, shipping it is
+noise"). I made that argument; it is right for `tools.sandbox` and wrong for
+`sandbox.mode`, and the difference — override vs. redundancy — was left implicit.
+
+**R13:** `sandbox_complaints()` must complain when `sandbox` is absent or carries
+no explicit `mode`. Ship the reason in the README: the fragment is merged into a
+config whose `agents.defaults.sandbox` we do not control, so the entry states its
+own posture rather than inheriting one.
+
+**R14:** the detector currently encodes only *one* of the two reasons R2 was
+reversed. `{'mode':'all','workspaceAccess':'ro'}` + the gate returns clean — and
+that is precisely the posture the compaction/`AGENTS.md` evidence
+(`dist/compact-DLB4d8IL.js:551`) ruled out. Sandbox-on with `workspaceAccess`
+anything but `"rw"` must complain, which also makes the PASS row's existing
+`'rw'` meaningful instead of incidental.
+
+## NOTEs to fix (diagnosability + honesty; both cheap)
+
+- `scripts/start-feature.sh:80` — `tee '$log'` without `-a` truncates the
+  bootstrap's own `install-openclaw failed` warning before anyone can read it.
+  One character, and it is the warning R12 exists to surface.
+- `cli_version()` can raise *inside an assertion-message expression*, replacing a
+  real schema diagnosis with a `TimeoutExpired`. Guard it so the version is a
+  best-effort annotation that can never eat the diagnosis.
+- `README.md:236` says the install is "pinned"; it is not.
+
+## NOT fixed → follow-up comment on the issue
+
+- The Telegram `message`-tool gap (doctor-confirmed; a tool-policy decision).
+- NOTE-6 (positive test validates the tracked file in place; covered by the
+  byte-comparison test).
+- NOTE-4's version-*floor* half: nothing pins or refreshes `node/` (#51 scope).
+- The unbounded-length mangling regex.

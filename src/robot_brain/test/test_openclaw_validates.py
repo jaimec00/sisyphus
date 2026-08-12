@@ -145,13 +145,21 @@ def cli_version() -> str:
     green against a build that is months behind the one the Pi runs.  Nothing
     hermetic can fix that, but a failure that names the build it disagreed with
     is one a future reader can resolve without re-deriving it.
+
+    **Never raises.**  This runs inside an ``assert`` message expression, so an
+    exception here would replace the schema error the reader actually needs
+    with a ``TimeoutExpired`` from the annotation about it.  The version is a
+    courtesy; the diagnosis is the point.
     """
-    with tempfile.TemporaryDirectory() as home:
-        completed = subprocess.run(
-            [str(openclaw_binary()), '--version'],
-            env=scratch_environment(Path(home), shipped_fragment()),
-            capture_output=True, text=True, timeout=60, check=False)
-    return completed.stdout.strip() or f'unknown (exit {completed.returncode})'
+    try:
+        with tempfile.TemporaryDirectory() as home:
+            completed = subprocess.run(
+                [str(openclaw_binary()), '--version'],
+                env=scratch_environment(Path(home), shipped_fragment()),
+                capture_output=True, text=True, timeout=60, check=False)
+        return completed.stdout.strip() or f'unknown (exit {completed.returncode})'
+    except Exception as error:                                  # noqa: BLE001
+        return f'unknown ({type(error).__name__})'
 
 
 def report(completed: subprocess.CompletedProcess) -> str:
