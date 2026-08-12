@@ -5,10 +5,12 @@ after round 1; R12 added). Every one is implemented, none deviated from.
 Everything below was **run**, not recalled — OpenClaw 2026.7.1-2 from
 `node/node_modules/.bin/openclaw` in this worktree.
 
-> **Round 1 (red-team → fix) is folded in.** The revised decisions are marked
-> **[R1]** where they replace something this document previously said. The one
-> substantive reversal — sandboxing on → off — is written up in
-> "[R1] R2 reversed" below, including why the original rationale was wrong.
+> **Both fix rounds are folded in.** Revised decisions are marked **[R1]**
+> (round 1) or **[R2]** (round 2) where they replace something this document
+> previously said. The two substantive changes are written up below:
+> "[R1] R2 reversed" (sandboxing on → off, and why the original rationale was
+> wrong) and "[R2] R13 — `"mode": "off"` is an override" (why the key that
+> reversal produced must not then be tidied away).
 
 ## What changed
 
@@ -139,6 +141,56 @@ warning (so the gate really is inert and shipping it would be noise, per the
 revised R4), and flipping the mode back on brings the warning straight back
 (so the conditional invariant test has something real to guard).
 
+### [R2] R13 — `"mode": "off"` is an override, and the detector now says so
+
+Round 1 removed the inert `tools.sandbox` gate with the argument "shipping a
+default is noise". Round 2's BLOCK-2 showed that the *same* argument, applied
+one key over, is a live bug: deleting `"sandbox": {"mode": "off"}` left
+`sandbox_complaints()` silent (it defaulted a missing `mode` to `off`),
+`config validate` passing, and the whole suite green — while handing an
+operator the exact Bug B this feature exists to prevent.
+
+R13 and R14 are the manager's calls off a red-team reading of merge-semantics
+docs, so I went looking for the production code path rather than accepting the
+prose. **Found it, and it is unambiguous** —
+`node_modules/openclaw/dist/config-Dy4vED5-.js:140-156`,
+`resolveSandboxConfigForAgent()`:
+
+```js
+const agent = cfg?.agents?.defaults?.sandbox;          // :141
+…
+mode:            agentSandbox?.mode            ?? agent?.mode            ?? "off",   // :153
+workspaceAccess: agentSandbox?.workspaceAccess ?? agent?.workspaceAccess ?? "none",  // :156
+```
+
+An entry with no `sandbox.mode` does **not** get `off` — it gets the operator's
+`agents.defaults.sandbox.mode`, and only then `off`. The same file also settles
+R14's default: an unset `workspaceAccess` under an active sandbox resolves to
+`"none"`, not `"rw"`, so an *absent* value has the effective-workspace problem
+just as much as an explicit `"ro"`. Both rulings confirmed in the resolver, not
+merely in documentation. The doctor's warning collector agrees independently
+(`dist/plugin-tool-allowlist-warnings-DrV_jgRM.js:171-172`:
+`explicitMode === void 0 ? defaultSandboxActive : isSandboxModeActive(explicitMode)`).
+
+**An end-to-end probe of this is inconclusive, and it is worth recording why**
+rather than quietly not reporting it. I built the operator config the red-team
+describes (`agents.defaults.sandbox: {mode: "non-main"}`, OpenClaw's own
+example) in two variants — entry with explicit `mode: "off"`, entry with the key
+deleted — and ran `openclaw doctor` on both. **Both warn, identically.** That is
+not a refutation: `collectActiveSandboxToolPolicies` fires a *global* warning
+about the operator's own unset top-level `tools.sandbox` whenever
+`agents.defaults.sandbox.mode` is active (`:166-167`), and it deduplicates the
+agent's contribution into the same message. Trying to isolate the agent by
+giving the operator a clean global gate silences both variants, because an
+agent with no policy of its own inherits the global one. So `doctor` cannot
+distinguish the two configs at this granularity; the resolver quoted above can,
+and does. The detector is built on the resolver.
+
+`sandbox_complaints()` therefore returns a complaint when `sandbox` is absent or
+carries no `mode`, and the README states the distinction the round-1 reasoning
+left implicit: *deleting an inert key is tidying; deleting an override is a
+behaviour change.*
+
 ## Test design
 
 ### `test_openclaw_config.py` — what the validator *cannot* catch
@@ -178,17 +230,24 @@ New:
   and every rule is vacuous against it; a test that only ran them against the
   fragment would be a test of nothing. This is the same shape the file already
   uses for the secrets scanner ("a scan that cannot recognise the thing it is
-  looking for is worse than no scan"). Three forbidden states:
+  looking for is worse than no scan"). Forbidden states, **[R2]** now five:
+  - `sandbox` absent, or present without a `mode` — R13: the merged entry
+    inherits the operator's posture instead of stating its own;
   - `mode != 'off'` without a `bundle-mcp` / `group:plugins` / `robot__*`
     admission in `tools.sandbox.tools` — the trap, doctor-confirmed;
+  - **[R2]** `mode != 'off'` with `workspaceAccess` anything but `'rw'`
+    (including *unset*, which resolves to `'none'`) — R14: the compaction
+    hazard that caused the reversal, previously documented but not detected;
   - `mode == 'off'` with `workspaceAccess` — an inert setting that reads like a
     restriction;
   - `mode == 'off'` with a `tools.sandbox` gate — an inert key.
 
-  `test_the_sandbox_consistency_check_detects_what_it_forbids` feeds it three
+  `test_the_sandbox_consistency_check_detects_what_it_forbids` feeds it six
   synthetic broken entries **and** two coherent ones (so it cannot pass by
   crying wolf); `test_the_shipped_sandbox_settings_do_not_contradict_each_other`
-  points it at the fragment.
+  points it at the fragment. **[R2]** R14 also makes the PASS row's
+  `workspaceAccess: 'rw'` load-bearing: before it, `'ro'` would have passed that
+  row identically, so the row proved less than it looked like it did.
 - **[R1]** the hand-copied `('off', 'non-main', 'all')` enum is **gone**. What
   is a legal `mode` is the validator's question now (NOTE-3); copying the enum
   out of documentation is precisely the habit that produced #52.
@@ -273,7 +332,11 @@ sandbox detector from passing by crying wolf:
 | **[R1]** `sandbox.mode: "all"`, no gate ← *the revised-R4 conditional* | FAIL | `test_the_shipped_sandbox_settings_do_not_contradict_each_other` 1 failed |
 | **[R1]** `mode: "off"` + inert `workspaceAccess` | FAIL | same test, 1 failed |
 | **[R1]** `mode: "off"` + inert `tools.sandbox` gate | FAIL | same test, 1 failed |
-| **[R1]** `mode: "all"` **with** the gate | **PASS** | 2 passed — no false alarm, and it still validates |
+| **[R2]** delete the whole `"sandbox"` key ← *the likely tidy-up, BLOCK-2* | FAIL | same test, 1 failed |
+| **[R2]** keep `"sandbox"`, drop `"mode"` | FAIL | same test, 1 failed |
+| **[R2]** `mode: "all"` + `workspaceAccess: "ro"` + the gate ← *the posture R2 reversed away from* | FAIL | same test, 1 failed |
+| **[R2]** `mode: "all"` + the gate, `workspaceAccess` **unset** (resolves to `"none"`) | FAIL | same test, 1 failed |
+| **[R2]** `mode: "all"` + `workspaceAccess: "rw"` + the gate | **PASS** | 2 passed — the surviving PASS row; no false alarm, and it still validates |
 | rename the agent id to `brain` | FAIL | `test_the_agent_the_binding_routes_to_is_the_agent_configured` 1 failed |
 | duplicate the entry (same id twice) | FAIL | `agent()` helper, 1 failed |
 | revert to `agents.entries` (the #52 bug) | FAIL | `…_is_accepted_by_the_installed_openclaw` 1 failed |
@@ -290,6 +353,8 @@ Harness mutations:
 | **[R1]** revert `scratch_environment()` to `dict(os.environ)` | `test_the_child_inherits_no_openclaw_variable_we_did_not_set` **1 failed** |
 | **[R1]** over-strip (`PATH` dropped as well) | **6 failed** — the `#!/usr/bin/env node` shim dies; the same test catches the *opposite* error, so the env policy is pinned from both sides |
 | **[R1]** neuter `sandbox_complaints()` to always return `[]` | `test_the_sandbox_consistency_check_detects_what_it_forbids` **1 failed** |
+| **[R2]** revert R13 (`mode = sandbox.get('mode', 'off')`) | same detector test **1 failed** |
+| **[R2]** delete R14's `workspaceAccess` rule | same detector test **1 failed** |
 
 `report()`'s version line was checked on a real failure, not by inspection:
 
@@ -299,6 +364,28 @@ E    --- stderr ---
 E    OpenClaw config is invalid: …/openclaw.robot.json
 E      × agents.list.0.sandbox.mode: Invalid input (allowed: "off", "non-main", "all")
 ```
+
+**[R2]** And the NOTE-2 guard on `cli_version()` was proved in *both*
+directions, by forcing the version probe to raise while the config was
+genuinely invalid — i.e. exactly the situation where the annotation could eat
+the diagnosis. With the guard, the schema error survives:
+
+```
+E  AssertionError: unknown (TimeoutExpired) said: exit 1
+E      × agents.list.0.sandbox.mode: Invalid input (allowed: "off", "non-main", "all")
+```
+
+Without it, the counterfactual is precisely what NOTE-2 predicted — no
+`AssertionError` at all, and the schema error nowhere in the output:
+
+```
+E  subprocess.TimeoutExpired: Command 'openclaw' timed out after 60 seconds
+```
+
+**[R2]** The `tee -a` fix was likewise demonstrated rather than reasoned about:
+with `tee '$log'`, a bootstrap warning written before it is *gone* from the log
+(`cat` shows only `claude output`); with `tee -a '$log'`, both lines survive.
+`bash -n scripts/start-feature.sh` still clean.
 
 Hermeticity itself is measured, not assumed. With the redirect:
 `$H/state/state/openclaw.sqlite` and nothing else. Without it:
@@ -318,6 +405,10 @@ scripts/start-feature.sh` clean.
 `robot_brain` 51 collected / 48 non-linter, `+10` over the 38 floor — exactly
 the ten tests added (3 in `test_openclaw_config.py`, 7 in
 `test_openclaw_validates.py`). Baseline re-cut to 48 and committed (R10).
+
+**[R2]** Round 2 moved no counts: R13 and R14 added *rows* to an existing
+detector test and *rules* to the function it exercises, so 48 still stands and
+the baseline needed no second re-cut.
 
 Cost: the CLI invocations add ~8 s to a package that ran in ~1.4 s (each
 `config validate` is ~1.4 s; five of the seven tests make one). Accepted — it
@@ -374,9 +465,21 @@ error on the full suite.
    observation.** `dist/compact-DLB4d8IL.js:551` is unambiguous about the
    effective-workspace swap, but nobody here has run a Telegram conversation
    long enough to compact. It is recorded in the README and in the test
-   docstring as the reason for `mode: "off"`; it is *not* asserted as fact
-   anywhere in the code. If a follow-up ever wants sandboxing on, that is the
-   thing to observe on the Pi first.
+   docstring as the reason for `mode: "off"`. **[R2]** It is *now* also encoded
+   as a detector rule (R14) — so if a future editor turns sandboxing on, the
+   suite makes them confront it. What is still not asserted anywhere is that the
+   hazard is *real on a Pi*; if a follow-up wants sandboxing on, that is the
+   thing to observe first.
+
+   **[R2] `openclaw doctor` cannot arbitrate R13 empirically**, and I would
+   rather say so than imply the merge-semantics claim was end-to-end verified.
+   Its `bundle-mcp` warning fires off the operator's *global* posture and
+   deduplicates the per-agent contribution, so the explicit-`off` and
+   deleted-key configs produce identical output. The claim rests on the runtime
+   resolver (`dist/config-Dy4vED5-.js:153`), which is unambiguous, plus the
+   doctor's own agent-mode check at
+   `dist/plugin-tool-allowlist-warnings-DrV_jgRM.js:171-172`. Full method and
+   both probe results are in "[R2] R13" above.
 
 5. **`openclaw doctor` is deliberately not in the suite** (R7). It takes ~30 s,
    wants a gateway, and fails its health check without credentials. Its findings
@@ -384,19 +487,39 @@ error on the full suite.
    the docstrings, so the reasoning survives even though the command does not
    run in CI.
 
-6. **[R1] Surviving NOTEs, not fixed, per the manager's round-1 instruction.**
-   NOTE-6 (the positive test validates the git-tracked file in place rather than
-   a `tmp_path` copy) — judgement call, the byte-comparison in
-   `test_validating_writes_only_where_the_test_told_it_to` covers the risk and
-   the boundary is commented. NOTE-4's *version floor* half — the report now
-   names the build, but nothing pins or refreshes `node/`; that is #51-scope.
-   Plus the Telegram `message`-tool gap in item 2 above.
+6. **[R2] Surviving NOTEs — for the manager's follow-up comment on the issue.**
+   Both fix rounds are used (CLAUDE.md caps at 2), so these ship unaddressed by
+   ruling, not by oversight:
 
-7. **[R1] Scope widened once, on the record.** Everything is inside
-   `src/robot_brain/**`, `scripts/test_baseline.json` and these feature docs —
-   **except** `scripts/start-feature.sh` and `DEVELOPMENT.md`, which R12
-   explicitly authorised for BLOCK-1 and only for that. `pixi.toml` untouched
-   (R5 forbids the `depends-on`). Both files would normally be operational
-   scope; the manager ruled in-loop because shipping the guard without the
-   bootstrap fix would red out every sibling worktree while the remedy waited on
-   a second PR.
+   - the Telegram `message`-tool gap (item 2 above) — doctor-confirmed, but a
+     tool-policy decision rather than #52's subject;
+   - **NOTE-6** — the positive test validates the git-tracked fragment in place
+     rather than a `tmp_path` copy. The byte-comparison in
+     `test_validating_writes_only_where_the_test_told_it_to` covers the risk and
+     the boundary is commented, so this is a judgement call, not a hole;
+   - **NOTE-4's version-floor half** — `report()` now names the build, but
+     `scripts/install_openclaw.sh` installs unpinned and nothing refreshes
+     `node/`, so the suite can be green against a stale CLI. #51 scope;
+   - **round-2 NOTE-3** — the mangling regex bounds charset and case but not
+     *length*, so a very long future server key could pass the guard while
+     OpenClaw truncated its prefix. Same two lines also mean a *second* MCP
+     server in the fragment fails with a bare
+     `ValueError: too many values to unpack` rather than an instruction.
+
+7. **[R2] Three deviations the PR description must state**, because a reviewer
+   diffing the issue against the branch will otherwise read each as a mistake:
+
+   - `tools.allow` respelled `mcp__robot__*` → `robot__*` (R3) — beyond the
+     issue's "`tools.allow` checks out", which was true schema-wise and false
+     semantically;
+   - `sandbox.mode: "off"`, where the **issue's own snippet proposed `"all"`**
+     (R2-revised). The issue proposed `"all"` to make the config *validate*;
+     `"off"` validates equally and does not risk the operating prompt;
+   - `scripts/start-feature.sh` + `DEVELOPMENT.md` edited (R12) — normally
+     operational scope, ruled in-loop because shipping R5's guard without the
+     bootstrap fix would red out every sibling worktree while the remedy waited
+     on a second PR.
+
+   Everything else is inside `src/robot_brain/**`,
+   `scripts/test_baseline.json` and these feature docs. `pixi.toml` untouched
+   (R5 forbids the `depends-on`).
