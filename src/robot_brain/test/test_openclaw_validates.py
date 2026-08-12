@@ -143,30 +143,35 @@ def test_the_shipped_fragment_is_accepted_by_the_installed_openclaw(tmp_path):
     assert completed.returncode == 0, report(completed)
 
 
-#: The exact two defects #52 was filed about, as functions that reintroduce
-#: them.  Used as the negative control: a validator that shrugged at these --
-#: or a binary that had quietly become a no-op -- would let the test above pass
-#: while proving nothing.
-HISTORICAL_DEFECTS = {
+#: Ways of breaking the fragment that the CLI must reject.  The first two are
+#: the exact defects #52 was filed about, put back; the third is a key that
+#: never existed, because ``additionalProperties: false`` is the reason the
+#: validator catches a *typo* and not just a wrong shape.  All three live under
+#: ``agents``, so the error message can be checked for where it points.
+REJECTED_MUTATIONS = {
     'agents.entries instead of agents.list': lambda fragment: fragment['agents'].update(
         entries={entry['id']: entry for entry in fragment['agents'].pop('list')}),
     'sandbox.mode "read-only" is not in the enum': lambda fragment: fragment[
         'agents']['list'][0]['sandbox'].update(mode='read-only'),
-    'an unknown key inside the agent entry': lambda fragment: fragment[
+    'an invented key inside the agent entry': lambda fragment: fragment[
         'agents']['list'][0].update(promptFile='AGENTS.md'),
 }
 
 
-@pytest.mark.parametrize('defect', sorted(HISTORICAL_DEFECTS))
-def test_the_validator_rejects_the_bugs_this_fix_removed(defect, tmp_path):
-    """Break the fragment the way it was broken; the CLI must say so.
+@pytest.mark.parametrize('mutation', sorted(REJECTED_MUTATIONS))
+def test_the_validator_rejects_a_broken_fragment(mutation, tmp_path):
+    """Break the fragment; the CLI must say so, and say where.
 
-    Without this, the test above would pass against a binary that returned 0
-    for anything -- which is exactly the failure mode the shipped config had
-    for months, one level up.
+    This is the negative control, and it is the whole reason the test above is
+    worth anything: a shell-out that only ever asserts ``returncode == 0``
+    passes just as happily against a binary that has become a no-op, or against
+    a future ``config validate`` that stops validating.  Verified by
+    substitution -- with ``openclaw`` replaced by a shell script whose only
+    statement is ``exit 0``, the positive test still passes and all three of
+    these go red.
     """
     fragment = json.loads(shipped_fragment().read_text(encoding='utf-8'))
-    HISTORICAL_DEFECTS[defect](fragment)
+    REJECTED_MUTATIONS[mutation](fragment)
 
     corrupted = tmp_path / 'corrupted.json'
     corrupted.write_text(json.dumps(fragment, indent=2), encoding='utf-8')
