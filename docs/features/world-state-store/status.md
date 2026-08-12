@@ -1,8 +1,8 @@
 # status — world-state-store (issue #54)
 
 - **Branch:** `feat/i54-world-state-store-json-disk-persisted-ma` (from `origin/main` @ `b8e07a0`)
-- **Phase:** red-team round 1 fixed → test-runner next
-- **Round:** 0 (no red-team yet)
+- **Phase:** green → PR open, ready for Sisyphus
+- **Round:** 2 of 2 red-team rounds used; all BLOCKs fixed
 - **Blockers:** none
 
 ## Loop log
@@ -16,8 +16,14 @@
 | 4 rulings | manager | done — R1–R10 below |
 | 5 implement | implementer | done — `robot_world` package + backend/MCP wiring + D23; `pixi run test` green (672 tests, 0 failures); baseline re-cut. See `implementation.md` §4 for one judgment call inside R7 (`MockBackend.world` returns the *seed* world, not the live scene). |
 | 6 red-team | red-team | round 1 done — 3 BLOCKs; all fixed by the implementer (BLOCK-1 env leakage, BLOCK-2 `_flush` ordering, BLOCK-3 false "opens no file" claim + weak test), plus promoted NOTE-3 (seed == live path refused) and NOTE-1 (`backend.store` docstring + pinning test). `pixi run test` green: 677 tests, 0 failures; baseline re-cut. Surviving NOTEs listed in `implementation.md` §7 for the manager to file — nothing mis-sorted. |
-| 7 test-runner | test-runner | pending |
-| 8 rebase + PR | manager | pending |
+| 6b red-team r2 | red-team | done — scoped to fix commit `12c49a1`. 1 BLOCK (**R2-BLOCK-4**: D23 in `decisions.md` still carried the "open no file at all" claim BLOCK-3 removed everywhere else — the one copy that outlives the run). Fixed by the manager in `980c739`. All 5 round-1 fixes verified correct; regression sweep clean; 5 non-blocking NOTEs. |
+| 7 test-runner | test-runner | done — **PASS, first run, no re-run needed.** 677 tests, 0 errors / 0 failures / 0 skipped. Integrity audit passed; ratchet `+0` on every package. `robot_brain` (51) passed without `install-openclaw`, so the earlier openclaw failures were provisioning, not code. `ROBOT_WORLD_STATE`/`ROBOT_WORLD_SEED` confirmed unset in the runner's env. Logs: `.dev/runs/world-state-store/20260812-184029/`. |
+| 8 rebase + PR | manager | done — `origin/main` still `b8e07a0` (= our merge base), so no rebase needed; green is green against current main. PR opened. |
+
+**Test-gate note.** The only change after the green run is `980c739`, which
+edits `docs/design/decisions.md` only. Nothing under `src/` or `scripts/`
+reads that file (grep: one README cross-reference), so the 677-test result
+stands for the tree as it is.
 
 ---
 
