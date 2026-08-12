@@ -44,6 +44,12 @@ build = "colcon build --symlink-install"
 test = "python scripts/check_test_integrity.py"
 # Re-read the results already in build/ without re-running anything.
 test-audit = "python scripts/check_test_integrity.py --audit-only"
+# Boot the MCP server through the deployed launcher and speak MCP to it. This
+# also runs inside `pixi run test` (the workspace-tooling suite collects all of
+# scripts/tests/); the task is here so the deploy check can be run on its own.
+# The two `-p no:` flags work around the RoboStack pytest plugins, exactly as
+# the per-package pytest.ini files and check_test_integrity.py do.
+boot-smoke = "python -m pytest scripts/tests/test_boot_smoke.py -p no:launch_testing -p no:launch_ros"
 # Install the OpenClaw brain into a project-local npm prefix (`node/`, gitignored)
 # using the pixi-provided Node/npm -- never `npm i -g` into the host.
 install-openclaw = "bash scripts/install_openclaw.sh"
