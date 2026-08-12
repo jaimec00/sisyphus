@@ -3,7 +3,7 @@
   "packages": {
     "_workspace_tooling": 111,
     "robot_backends": 60,
-    "robot_brain": 38,
+    "robot_brain": 46,
     "robot_bringup": 0,
     "robot_description": 0,
     "robot_mcp": 71,

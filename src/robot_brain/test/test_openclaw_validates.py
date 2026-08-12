@@ -60,10 +60,13 @@ INSTALL_HINT = 'run `pixi run install-openclaw` (project-local, gitignored)'
 def repository_root() -> Path:
     """Return the repository root, found by walking up for ``pixi.toml``.
 
-    ``.resolve()`` first, because ``colcon build --symlink-install`` imports
-    the package through ``build/robot_brain/robot_brain -> src/...``: walking
-    ``..`` lexically from there lands in ``build/``, while the kernel-resolved
-    path lands in the source tree where ``pixi.toml``'s ancestor actually is.
+    ``colcon build --symlink-install`` imports this package through
+    ``build/robot_brain/robot_brain -> src/robot_brain/robot_brain``, so
+    ``robot_brain.__file__`` is a path under ``build/``.  ``.resolve()`` asks
+    the kernel and lands in ``src/``; a lexical walk would not.  Counting
+    parents from either would give a different answer (``build`` vs ``src``) --
+    the marker is what makes the two agree, and ``.resolve()`` is what keeps
+    the answer right if the package is ever installed somewhere less tidy.
     """
     start = Path(robot_brain.__file__).resolve()
     for directory in start.parents:

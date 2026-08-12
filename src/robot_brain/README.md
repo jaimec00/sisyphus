@@ -74,10 +74,19 @@ nothing real fails the suite.
 
 ## Installing the agent on the Pi
 
-**Not run from this worktree.** OpenClaw is not installed on this laptop and
-this repo cannot reach the Pi, so everything below is a documented procedure,
-not an observed result. The field names come from `docs.openclaw.ai`; step 6
-is where you find out if this build spells them the same.
+**Not run from this worktree** — but no longer unverifiable either. Since #51
+the pixi env ships OpenClaw itself (`pixi run install-openclaw`), so the
+*shape* of the fragment is now checked automatically on every test run:
+`test/test_openclaw_validates.py` hands the shipped file to the real
+`openclaw config validate` and fails if it is rejected. That found and fixed
+two schema errors (#52) that had been sitting in a fragment written from
+`docs.openclaw.ai` alone.
+
+What is still an unobserved procedure is everything that needs the *Pi*: this
+repo cannot reach it, cannot resolve the `laptop` SSH alias, and has no
+Telegram account. Steps 3, 4, 5, 7 and 8 below are documented, not observed.
+Step 6 is where you find out whether *your* build agrees with the one in this
+env.
 
 1. **Copy the two assets to the Pi** (from a checkout of this repo, or by
    `scp`):
@@ -91,7 +100,8 @@ is where you find out if this build spells them the same.
 2. **Merge the fragment into `~/.openclaw/openclaw.json`** — do not copy it
    over the file. Merge exactly three keys, leaving everything else alone:
    - `mcp.servers.robot`
-   - `agents.entries.robot`
+   - one entry appended to the `agents.list` array (`agents` is
+     `{defaults, list}` — an array keyed by each entry's `id`, **not** a map)
    - one entry appended to the top-level `bindings` array.
 3. **Point the launch command at your checkout — you almost certainly have to
    edit this.** The fragment hard-codes `/home/sisyphus/worktrees/main` in
@@ -128,23 +138,47 @@ is where you find out if this build spells them the same.
    `REPLACE_WITH_TELEGRAM_ACCOUNT_ID`).
 6. **Verify the config OpenClaw actually parsed:**
    ```bash
-   openclaw config schema          # does this build accept these fields?
+   openclaw config validate        # does this build accept these fields?
+   openclaw doctor                 # do the values match anything real?
    openclaw agents list --bindings # is `robot` bound to your Telegram account?
    ```
-   Fields most likely to differ between builds, and worth checking here:
-   `agents.entries.<id>.sandbox.mode`'s value vocabulary, the tool-id spelling
-   in `tools.allow` (`mcp__robot__*`), and `bindings[].match`'s keys. The
-   fragment deliberately omits `model`, so the agent inherits your global
+   `config validate` is the same check the test suite runs here, so it should
+   pass unless your build's schema differs; if it does, that difference is the
+   bug and this repo wants to hear about it. `doctor` goes further and is the
+   one worth reading closely — it catches what the schema cannot, because
+   `tools.allow` is just `array<string>` to the validator. Two warnings this
+   fragment is deliberately shaped to avoid, both quoted from real runs:
+
+   - `allowlist contains unknown entries (mcp__robot__*)` — OpenClaw exposes
+     an MCP tool as `<server>__<tool>`, so the glob is `robot__*`. The
+     `mcp__…` form is Claude Code's convention and matches nothing.
+   - `tools.sandbox.tools.alsoAllow (unset) does not include "bundle-mcp" …
+     Sandboxed agents will filter bundled MCP tools` — with `sandbox.mode`
+     anything but `off`, the sandbox tool policy is a *second* allow gate in
+     front of the MCP tools. `tools.sandbox.tools.alsoAllow: ["bundle-mcp"]`
+     opens it. Change one of these two without the other and the agent
+     validates cleanly with nothing to drive.
+
+   The fragment deliberately omits `model`, so the agent inherits your global
    default; set it in the entry if you want a specific one.
 
-   **Then check the agent can still *answer*.** `tools.allow: ["mcp__robot__*"]`
-   is written as if it scopes only MCP tools. If your build treats `allow` as a
-   strict allowlist over *all* tools, and replying to Telegram goes through a
-   tool in another namespace, the agent will drive the robot and be unable to
-   say a word back — which is half of what this milestone is for. Say hello to
-   it before asking for a chore; if it does not reply, **`tools.allow` is the
-   first thing to relax** (widen it or drop it entirely and rely on the MCP
-   server's own `toolFilter`).
+   **Sandboxing needs a backend.** `sandbox.mode: "all"` asks OpenClaw to
+   sandbox `exec`/`read`/`write`/`edit`/`process`-class tools, which by default
+   means a Docker container. This agent is allowed *none* of those tools — only
+   `robot__*` — so nothing should ever be sandboxed in practice and no
+   container should be built. If your Pi has no Docker and OpenClaw complains
+   anyway, either install it or set `sandbox.mode: "off"` — but then also drop
+   `workspaceAccess: "ro"`, which is inert without it, rather than leaving a
+   restriction that reads as if it applies.
+
+   **Then check the agent can still *answer*.** `doctor` warns that with a
+   `robot__*`-only allowlist "the message tool is unavailable for that agent;
+   explicit channel actions such as sendAttachment, upload-file, thread-reply,
+   or reply can fail". Plain replies may still work; the explicit channel
+   actions may not. Say hello to it before asking for a chore, and if it does
+   not answer, **`tools.allow` is the first thing to relax** — add `"message"`
+   or `"group:messaging"` alongside `robot__*` rather than dropping the scope
+   entirely.
 7. **Text the agent "clear the table"** and read the tool-call log. Expected:
    `get_observation`, then a `navigate_to` / `grasp` / `navigate_to` / `place`
    loop repeated until the table is empty, then a plain-language report. The
@@ -163,18 +197,28 @@ is where you find out if this build spells them the same.
 - **Tested:** the prompt does not drift from the live tools, schemas, limits
   and seed world; the fragment parses, names the agent consistently, launches
   *this* repo's server over stdio without a pty, carries every package the
-  server needs, exposes exactly the tools that exist, and holds no credential.
+  server needs, exposes exactly the tools that exist, keeps the sandbox from
+  filtering those tools away, and holds no credential.
+- **Tested against the real OpenClaw**, since #51/#52: the shipped fragment is
+  accepted by `openclaw config validate` from the CLI in the pixi env
+  (`test/test_openclaw_validates.py`). The same test reintroduces the two
+  schema bugs #52 fixed and requires the CLI to reject them, so it cannot pass
+  against a binary that has quietly become a no-op. It **hard-fails** if
+  `pixi run install-openclaw` has not been run: a drift guard that skips itself
+  is not a guard.
 - **Not enforced anywhere, and not by this prompt:** max-steps, chore timeout,
   stuck-detection and one-task-at-a-time. `PROJECT.md` requires them
   server-side, "never trusted to the LLM"; they are unbuilt (deferred D16), and
   `AGENTS.md`'s "three failed attempts is a report, not a fourth attempt" is
   the agent being careful, **not** a guard. See `robot_mcp/README.md`'s
   "Deliberately absent".
-- **Not tested, anywhere:** that OpenClaw accepts the fragment, that the SSH
-  leg works from the Pi, that any of the three hard-coded paths in step 3 are
-  right for your machines, and that an LLM given this prompt actually clears
-  the table. Nothing in this repo has ever run against a real Pi; the first
-  three are steps 3/4/6 above. For the third, the closest
+- **Not tested, anywhere:** that *your* build of OpenClaw agrees with the one
+  pinned in this env, that the tool globs and the sandbox gate behave at
+  runtime the way `openclaw doctor` says they will, that the SSH leg works from
+  the Pi, that any of the three hard-coded paths in step 3 are right for your
+  machines, and that an LLM given this prompt actually clears the table.
+  Nothing in this repo has ever run against a real Pi; the first four are steps
+  3/4/6 above. For the last, the closest
   automated stand-in is
   `src/robot_mcp/test/test_clear_the_table.py`, which drives the whole chore
   over real MCP calls with a deterministic driver in place of the model — it
