@@ -13,21 +13,40 @@ perceive -> act -> observe loop end to end with no simulator and no hardware,
 which is what CLAUDE.md invariant 2 ("new code must work against Mock first")
 asks for.
 
+Where the world lives (D23): the *scene* -- locations and the object registry
+-- belongs to a :class:`~robot_world.WorldStore`, which may be in memory or
+backed by a JSON file.  This module keeps what is genuinely the *robot's*:
+proprioception (base pose, column height, gripper posture) and all the reach
+arithmetic, none of which a world file should ever describe.  Skills therefore
+read and mutate the scene *through* the store, and get persistence for free
+when the injected store has a file behind it.
+
 Determinism: there is no clock and no random number generator anywhere in this
 module.  The same world plus the same sequence of skills always produces the
 same observations, byte for byte, so tests can assert on exact values.
+``MockBackend()`` with no arguments keeps that promise absolutely: it builds an
+*in-memory* store and touches no file, so persistence is something a caller
+opts into by handing over a store, never something that happens behind a test's
+back.
 
 Failure discipline: every handler validates *before* it mutates, by raising
 ``_SkillRefused``; :meth:`MockBackend.execute` turns that into a failed
 :class:`~robot_skills.result.SkillResult`.  A refused skill therefore cannot
-leave the world half-changed.
+leave the world half-changed -- and since one skill's mutations are wrapped in
+a single store batch, a persisted world advances one whole skill at a time.
 """
 
 from dataclasses import dataclass
 from typing import Callable, Mapping, NoReturn
 
 from robot_backends.interface import RobotBackend
-from robot_backends.mock_world import default_world, MockWorld, ObjectSpec
+from robot_backends.mock_world import (
+    default_world,
+    MockWorld,
+    RobotModel,
+    world_from_document,
+    world_to_document,
+)
 from robot_skills import (
     CloseGripper,
     ExtendColumn,
@@ -50,6 +69,7 @@ from robot_skills import (
     Skill,
     SkillResult,
 )
+from robot_world import WorldStore
 
 __all__ = ['MockBackend']
 
@@ -73,29 +93,8 @@ class _MockGripper:
     held_object_id: str | None = None
 
 
-@dataclass
-class _MockObject:
-    """Mutable per-object state: an :class:`ObjectSpec` that can move and be held."""
-
-    object_id: str
-    label: str
-    pose: Pose
-    graspable: bool
-    held_by: Side | None = None
-
-    @classmethod
-    def from_spec(cls, spec: ObjectSpec) -> '_MockObject':
-        """Build mutable object state from an immutable world spec entry."""
-        return cls(
-            object_id=spec.object_id,
-            label=spec.label,
-            pose=spec.pose,
-            graspable=spec.graspable,
-        )
-
-
 class MockBackend(RobotBackend):
-    """A deterministic, in-memory robot backend driven by the skill API.
+    """A deterministic robot backend driven by the skill API.
 
     Example::
 
@@ -106,13 +105,38 @@ class MockBackend(RobotBackend):
 
     Pass a custom :class:`~robot_backends.mock_world.MockWorld` to test against
     a different scene; :meth:`reset` always returns to that same seed world.
+
+    Pass a ``store`` to put the scene somewhere that outlives the process::
+
+        backend = MockBackend(store=FileWorldStore('/var/lib/robot/world.json'))
+
+    With a store given, **the store is the scene** -- its locations, objects
+    and start parameters win -- and ``world`` (or the shipped default) supplies
+    only the :class:`~robot_backends.mock_world.RobotModel`, because a world
+    file describes the room, never the robot's body (D23).  With no store, an
+    in-memory one is built from ``world`` and no file is ever opened.
+
+    Starting against an existing live-state file is a **power cycle**: the
+    robot comes up at the scene's start pose with both grippers open, so any
+    object the file still records as held is released where it lies (its last
+    persisted pose is kept).  Anything else would contradict the empty
+    grippers, and ``Observation`` refuses to be built from that contradiction.
     """
 
-    def __init__(self, world: MockWorld | None = None) -> None:
-        """Create a backend seeded from ``world`` (the demo apartment by default)."""
+    def __init__(
+        self,
+        world: MockWorld | None = None,
+        *,
+        store: WorldStore | None = None,
+    ) -> None:
+        """Create a backend over ``store`` (in-memory by default), shaped by ``world``."""
         if world is not None and not isinstance(world, MockWorld):
             raise TypeError(f'world must be a MockWorld, got {type(world).__name__}')
-        self._world = world if world is not None else default_world()
+        if store is not None and not isinstance(store, WorldStore):
+            raise TypeError(f'store must be a WorldStore, got {type(store).__name__}')
+        seed = world if world is not None else default_world()
+        self._robot: RobotModel = seed.robot
+        self._store = store if store is not None else WorldStore(world_to_document(seed))
         self._handlers: Mapping[type[Skill], Callable[..., str | None]] = {
             NavigateTo: self._navigate_to,
             MoveGripper: self._move_gripper,
@@ -122,32 +146,35 @@ class MockBackend(RobotBackend):
             OpenGripper: self._open_gripper,
             CloseGripper: self._close_gripper,
         }
-        self.reset()
+        self._power_on()
 
     @property
     def world(self) -> MockWorld:
-        """Return the immutable world this backend was seeded from."""
-        return self._world
+        """Return the immutable seed world -- the scene :meth:`reset` returns to.
+
+        Rebuilt from the store's seed plus this backend's robot model, so it
+        still answers "what was this backend set up with" even when the live
+        scene has since moved on (or lives in a file).
+        """
+        return world_from_document(self._store.seed_document(), robot=self._robot)
+
+    @property
+    def store(self) -> WorldStore:
+        """Return the store holding the live scene this backend drives."""
+        return self._store
 
     # -- RobotBackend ------------------------------------------------------
 
     def reset(self) -> Observation:
-        """Restore the seed world and return the resulting observation."""
-        model = self._world.robot
-        self._base_pose = self._world.start_pose
-        self._location: str | None = self._world.start_location
-        self._column_height = self._world.start_column_height
-        self._grippers: dict[Side, _MockGripper] = {
-            side: _MockGripper(
-                state=GripperState.OPEN,
-                offset=model.home_gripper_offset,
-                orientation=Quaternion.identity(),
-            )
-            for side in SIDE_ORDER
-        }
-        self._objects: dict[str, _MockObject] = {
-            spec.object_id: _MockObject.from_spec(spec) for spec in self._world.objects
-        }
+        """Restore the seed scene and the seed posture, and observe the result.
+
+        With a file-backed store this re-reads the **seed file** and rewrites
+        the live-state file from it, so a drifted world is recovered from
+        ground truth rather than from anything this process remembers.
+        """
+        with self._store.batch():
+            self._store.reset()
+            self._power_on()
         return self.get_observation()
 
     def get_observation(self) -> Observation:
@@ -167,9 +194,9 @@ class MockBackend(RobotBackend):
                     graspable=item.graspable,
                     held_by=item.held_by,
                 )
-                for item in sorted(self._objects.values(), key=lambda o: o.object_id)
+                for item in sorted(self._store.objects(), key=lambda o: o.object_id)
             ),
-            known_locations=tuple(sorted(self._world.locations)),
+            known_locations=tuple(sorted(self._store.locations())),
         )
 
     def execute(self, skill: Skill) -> SkillResult:
@@ -186,23 +213,66 @@ class MockBackend(RobotBackend):
                 f'the mock backend does not implement skill {skill.name!r}',
             )
         try:
-            note = handler(skill)
+            # One skill is one batch: a handler plus the carried-object
+            # bookkeeping can touch three objects, and a persisted world must
+            # advance by whole skills rather than by intermediate states.
+            with self._store.batch():
+                note = handler(skill)
+                self._carry_held_objects()
         except _SkillRefused as refusal:
             return SkillResult.failure(
                 skill, self.get_observation(), refusal.code, refusal.reason)
-        self._carry_held_objects()
         return SkillResult.ok(skill, self.get_observation(), note)
+
+    # -- power-on ----------------------------------------------------------
+
+    def _power_on(self) -> None:
+        """Bring the robot up at the scene's start posture, holding nothing.
+
+        Called on construction and on every :meth:`reset`.  Deliberately *not*
+        a scene restore: opening an existing live-state file must not throw
+        away what the world recorded, only what the robot cannot still be
+        doing.  Releasing objects the file says are held is that second thing
+        -- the grippers below start empty, and ``Observation`` enforces that
+        the two views agree.
+        """
+        low, high = self._robot.min_column_height, self._robot.max_column_height
+        if not low <= self._store.start_column_height <= high:
+            raise ValueError(
+                f'start_column_height {self._store.start_column_height} is outside the '
+                f'column range {self._robot.column_range_text()}')
+        self._base_pose = self._store.locations()[self._store.start_location]
+        self._location: str | None = self._store.start_location
+        self._column_height = self._store.start_column_height
+        self._grippers: dict[Side, _MockGripper] = {
+            side: _MockGripper(
+                state=GripperState.OPEN,
+                offset=self._robot.home_gripper_offset,
+                orientation=Quaternion.identity(),
+            )
+            for side in SIDE_ORDER
+        }
+        self._release_persisted_holds()
+
+    def _release_persisted_holds(self) -> None:
+        """Clear ``held_by`` on anything the scene still records as held."""
+        held = [item.object_id for item in self._store.objects() if item.held_by is not None]
+        if not held:
+            return
+        with self._store.batch():
+            for object_id in held:
+                self._store.set_held_by(object_id, None)
 
     # -- skill handlers ----------------------------------------------------
 
     def _navigate_to(self, skill: NavigateTo) -> str | None:
         """Drive the base to a named location."""
-        pose = self._world.locations.get(skill.location)
+        pose = self._store.location(skill.location)
         if pose is None:
             raise _SkillRefused(
                 FailureCode.UNKNOWN_LOCATION,
                 f'unknown location {skill.location!r}; known locations: '
-                f'{", ".join(sorted(self._world.locations))}',
+                f'{", ".join(sorted(self._store.locations()))}',
             )
         already_there = self._location == skill.location
         self._base_pose = pose
@@ -219,12 +289,12 @@ class MockBackend(RobotBackend):
 
     def _grasp(self, skill: Grasp) -> str | None:
         """Close a free gripper around a present, graspable, reachable object."""
-        item = self._objects.get(skill.object_id)
+        item = self._store.find_object(skill.object_id)
         if item is None:
             raise _SkillRefused(
                 FailureCode.UNKNOWN_OBJECT,
                 f'no object {skill.object_id!r} in the scene; perceived objects: '
-                f'{", ".join(sorted(self._objects))}',
+                f'{", ".join(sorted(self._object_ids()))}',
             )
         if not item.graspable:
             raise _SkillRefused(
@@ -245,7 +315,7 @@ class MockBackend(RobotBackend):
         gripper.orientation = item.pose.orientation
         gripper.state = GripperState.CLOSED
         gripper.held_object_id = item.object_id
-        item.held_by = side
+        self._store.set_held_by(item.object_id, side)
         return None
 
     def _place(self, skill: Place) -> str | None:
@@ -258,20 +328,19 @@ class MockBackend(RobotBackend):
                 FailureCode.GRIPPER_EMPTY,
                 f'the {side.value} gripper is empty, there is nothing to place',
             )
-        item = self._objects[held_id]
         offset = self._require_reachable(side, skill.pose, f'place {held_id!r}')
 
         gripper.offset = offset
         gripper.orientation = skill.pose.orientation
         gripper.state = GripperState.OPEN
         gripper.held_object_id = None
-        item.pose = skill.pose
-        item.held_by = None
+        self._store.update_object_pose(held_id, skill.pose)
+        self._store.set_held_by(held_id, None)
         return f'released {held_id!r} from the {side.value} gripper'
 
     def _extend_column(self, skill: ExtendColumn) -> str | None:
         """Set the lift column height, carrying the arms (and any load) with it."""
-        model = self._world.robot
+        model = self._robot
         if not model.min_column_height <= skill.height <= model.max_column_height:
             raise _SkillRefused(
                 FailureCode.OUT_OF_RANGE,
@@ -290,9 +359,8 @@ class MockBackend(RobotBackend):
         gripper = self._grippers[skill.side]
         released = gripper.held_object_id
         if released is not None:
-            item = self._objects[released]
-            item.pose = self._gripper_pose(skill.side)
-            item.held_by = None
+            self._store.update_object_pose(released, self._gripper_pose(skill.side))
+            self._store.set_held_by(released, None)
             gripper.held_object_id = None
         was_open = gripper.state is GripperState.OPEN
         gripper.state = GripperState.OPEN
@@ -325,9 +393,13 @@ class MockBackend(RobotBackend):
                 return handler
         return None
 
+    def _object_ids(self) -> tuple[str, ...]:
+        """Return every registered object id, for a failure reason's "perceived" list."""
+        return tuple(item.object_id for item in self._store.objects())
+
     def _shoulder(self, side: Side) -> Point:
         """Return the world-frame shoulder point of one arm."""
-        return self._world.robot.shoulder(self._base_pose, self._column_height, side)
+        return self._robot.shoulder(self._base_pose, self._column_height, side)
 
     def _gripper_pose(self, side: Side) -> Pose:
         """Return the world-frame pose of one gripper."""
@@ -362,19 +434,19 @@ class MockBackend(RobotBackend):
         for side in SIDE_ORDER:
             held_id = self._grippers[side].held_object_id
             if held_id is not None:
-                self._objects[held_id].pose = self._gripper_pose(side)
+                self._store.update_object_pose(held_id, self._gripper_pose(side))
 
     def _reach_offset(self, side: Side, target: Pose) -> Point | None:
         """Return the arm offset reaching ``target``, or ``None`` if too far."""
         offset = target.position - self._shoulder(side)
-        return offset if offset.norm() <= self._world.robot.reach_radius else None
+        return offset if offset.norm() <= self._robot.reach_radius else None
 
     def _require_reachable(self, side: Side, target: Pose, action: str) -> Point:
         """Return the arm offset reaching ``target``, or refuse the skill."""
         offset = self._reach_offset(side, target)
         if offset is None:
             distance = (target.position - self._shoulder(side)).norm()
-            reach = self._world.robot.reach_radius
+            reach = self._robot.reach_radius
             at = 'nowhere' if self._location is None else repr(self._location)
             raise _SkillRefused(
                 FailureCode.OUT_OF_REACH,
