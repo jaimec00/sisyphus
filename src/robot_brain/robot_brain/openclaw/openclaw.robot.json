@@ -38,20 +38,12 @@
         "workspace": "~/.openclaw/agents/robot",
         "skills": [],
         "sandbox": {
-          "mode": "all",
-          "workspaceAccess": "ro"
+          "mode": "off"
         },
         "tools": {
           "allow": [
             "robot__*"
-          ],
-          "sandbox": {
-            "tools": {
-              "alsoAllow": [
-                "bundle-mcp"
-              ]
-            }
-          }
+          ]
         }
       }
     ]

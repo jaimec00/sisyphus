@@ -23,9 +23,9 @@ config can validate and still hand the brain nothing to drive.
 So: it parses, it declares the server the prompt assumes, the agent it binds is
 the agent it configures, the launch command actually starts *our* server with
 the packages it now needs (``robot_safety`` is a runtime dependency since the
-safety gate landed), the tools it exposes are the tools that exist, the sandbox
-it turns on does not silently filter those tools away -- and it carries no
-secret.
+safety gate landed), the tools it exposes are the tools that exist under the
+name OpenClaw will give them, its sandbox settings do not contradict each
+other -- and it carries no secret.
 """
 
 import json
@@ -121,44 +121,109 @@ def test_the_agent_is_scoped_to_the_robot_tools():
     "agents.robot.tools.allow allowlist contains unknown entries
     (mcp__robot__*)".  That is a mute robot, not a scoped one, so the glob is
     pinned exactly rather than by substring.
+
+    The glob is derived from the ``mcp.servers`` key actually shipped, not from
+    ``MCP_SERVER_NAME``, so renaming the server without rewriting the allowlist
+    fails here instead of at the agent's first tool call.  That derivation is
+    only sound while the key needs no mangling -- see below.
     """
+    server_key, = FRAGMENT['mcp']['servers']
     allowed = agent()['tools']['allow']
     assert allowed, 'an empty allow list would give the agent nothing to drive'
-    assert allowed == [f'{MCP_SERVER_NAME}__*'], allowed
+    assert allowed == [f'{server_key}__*'], allowed
 
 
-def test_the_sandbox_does_not_filter_away_the_robot_tools():
-    """Sandboxing on is a *second* allow gate in front of the MCP tools.
+def test_the_server_name_needs_no_provider_safe_mangling():
+    """``<server>__*`` is only the right glob when the prefix is the identity.
 
-    With ``sandbox.mode`` anything but ``off``, OpenClaw filters bundled MCP
-    tools before the provider request unless the sandbox tool policy lets them
-    through: ``openclaw doctor`` on a gate-less copy of this fragment warns
-    that ``tools.sandbox.tools.alsoAllow (unset) does not include
-    "bundle-mcp" ... Sandboxed agents will filter bundled MCP tools``.  The
-    two settings are therefore a pair, and this test exists so that a later
-    edit cannot keep the sandbox and quietly drop the gate: a validating config
-    that disarms the robot is worse than one that fails loudly.
+    OpenClaw derives the prefix from the ``mcp.servers`` key by lower-casing,
+    replacing every character outside ``[A-Za-z0-9_-]`` with ``-`` and putting
+    an ``mcp-`` in front of a name that does not start with a letter --
+    ``mcp.servers["Outlook Graph"]`` globs as ``outlook-graph__*``
+    (``docs/gateway/config-tools.md:59``).  Rename the server to ``robot mcp``
+    and the test above would assert ``'robot mcp__*'``, which validates, matches
+    nothing, and hands the brain no tools: Bug A returning through a side door.
     """
-    sandbox = agent()['sandbox']
-    assert sandbox['mode'] in ('off', 'non-main', 'all'), sandbox
-    if sandbox['mode'] != 'off':
-        gate = agent()['tools'].get('sandbox', {}).get('tools', {})
-        assert 'bundle-mcp' in gate.get('alsoAllow', []), (
-            f"sandbox.mode is {sandbox['mode']!r} but the sandbox tool policy "
-            f'does not admit bundled MCP tools: {gate}')
+    server_key, = FRAGMENT['mcp']['servers']
+    assert server_key == MCP_SERVER_NAME, 'the code and the config disagree'
+    assert re.fullmatch(r'[a-z][a-z0-9_-]*', server_key), (
+        f'{server_key!r} would be mangled into a different tool prefix')
 
 
-def test_the_sandbox_grants_no_more_than_read_access_to_the_workspace():
-    """``workspaceAccess`` is what the old (invalid) ``mode: "read-only"`` meant.
+#: Any one of these in ``tools.sandbox.tools`` lets the ``robot`` MCP tools
+#: through the sandbox gate (``docs/gateway/config-tools.md:52-56``).  Note the
+#: enum of ``sandbox.mode`` is deliberately *not* copied here: what is a legal
+#: value is the validator's question, and hand-copying it from documentation is
+#: the habit that produced #52.
+SANDBOX_MCP_ADMISSIONS = ('bundle-mcp', 'group:plugins', f'{MCP_SERVER_NAME}__*')
 
-    The agent's workspace holds its operating prompt; nothing in the loop needs
-    to write there.  ``mode`` has to be on for this field to bite at all, so
-    both halves are asserted: ``workspaceAccess: "ro"`` under ``mode: "off"``
-    is a comment, not a restriction.
+
+def sandbox_complaints(entry: dict) -> list[str]:
+    """Return every way ``entry``'s sandbox settings contradict each other.
+
+    A detector rather than a run of asserts, so that it can be shown to
+    *detect*.  The shipped fragment has sandboxing off, which makes every rule
+    here vacuous for that fragment; a test that only ran them against the
+    fragment would be a test of nothing.
     """
-    sandbox = agent()['sandbox']
-    assert sandbox['mode'] != 'off', 'workspaceAccess is inert with sandboxing off'
-    assert sandbox['workspaceAccess'] in ('none', 'ro'), sandbox
+    sandbox = entry.get('sandbox', {})
+    mode = sandbox.get('mode', 'off')
+    gate = entry.get('tools', {}).get('sandbox', {}).get('tools', {})
+    admitted = list(gate.get('alsoAllow', [])) + list(gate.get('allow', []))
+    complaints = []
+    if mode == 'off':
+        if 'workspaceAccess' in sandbox:
+            complaints.append('workspaceAccess is inert while sandbox.mode is off')
+        if gate:
+            complaints.append('tools.sandbox is inert while sandbox.mode is off')
+    elif not any(admission in admitted for admission in SANDBOX_MCP_ADMISSIONS):
+        complaints.append(
+            f'sandbox.mode is {mode!r}, so bundled MCP tools are filtered out '
+            f'unless the sandbox tool policy admits them: {gate}')
+    return complaints
+
+
+def test_the_sandbox_consistency_check_detects_what_it_forbids():
+    """The check below is only worth running if it actually catches something.
+
+    Both forbidden states are real and were observed.  Turning the sandbox on
+    without the gate is the one that bites: ``openclaw doctor`` on exactly that
+    fragment warns ``tools.sandbox.tools.alsoAllow (unset) does not include
+    "bundle-mcp" ... Sandboxed agents will filter bundled MCP tools before
+    provider requests``, i.e. a config that validates and quietly disarms the
+    robot.  The inert-key states are the milder half: a setting that reads like
+    a restriction and enforces nothing.
+    """
+    assert sandbox_complaints({'sandbox': {'mode': 'all'}, 'tools': {}})
+    assert sandbox_complaints({'sandbox': {'mode': 'off', 'workspaceAccess': 'ro'}})
+    assert sandbox_complaints(
+        {'sandbox': {'mode': 'off'},
+         'tools': {'sandbox': {'tools': {'alsoAllow': ['bundle-mcp']}}}})
+    # ...and does not cry wolf over either coherent configuration.
+    assert sandbox_complaints({'sandbox': {'mode': 'off'}}) == []
+    assert sandbox_complaints(
+        {'sandbox': {'mode': 'all', 'workspaceAccess': 'rw'},
+         'tools': {'sandbox': {'tools': {'alsoAllow': ['bundle-mcp']}}}}) == []
+
+
+def test_the_shipped_sandbox_settings_do_not_contradict_each_other():
+    """Sandboxing is **off**, deliberately, and the fragment says only that.
+
+    The first attempt at this fix turned it on (``mode: "all"`` +
+    ``workspaceAccess: "ro"``) on the reasoning that it costs nothing while the
+    agent is allowed no ``exec``/``read``/``write``/``edit``/``apply_patch``/
+    ``process``-class tool.  It does not cost nothing.  Sandboxing on with
+    ``workspaceAccess`` other than ``"rw"`` swaps the *effective workspace* for
+    the sandbox workspace (``dist/compact-DLB4d8IL.js:551``), and the compaction
+    path resolves the bootstrap context from that -- so a long conversation
+    could compact and come back without ``AGENTS.md``, which is the entire
+    brain.  A sandbox protecting nothing is not worth risking the operating
+    prompt for, so ``mode: "off"``, and no inert companions.
+
+    Should that trade ever be revisited, the detector above is the thing that
+    stops the sandbox arriving without its tool gate.
+    """
+    assert sandbox_complaints(agent()) == [], sandbox_complaints(agent())
 
 
 def test_the_binding_carries_a_placeholder_account_not_a_credential():

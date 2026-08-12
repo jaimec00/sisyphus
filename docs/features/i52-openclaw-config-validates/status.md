@@ -207,3 +207,95 @@ added).
 helper in `test_openclaw_config.py`; do not add a public accessor to
 `robot_brain/__init__.py`. Nothing in `src/` consumes the agent entry — only
 tests do — and speculative API is a NOTE-grade smell in this repo.
+
+---
+
+# Round 1 — red-team → manager rulings (revisions)
+
+`red_team.md`: 1 BLOCK, 9 NOTEs. The red-team confirmed R1, R3, R5's structural
+soundness, R6, the `walk()`/secret-scanner reshape, and the ratchet's honesty.
+Two findings change my rulings.
+
+## R2 is REVISED — `sandbox.mode` becomes `"off"`. My original rationale was wrong.
+
+I ruled `mode:"all"` + `workspaceAccess:"ro"` on the reasoning that `mode:"all"`
+"costs nothing at runtime — no sandboxed tool class is allowed, so no container
+is ever built." The red-team attacked that (NOTE-1) and I verified the core of
+its claim myself in the installed dist:
+
+`node_modules/openclaw/dist/compact-DLB4d8IL.js:551`
+```js
+const effectiveWorkspace = sandbox?.enabled
+  ? (sandbox.workspaceAccess === "rw" ? resolvedWorkspace : sandbox.workspaceDir)
+  : resolvedWorkspace;
+```
+
+With sandboxing enabled and `workspaceAccess` anything other than `"rw"`, the
+**effective workspace becomes the sandbox workspace**, and that value is what
+gets passed as `workspaceDir` into bootstrap-context resolution on the
+compaction path (`:188`, `:200`, `:203`, `:226`). Our agent's operating prompt
+is `AGENTS.md` **in the agent workspace** — `test_openclaw_config.py` already
+says so: "the prompt is loaded from the workspace, so the workspace must be the
+agent's own directory — OpenClaw has no `prompt` field to point at."
+
+So `mode:"all"` + `workspaceAccess:"ro"` plausibly means **the brain loses its
+operating prompt after a compaction turn**. An LLM driving a physical
+manipulator without its operating instructions is not a risk worth taking for a
+sandbox that, by my own R2 reasoning, protects nothing today — this agent is
+allowed no `exec`/`read`/`write`/`edit`/`process`-class tool at all.
+
+**Revised R2: `"sandbox": {"mode": "off"}`.** This also retires the unverified
+Docker-on-the-Pi prerequisite (`backend` defaults to `docker`).
+
+This deviates from the issue's suggested snippet, which named `mode:"all"`. The
+issue proposed it to make the config *validate*; `"off"` validates equally
+(verified: `Config valid`, exit 0, candidate C2). State the deviation plainly in
+the PR description.
+
+## R4 is REVISED — do not ship the `bundle-mcp` gate; pin it as a conditional
+
+With `mode:"off"` the sandbox tool gate is inert, and shipping an inert key is
+noise. But the trap is real and must not be rediscovered the hard way: the
+red-team confirmed (`dist/tool-policy-Bx6D7Inl.js:148-158`,
+`dist/agent-tools.policy-YD9HuYgO.js:101`) that agent-level
+`tools.sandbox.tools` *is* consulted and *is* agent-over-global, so the gate
+works — it is simply not needed while sandboxing is off.
+
+**Revised R4:** drop `tools.sandbox` from the fragment; keep the knowledge as a
+**conditional invariant test** — *if* `sandbox.mode` is ever not `"off"`, the
+fragment must carry a `bundle-mcp` (or `group:plugins` / `robot__*`) entry in
+`tools.sandbox.tools.alsoAllow`. That test must fail if someone flips the mode
+without adding the gate. Document the coupling in the README.
+
+## R12 (new) — BLOCK-1: fix the worktree bootstrap in this PR
+
+`scripts/start-feature.sh:74-75` bootstraps a new worktree with `pixi install`
+only, so `node/` — gitignored and per-worktree — is absent by default. R5's
+hard-fail therefore hands six red `robot_brain` tests to every worktree that
+rebases onto this, in a repo where `pixi run test` green is the only real gate.
+
+R5 stands: a drift guard that silently no-ops is the lie this issue exists to
+end. The fix is the bootstrap, not the guard. The red-team suggested escalating
+this as a separate ops PR; I am ruling **in-loop** instead — it is one line, this
+PR already legitimately edits `scripts/test_baseline.json`, and merging a change
+that reds out every sibling worktree while its remedy waits on a second PR is
+worse than a slightly wider diff. Add `pixi run install-openclaw` to the
+bootstrap (non-fatal on failure, matching how `pixi install` is handled there),
+and make `DEVELOPMENT.md` say that `pixi run test` now requires it.
+
+## NOTEs to fix in this round (cheap, and they harden the guard)
+
+- Neutralise `OPENCLAW_HOME` / `OPENCLAW_PROFILE` in the subprocess env — a
+  developer with either set could otherwise skew the run.
+- Include the CLI version in the failure report, so the next drift says *which*
+  openclaw disagreed.
+- Derive the expected `robot__*` glob from the `mcp.servers` key rather than
+  hardcoding it, so renaming the server without updating the allowlist fails.
+- Stop hand-copying the `sandbox.mode` enum into the test (that is the
+  docs-copying habit that caused #52).
+
+## NOTEs deliberately NOT fixed → follow-up comment on the issue
+
+- The `message`-tool / Telegram reply gap the implementer surfaced via
+  `openclaw doctor` (a tool-policy decision, not #52's subject).
+- Remaining prose/style items.

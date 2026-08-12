@@ -100,8 +100,9 @@ env.
 2. **Merge the fragment into `~/.openclaw/openclaw.json`** — do not copy it
    over the file. Merge exactly three keys, leaving everything else alone:
    - `mcp.servers.robot`
-   - one entry appended to the `agents.list` array (`agents` is
-     `{defaults, list}` — an array keyed by each entry's `id`, **not** a map)
+   - one entry appended to the `agents.list` array — `agents` is an object with
+     exactly two keys, `defaults` and `list`, and `list` is an **array** whose
+     items carry their own `id`, **not** a map keyed by agent name
    - one entry appended to the top-level `bindings` array.
 3. **Point the launch command at your checkout — you almost certainly have to
    edit this.** The fragment hard-codes `/home/sisyphus/worktrees/main` in
@@ -146,30 +147,49 @@ env.
    pass unless your build's schema differs; if it does, that difference is the
    bug and this repo wants to hear about it. `doctor` goes further and is the
    one worth reading closely — it catches what the schema cannot, because
-   `tools.allow` is just `array<string>` to the validator. Two warnings this
-   fragment is deliberately shaped to avoid, both quoted from real runs:
+   `tools.allow` is just `array<string>` to the validator. One warning this
+   fragment is deliberately shaped to avoid, quoted from a real run:
 
    - `allowlist contains unknown entries (mcp__robot__*)` — OpenClaw exposes
      an MCP tool as `<server>__<tool>`, so the glob is `robot__*`. The
-     `mcp__…` form is Claude Code's convention and matches nothing.
-   - `tools.sandbox.tools.alsoAllow (unset) does not include "bundle-mcp" …
-     Sandboxed agents will filter bundled MCP tools` — with `sandbox.mode`
-     anything but `off`, the sandbox tool policy is a *second* allow gate in
-     front of the MCP tools. `tools.sandbox.tools.alsoAllow: ["bundle-mcp"]`
-     opens it. Change one of these two without the other and the agent
-     validates cleanly with nothing to drive.
+     `mcp__…` form is Claude Code's convention and matches nothing. The prefix
+     is the server key put through a mangling pass (lower-cased, characters
+     outside `[A-Za-z0-9_-]` become `-`, a non-letter start gets an `mcp-`);
+     `robot` survives it unchanged, a renamed server might not.
 
    The fragment deliberately omits `model`, so the agent inherits your global
    default; set it in the entry if you want a specific one.
 
-   **Sandboxing needs a backend.** `sandbox.mode: "all"` asks OpenClaw to
-   sandbox `exec`/`read`/`write`/`edit`/`process`-class tools, which by default
-   means a Docker container. This agent is allowed *none* of those tools — only
-   `robot__*` — so nothing should ever be sandboxed in practice and no
-   container should be built. If your Pi has no Docker and OpenClaw complains
-   anyway, either install it or set `sandbox.mode: "off"` — but then also drop
-   `workspaceAccess: "ro"`, which is inert without it, rather than leaving a
-   restriction that reads as if it applies.
+   **Why sandboxing is off.** The fragment ships `sandbox: {"mode": "off"}` — the only sandbox key it
+   carries. That is a decision, not an omission, and the two things that make
+   turning it on non-trivial are worth stating before someone does:
+
+   - **Turning it on filters the robot tools away by default.** The sandbox
+     tool policy is a *second* allow gate in front of MCP tools. `openclaw
+     doctor` on a `mode: "all"` copy of this fragment: `tools.sandbox.tools.
+     alsoAllow (unset) does not include "bundle-mcp" … Sandboxed agents will
+     filter bundled MCP tools before provider requests`. The agent-level key
+     `agents.list[].tools.sandbox.tools` is genuinely consulted and overrides
+     the global one for that agent (`dist/tool-policy-Bx6D7Inl.js:148-158`,
+     `dist/agent-tools.policy-YD9HuYgO.js:101`), so
+     `tools.sandbox.tools.alsoAllow: ["bundle-mcp"]` is the fix — but the point
+     is that the config validates *without* it while the robot has nothing to
+     drive. `test_openclaw_config.py` fails if the mode is ever flipped on
+     without the gate.
+   - **`workspaceAccess` other than `"rw"` moves the effective workspace.**
+     With sandboxing enabled, `effectiveWorkspace` becomes the *sandbox*
+     workspace rather than the agent's (`dist/compact-DLB4d8IL.js:551`), and
+     the compaction path resolves its bootstrap context from that — so a long
+     conversation could compact and come back without `AGENTS.md`, which is the
+     whole brain. Read from the installed dist, not observed on a Pi; it is the
+     reason this fragment stopped at `off`.
+
+   Against that, sandboxing would protect nothing here: OpenClaw sandboxes
+   `exec`/`read`/`write`/`edit`/`apply_patch`/`process`-class tools
+   (`docs/gateway/sandboxing.md:17`), and this agent is allowed none of them —
+   only `robot__*`. `off` also retires the Docker prerequisite that `mode:
+   "all"` implies (`sandbox.backend` defaults to `docker`). If you widen
+   `tools.allow` to anything that executes, revisit all of this.
 
    **Then check the agent can still *answer*.** `doctor` warns that with a
    `robot__*`-only allowlist "the message tool is unavailable for that agent;
@@ -197,8 +217,9 @@ env.
 - **Tested:** the prompt does not drift from the live tools, schemas, limits
   and seed world; the fragment parses, names the agent consistently, launches
   *this* repo's server over stdio without a pty, carries every package the
-  server needs, exposes exactly the tools that exist, keeps the sandbox from
-  filtering those tools away, and holds no credential.
+  server needs, exposes exactly the tools that exist under the name OpenClaw
+  will actually give them, carries no sandbox setting that contradicts another,
+  and holds no credential.
 - **Tested against the real OpenClaw**, since #51/#52: the shipped fragment is
   accepted by `openclaw config validate` from the CLI in the pixi env
   (`test/test_openclaw_validates.py`). The same test reintroduces the two

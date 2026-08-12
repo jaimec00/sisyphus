@@ -33,11 +33,14 @@ would be silent.  The remedy is one documented command and it is in the
 failure message.
 """
 
+from functools import lru_cache
+from importlib import resources
 import json
 import os
 from pathlib import Path
 import shutil
 import subprocess
+import tempfile
 
 import pytest
 import robot_brain
@@ -86,12 +89,35 @@ def openclaw_binary() -> Path:
 
 def shipped_fragment() -> Path:
     """Return the path of the fragment as it is installed, not a copy of it."""
-    from importlib import resources
-
     resource = resources.files('robot_brain') / 'openclaw' / CONFIG_RESOURCE
     path = Path(str(resource))
     assert path.is_file(), path
     return path
+
+
+def scratch_environment(home: Path, config: Path) -> dict:
+    """Return a child environment that can only touch ``home``.
+
+    Every ``OPENCLAW_*`` variable is *removed* rather than the two or three
+    known dangerous ones being overwritten: ``OPENCLAW_HOME`` beats ``HOME``
+    outright (verified -- with both set, the state DB appears under
+    ``$OPENCLAW_HOME/.openclaw/state``), ``OPENCLAW_PROFILE`` namespaces state
+    paths, and the installed CLI reads 485 distinct ``OPENCLAW_*`` names.  An
+    allowlist of things to clobber cannot be complete against that; a denylist
+    of the whole prefix can.
+
+    ``PATH`` and the rest are inherited on purpose -- the CLI is a
+    ``#!/usr/bin/env node`` shim, and ``node`` is on ``PATH`` only inside the
+    pixi env this suite already runs in.
+    """
+    environment = {key: value for key, value in os.environ.items()
+                   if not key.startswith('OPENCLAW_')}
+    environment.update(
+        HOME=str(home),
+        OPENCLAW_STATE_DIR=str(home / 'state'),
+        OPENCLAW_CONFIG_PATH=str(config),
+    )
+    return environment
 
 
 def validate(config: Path, home: Path) -> subprocess.CompletedProcess:
@@ -99,19 +125,11 @@ def validate(config: Path, home: Path) -> subprocess.CompletedProcess:
 
     ``config validate`` does not rewrite the config, but it does open a state
     database and npm's cache; both are redirected so a test run leaves nothing
-    in the developer's ``~/.openclaw``.  ``PATH`` is inherited on purpose --
-    the CLI is a ``#!/usr/bin/env node`` shim and ``node`` is on ``PATH`` only
-    inside the pixi env this suite already runs in.
+    in the developer's ``~/.openclaw``.
     """
-    environment = dict(os.environ)
-    environment.update(
-        HOME=str(home),
-        OPENCLAW_STATE_DIR=str(home / 'state'),
-        OPENCLAW_CONFIG_PATH=str(config),
-    )
     return subprocess.run(
         [str(openclaw_binary()), 'config', 'validate'],
-        env=environment,
+        env=scratch_environment(home, config),
         capture_output=True,
         text=True,
         timeout=180,
@@ -119,9 +137,26 @@ def validate(config: Path, home: Path) -> subprocess.CompletedProcess:
     )
 
 
+@lru_cache(maxsize=1)
+def cli_version() -> str:
+    """Return what ``openclaw --version`` says, for the failure report.
+
+    ``node/`` is installed unpinned and never refreshed, so the suite can be
+    green against a build that is months behind the one the Pi runs.  Nothing
+    hermetic can fix that, but a failure that names the build it disagreed with
+    is one a future reader can resolve without re-deriving it.
+    """
+    with tempfile.TemporaryDirectory() as home:
+        completed = subprocess.run(
+            [str(openclaw_binary()), '--version'],
+            env=scratch_environment(Path(home), shipped_fragment()),
+            capture_output=True, text=True, timeout=60, check=False)
+    return completed.stdout.strip() or f'unknown (exit {completed.returncode})'
+
+
 def report(completed: subprocess.CompletedProcess) -> str:
     """Return the CLI's own words, so the next drift is diagnosable in one read."""
-    return (f'exit {completed.returncode}\n'
+    return (f'{cli_version()} said: exit {completed.returncode}\n'
             f'--- stdout ---\n{completed.stdout}\n'
             f'--- stderr ---\n{completed.stderr}')
 
@@ -207,3 +242,38 @@ def test_validating_writes_only_where_the_test_told_it_to(tmp_path):
     # while that stays true of the subcommand this suite runs.
     assert shipped_fragment().read_bytes() == before, (
         'the CLI rewrote the fragment in the source tree')
+
+
+def test_the_child_inherits_no_openclaw_variable_we_did_not_set(tmp_path, monkeypatch):
+    """The hermeticity claim is *total*, not a list of variables we thought of.
+
+    ``OPENCLAW_HOME`` outranks ``HOME`` -- with both set and
+    ``OPENCLAW_STATE_DIR`` unset, ``config validate`` writes
+    ``$OPENCLAW_HOME/.openclaw/state/openclaw.sqlite`` and leaves ``$HOME``
+    empty (measured).  ``OPENCLAW_PROFILE`` namespaces state paths, and the
+    installed CLI reads 485 distinct ``OPENCLAW_*`` names.  Enumerating the
+    dangerous ones is a losing game, so the whole prefix is dropped.
+
+    Asserted on the environment rather than on the filesystem, deliberately.
+    An end-to-end version would be *vacuous today*: with ``OPENCLAW_STATE_DIR``
+    also set, neither ``OPENCLAW_HOME`` nor ``OPENCLAW_PROFILE`` moves anything
+    `config validate` writes (measured -- the decoy directory stays empty
+    either way), so the subprocess cannot distinguish the two policies. What
+    can be stated honestly is what the child is handed, and that is what this
+    checks.  ``PATH`` is asserted *present* for the opposite reason: the CLI is
+    a ``#!/usr/bin/env node`` shim, so over-stripping would break it.
+    """
+    monkeypatch.setenv('OPENCLAW_HOME', str(tmp_path / 'decoy'))
+    monkeypatch.setenv('OPENCLAW_PROFILE', 'someone-elses-profile')
+    monkeypatch.setenv('OPENCLAW_A_VARIABLE_NOBODY_HERE_HAS_HEARD_OF', 'x')
+
+    environment = scratch_environment(tmp_path, shipped_fragment())
+
+    assert {key: value for key, value in environment.items()
+            if key.startswith('OPENCLAW_')} == {
+        'OPENCLAW_STATE_DIR': str(tmp_path / 'state'),
+        'OPENCLAW_CONFIG_PATH': str(shipped_fragment()),
+    }
+    assert environment['HOME'] == str(tmp_path)
+    assert environment.get('PATH') == os.environ.get('PATH'), (
+        'PATH must survive: the CLI is a `#!/usr/bin/env node` shim')

@@ -47,11 +47,23 @@ gitignored so the ~300-package dependency tree never enters git. The `openclaw`
 task depends on `install-openclaw`, so the first run installs and later runs are
 a no-op refresh.
 
+**`install-openclaw` is a prerequisite for `pixi run test`, not just for running
+the CLI by hand.** `src/robot_brain/test/test_openclaw_validates.py` puts the
+shipped `openclaw.robot.json` in front of the real `openclaw config validate`,
+and it **hard-fails** — no skip — when the binary is missing: a schema-drift
+guard that silently turns itself off is the failure mode it exists to end.
+`scripts/start-feature.sh` therefore runs `install-openclaw` in every new
+worktree's bootstrap, and `node/` is per-worktree (gitignored), so nothing
+carries over from a sibling. If `robot_brain` goes red with *"no OpenClaw CLI
+at …"*, the remedy is that one command.
+
 Useful for checking config work against the real thing rather than against docs:
 
 ```
 OPENCLAW_CONFIG_PATH=<file> pixi run openclaw config validate
 pixi run openclaw config schema        # full JSON schema for openclaw.json
+pixi run openclaw doctor               # what the schema cannot catch: globs,
+                                       # tool policy, sandbox gates
 ```
 
 ## The loop (per feature)
