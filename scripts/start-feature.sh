@@ -73,9 +73,11 @@ cd '$wt'; \
 mkdir -p '$logdir'; \
 echo '[bootstrap] pixi install (provision env before first agent action)...' | tee -a '$log'; \
 pixi install >>'$log' 2>&1 || echo '[bootstrap] pixi install returned nonzero; manager will surface it' | tee -a '$log'; \
+echo '[bootstrap] pixi run install-openclaw (node/ is per-worktree and gitignored; robot_brain tests need it)...' | tee -a '$log'; \
+pixi run install-openclaw >>'$log' 2>&1 || echo '[bootstrap] install-openclaw returned nonzero; robot_brain OpenClaw tests will fail until it is rerun' | tee -a '$log'; \
 claude --model '$MODEL' --permission-mode bypassPermissions \
   --output-format stream-json --verbose \
-  -p '/run-feature $ISSUE' 2>&1 | tee '$log'; \
+  -p '/run-feature $ISSUE' 2>&1 | tee -a '$log'; \
 echo \"EXIT=\${PIPESTATUS[0]} (\$(date))\" | tee -a '$log'; \
 exec bash"
 

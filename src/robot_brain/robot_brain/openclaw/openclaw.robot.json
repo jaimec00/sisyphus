@@ -30,22 +30,23 @@
     }
   },
   "agents": {
-    "entries": {
-      "robot": {
+    "list": [
+      {
+        "id": "robot",
         "default": false,
         "name": "robot",
         "workspace": "~/.openclaw/agents/robot",
         "skills": [],
         "sandbox": {
-          "mode": "read-only"
+          "mode": "off"
         },
         "tools": {
           "allow": [
-            "mcp__robot__*"
+            "robot__*"
           ]
         }
       }
-    }
+    ]
   },
   "bindings": [
     {

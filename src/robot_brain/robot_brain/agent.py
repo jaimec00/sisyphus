@@ -38,8 +38,9 @@ __all__ = [
     'RESOURCE_PACKAGE',
 ]
 
-#: The OpenClaw agent id, the key under ``agents.entries`` and the directory
-#: name under ``~/.openclaw/agents/``.  One name, used everywhere.
+#: The OpenClaw agent id: the ``id`` field of the entry in the ``agents.list``
+#: array, and the directory name under ``~/.openclaw/agents/``.  One name, used
+#: everywhere.
 AGENT_ID = 'robot'
 
 #: The name of the MCP server entry the agent drives the robot through.
