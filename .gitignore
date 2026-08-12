@@ -13,6 +13,9 @@ log/
 # pixi
 .pixi/
 
+# project-local npm prefix (`pixi run install-openclaw`)
+node/
+
 # dev run / test logs (kept until PR merges, then pruned)
 .dev/
 
