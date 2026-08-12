@@ -14,9 +14,13 @@ serialization -- and the seven skill tools are generated from
 
 Pure Python: importing this package neither needs nor starts a ROS graph.
 
-Run it (stdio transport, Mock backend)::
+Run it (stdio transport, Mock backend, world in memory)::
 
     python -m robot_mcp
+
+...or with a world that survives the process (D23)::
+
+    python -m robot_mcp --world-state ~/.local/state/robot/world.json
 
 Or drive one in-process, as the tests do::
 
@@ -32,20 +36,26 @@ Or drive one in-process, as the tests do::
 
 from robot_mcp.schemas import no_arguments_schema, schema_for_type, skill_schema
 from robot_mcp.server import (
+    backend_from_options,
     build_server,
     default_safety_layer,
     main,
+    parse_args,
     run_stdio,
     SkillToolRouter,
+    WORLD_SEED_ENV,
+    WORLD_STATE_ENV,
 )
 from robot_mcp.tools import OBSERVATION_TOOL, RESET_TOOL, TOOL_NAMES, TOOLS
 
 __all__ = [
+    'backend_from_options',
     'build_server',
     'default_safety_layer',
     'main',
     'no_arguments_schema',
     'OBSERVATION_TOOL',
+    'parse_args',
     'RESET_TOOL',
     'run_stdio',
     'schema_for_type',
@@ -53,4 +63,6 @@ __all__ = [
     'SkillToolRouter',
     'TOOL_NAMES',
     'TOOLS',
+    'WORLD_SEED_ENV',
+    'WORLD_STATE_ENV',
 ]

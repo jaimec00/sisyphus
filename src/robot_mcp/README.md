@@ -140,6 +140,33 @@ It speaks MCP on stdin/stdout and logs nothing there, so point a client at it:
 `--manifest-path` is what makes the config independent of the client's working
 directory; drop it if your client launches the command from the repo root.
 
+Add `robot_world` to the `PYTHONPATH` list above (`<repo>/src/robot_world`) —
+the server imports it for the world store.
+
+### Where the world lives
+
+By default the world is **in memory**: it starts from the shipped demo
+apartment and dies with the process, which is the pre-D23 behaviour and stays
+the default so the documented command never writes to disk behind your back.
+
+| option | env var | meaning |
+|---|---|---|
+| `--world-state PATH` | `ROBOT_WORLD_STATE` | JSON file holding the live world; created from the seed if absent, and **updated after every skill** |
+| `--world-seed PATH` | `ROBOT_WORLD_SEED` | JSON file holding the read-only seed the `reset` tool restores (default: the scene shipped with `robot_world`) |
+
+A flag beats its environment variable. `--world-seed` alone is refused (there
+would be nothing to seed).
+
+```bash
+python -m robot_mcp --world-state ~/.local/state/robot/world.json
+```
+
+With that, object poses and the object registry survive a restart. The robot
+does not: coming up is a **power cycle**, so it re-homes on its charger with
+empty grippers and anything the file recorded as held is released where it
+lies. Writes are atomic (temp file + `os.replace`), one per skill; two servers
+pointed at the same file concurrently are not supported (last writer wins).
+
 *Secondary, if you have built the workspace:* `pixi run build` installs the
 `robot_mcp_server` console script into `install/robot_mcp/lib/robot_mcp/`, which
 ament_python does not put on `PATH` — so a client config would name it by
