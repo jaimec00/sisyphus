@@ -40,7 +40,7 @@ Three tiers (**D21** — the brain is the OpenClaw agent, not a custom service):
 
 **Design rules:**
 - **Warm robot-side service** (keeps ROS/map/models/sim loaded); the OpenClaw agent handles the conversational, event-driven front.
-- **Two memories:** world-state (map/objects) = a queried **store/DB**, needed day one (owned by the robot-side service); user-preferences = **OpenClaw's native memory**, grows over time.
+- **Two memories:** world-state (map/objects) = a queried **store/DB**, needed day one (owned by the robot-side service — landed as `robot_world`, D23); user-preferences = **OpenClaw's native memory**, grows over time.
 - **Plan-and-execute with replanning** (not pure greedy, not rigid upfront) — emergent from the agent's tool-loop.
 - **Guards (mandatory for a home robot) live server-side, below the tool boundary — never trusted to the LLM:** max-steps + timeout + stuck-detection; user **stop/cancel** interrupts; **heartbeat/dead-man** halts if the Pi↔laptop link drops; **e-stop**; **one task at a time**. (If OpenClaw can't drive these from the agent side, that is exactly a D21 trigger to add the custom service — but the *enforcement* belongs in the robot-side service regardless.)
 - **Backend-agnostic:** same skills drive **Mock now**, MuJoCo next, real robot later (Mock→Sim→Real). **First milestone:** the whole flow (Telegram → OpenClaw agent → MCP skill calls → **Mock** backend → reply) running with **no hardware and no custom harness**.
@@ -124,7 +124,7 @@ Strategy: **don't fork one monolith.** Consume frameworks as dependencies, fork 
 ## Next steps
 1. **First milestone (D21):** stand up a dedicated **OpenClaw `robot` agent** whose system prompt carries the skill API + observation format + safety envelope + worked examples; wire it to **`robot_mcp`** over the **Mock** backend; prove end-to-end — text "clear the table" → tool-calls `navigate_to`/`grasp`/`place` in a loop against Mock, safety-clamped, replies. No FastAPI, no tag-parser.
 2. Expand `robot_mcp` to expose the full skill set (`navigate_to`, `move_gripper`, `grasp`, `place`, `extend_column`, `open/close_gripper`, `get_observation`) over the `RobotBackend` seam; land the **safety/clamp layer** server-side (D17).
-3. Add the **world-state store** (map/objects) queried by the robot-side service.
+3. ~~Add the **world-state store** (map/objects) queried by the robot-side service.~~ **Done (D23):** `robot_world` holds the map + object registry as a JSON-file store (read-only seed + atomically-written live state); the Mock backend reads and mutates it, and `robot_mcp --world-state PATH` makes the world survive a restart. Still to come: wrapping it in a ROS 2 query service, and letting perception write into it.
 4. Confirm laptop Ubuntu version → pin ROS 2 distro; then swap Mock → **MuJoCo** behind the same skills.
 5. Build a URDF/MJCF of the robot (4-wheel base + custom column + 2 arms) for MuJoCo.
 6. Classical skills first (D22): MoveIt pick-and-place of rigid objects + Nav2; learned skills only where unavoidable.
