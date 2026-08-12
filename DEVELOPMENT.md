@@ -26,6 +26,34 @@ The **brief is the issue**; per-feature `docs/features/<slug>/` working docs are
 ephemeral (git-tracked during the run, deleted at merge). GitHub is both the
 state substrate and the trigger.
 
+### OpenClaw in the pixi env
+The pixi env ships **Node.js 24** (`nodejs = ">=24.15,<25"` in `pixi.toml`), so the
+OpenClaw brain (D21) can be installed and run from the same env as the robot
+stack rather than depending on a host Node. The 24.x pin is deliberate: it is the
+line the Pi already runs OpenClaw on, and openclaw's own `engines` field is
+`">=22.22.3 <23 || >=24.15.0 <25 || >=25.9.0"`, so a looser `">=22"` could legally
+resolve to a Node (23.x, 25.0–25.8) that openclaw refuses to start on. Node
+24.19.0 resolves on both `linux-64` (laptop) and `linux-aarch64` (Pi).
+
+```
+pixi run install-openclaw     # npm install into ./node (gitignored), never -g
+pixi run openclaw --version   # runs the project-local binary; args are forwarded
+```
+
+`install-openclaw` runs `scripts/install_openclaw.sh`, which installs into a
+project-local npm prefix (`node/`) using the pixi-provided Node/npm. Nothing is
+written outside the repo except npm's own download cache, and `node/` is
+gitignored so the ~300-package dependency tree never enters git. The `openclaw`
+task depends on `install-openclaw`, so the first run installs and later runs are
+a no-op refresh.
+
+Useful for checking config work against the real thing rather than against docs:
+
+```
+OPENCLAW_CONFIG_PATH=<file> pixi run openclaw config validate
+pixi run openclaw config schema        # full JSON schema for openclaw.json
+```
+
 ## The loop (per feature)
 1. **Brief** — Sisyphus opens a **GitHub issue** whose body *is* the brief (goal,
    owned paths, acceptance criteria, required tests). No brief file.

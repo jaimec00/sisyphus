@@ -17,6 +17,9 @@ before any non-trivial work.
 - Build: `pixi run build`  (`colcon build --symlink-install`)
 - Test:  `pixi run test`   (`colcon test` + results)
 - **Python-first** (rclpy); C++ only for a custom controller or MCU firmware.
+- The env also ships **Node.js 24**, so the OpenClaw brain (D21) runs from the
+  same env: `pixi run install-openclaw` (project-local `node/`, gitignored),
+  then `pixi run openclaw --version`. Details in `DEVELOPMENT.md`.
 - Headless: no GUI required; visualize via Foxglove (`foxglove_bridge`).
 
 ## Repo layout

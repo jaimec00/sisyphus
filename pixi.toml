@@ -17,6 +17,15 @@ python = "*"
 # the environment rather than leaking in from the host: on a container built
 # from `pixi install` alone there is no ambient git and those tests error.
 git = "*"
+# Node.js + npm, so the OpenClaw brain (D21) can be installed and run from the
+# same env as the robot stack instead of leaking in from the host. Pinned to
+# the 24.x line: it matches the Node the Pi already runs OpenClaw on, and
+# openclaw's own `engines` field is
+#   ">=22.22.3 <23 || >=24.15.0 <25 || >=25.9.0"
+# so a loose ">=22" could legally resolve to a Node (23.x, 25.0-25.8) that
+# openclaw refuses to start on. 24.19.0 is available on both linux-64 and
+# linux-aarch64.
+nodejs = ">=24.15,<25"
 
 # TODO (verify availability on robostack-jazzy; source-build in this env if missing):
 #   ros-jazzy-moveit                (MoveIt 2 — confirmed present on channel)
@@ -35,6 +44,12 @@ build = "colcon build --symlink-install"
 test = "python scripts/check_test_integrity.py"
 # Re-read the results already in build/ without re-running anything.
 test-audit = "python scripts/check_test_integrity.py --audit-only"
+# Install the OpenClaw brain into a project-local npm prefix (`node/`, gitignored)
+# using the pixi-provided Node/npm -- never `npm i -g` into the host.
+install-openclaw = "bash scripts/install_openclaw.sh"
+# Run the project-local OpenClaw; trailing args are forwarded
+# (`pixi run openclaw --version`).
+openclaw = { cmd = "node/node_modules/.bin/openclaw", depends-on = ["install-openclaw"] }
 
 [pypi-dependencies]
 mcp = ">=2.0.0, <3"
