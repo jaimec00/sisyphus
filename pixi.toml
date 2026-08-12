@@ -41,7 +41,13 @@ build = "colcon build --symlink-install"
 # `colcon test-result` hides such a result unless --all is passed. This driver
 # runs colcon (plus the workspace-tooling suite), surfaces every result, and
 # fails if any package produced no tests -- see scripts/check_test_integrity.py.
-test = "python scripts/check_test_integrity.py"
+test = { cmd = "python scripts/check_test_integrity.py", depends-on = ["check-provisioning"] }
+# Front-run the suite with the un-provisioned-worktree check: a missing
+# `install-openclaw` is otherwise six opaque robot_brain failures at the end of
+# a full colcon run. pixi aborts `test` and propagates the exit code when a
+# `depends-on` task fails. Deliberately *not* a dependency of `test-audit`,
+# which only re-reads XML that already exists.
+check-provisioning = "python scripts/check_provisioning.py"
 # Re-read the results already in build/ without re-running anything.
 test-audit = "python scripts/check_test_integrity.py --audit-only"
 # Boot the MCP server through the deployed launcher and speak MCP to it. This
