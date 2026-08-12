@@ -106,18 +106,21 @@ env.
    - one entry appended to the top-level `bindings` array.
 3. **Point the launch command at your checkout — you almost certainly have to
    edit this.** The fragment hard-codes `/home/sisyphus/worktrees/main` in
-   **three** places inside `mcp.servers.robot.args`: the four `PYTHONPATH`
-   entries, the `--manifest-path`, and the `ssh` destination alias `laptop`
-   (which must resolve on the *Pi's* `~/.ssh/config`, not on the laptop's).
-   None of those three was verified against a real Pi from this repo. Change
-   every one that does not match your machines; a stale path here fails as
-   "the agent has no tools", not as a readable error. All four packages
-   (`robot_skills`, `robot_backends`, `robot_safety`, `robot_mcp`) must be on
-   `PYTHONPATH` — `robot_safety` is a runtime dependency since the safety gate
-   landed, and without it the server does not import at all.
+   **two** places inside `mcp.servers.robot.args` — the `--manifest-path` and
+   the path to `scripts/robot-mcp-launch.sh` — plus the `ssh` destination alias
+   `laptop` (which must resolve on the *Pi's* `~/.ssh/config`, not on the
+   laptop's). None of the three was verified against a real Pi from this repo.
+   Change every one that does not match your machines; a stale path here fails
+   as "the agent has no tools", not as a readable error.
+
+   There is **no package list to edit**: the launcher discovers every
+   `src/<pkg>` with a `package.xml` and puts it on `PYTHONPATH` itself. That
+   list used to be a third thing to hand-edit here, and it is what broke the
+   deployment in #55 — `robot_world` was added to the workspace, the list was
+   not, and the server stopped importing.
 4. **Check the SSH leg by hand first**, before involving OpenClaw:
    ```bash
-   ssh -T laptop 'PYTHONPATH=… pixi run --frozen --manifest-path …/pixi.toml python -m robot_mcp' \
+   ssh -T laptop 'pixi run --frozen --manifest-path …/pixi.toml …/scripts/robot-mcp-launch.sh' \
      <<< '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"probe","version":"0"}}}'
    ```
    One JSON-RPC frame must come back on stdout and **nothing else** — no

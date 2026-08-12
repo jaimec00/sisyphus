@@ -10,7 +10,7 @@
           "laptop",
           "bash",
           "-lc",
-          "PYTHONPATH=/home/sisyphus/worktrees/main/src/robot_skills:/home/sisyphus/worktrees/main/src/robot_backends:/home/sisyphus/worktrees/main/src/robot_safety:/home/sisyphus/worktrees/main/src/robot_mcp exec pixi run --frozen --manifest-path /home/sisyphus/worktrees/main/pixi.toml python -m robot_mcp"
+          "exec pixi run --frozen --manifest-path /home/sisyphus/worktrees/main/pixi.toml /home/sisyphus/worktrees/main/scripts/robot-mcp-launch.sh"
         ],
         "env": {},
         "requestTimeoutMs": 120000,

@@ -21,11 +21,11 @@ tool at all (``openclaw doctor``: "allowlist contains unknown entries").  A
 config can validate and still hand the brain nothing to drive.
 
 So: it parses, it declares the server the prompt assumes, the agent it binds is
-the agent it configures, the launch command actually starts *our* server with
-the packages it now needs (``robot_safety`` is a runtime dependency since the
-safety gate landed), the tools it exposes are the tools that exist under the
-name OpenClaw will give them, its sandbox settings do not contradict each
-other -- and it carries no secret.
+the agent it configures, the launch command actually starts *our* server -- by
+handing the package list to the launcher rather than repeating it (#56) -- the
+tools it exposes are the tools that exist under the name OpenClaw will give
+them, its sandbox settings do not contradict each other -- and it carries no
+secret.
 """
 
 import json
@@ -35,11 +35,14 @@ from brain_fixtures import WITHHELD_TOOLS
 from robot_brain import AGENT_ID, config_fragment, MCP_SERVER_NAME
 from robot_brain.agent import CONFIG_RESOURCE, PROMPT_RESOURCE
 from robot_mcp.tools import TOOL_NAMES
+from test_openclaw_validates import repository_root
 
 FRAGMENT = config_fragment()
 
-#: The workspace packages the launch command must put on ``PYTHONPATH``.
-REQUIRED_PACKAGES = ('robot_skills', 'robot_backends', 'robot_safety', 'robot_mcp')
+#: The launcher the command must go through, relative to the repository root.
+#: It discovers the workspace packages itself; see
+#: ``test_the_launch_command_leaves_the_package_list_to_the_launcher``.
+LAUNCHER_RELATIVE_PATH = 'scripts/robot-mcp-launch.sh'
 
 #: A Telegram bot token: digits, a colon, then a long opaque string.  The
 #: shape, not a specific token -- a committed credential must fail the suite
@@ -293,11 +296,18 @@ def test_the_fragment_contains_no_secret():
 
 
 def test_the_launch_command_starts_this_repos_server_over_stdio():
-    """The transport OpenClaw is told to use is the one the server speaks."""
+    """The transport OpenClaw is told to use is the one the server speaks.
+
+    ``python -m robot_mcp`` is no longer named here: the launcher owns the
+    interpreter invocation, and this asserts on the launcher -- which must be
+    a file that exists in this checkout, so renaming or moving it fails here
+    rather than on the Pi.
+    """
     assert server()['transport'] == 'stdio'
     assert server()['enabled'] is True
     command = launch_command()
-    assert 'python -m robot_mcp' in command
+    assert LAUNCHER_RELATIVE_PATH in command
+    assert (repository_root() / LAUNCHER_RELATIVE_PATH).is_file()
 
 
 def test_the_launch_command_reaches_the_laptop_without_a_pty():
@@ -310,15 +320,26 @@ def test_the_launch_command_reaches_the_laptop_without_a_pty():
     assert '-T' in server()['args']
 
 
-def test_the_launch_command_carries_every_package_the_server_needs():
-    """Including ``robot_safety`` -- the gate is a runtime dependency now.
+def test_the_launch_command_leaves_the_package_list_to_the_launcher():
+    """The assertion is inverted on purpose: there must be **no** list here.
 
-    A missing entry here is not a subtle degradation: the server fails to
-    import and the agent has no tools at all.
+    This test used to hold a ``REQUIRED_PACKAGES`` tuple and check each name
+    appeared in the command.  It could only ever assert the list it had been
+    told about, and that is exactly how it failed: #54 added ``robot_world``,
+    which ``robot_mcp/server.py`` imports unconditionally, and neither the
+    command nor this tuple gained it.  Both stayed green, and the deployed
+    server died with ``ModuleNotFoundError``.
+
+    So the shape of the check changed rather than its contents.  A command
+    that names packages at all is the bug; the launcher discovers them from
+    ``src/*/package.xml`` (``scripts/robot-mcp-launch.sh``), which the
+    boot-smoke in ``scripts/tests/test_boot_smoke.py`` proves by booting the
+    real thing with one package removed.
     """
     command = launch_command()
-    for package in REQUIRED_PACKAGES:
-        assert f'/src/{package}' in command, package
+    assert 'PYTHONPATH' not in command, 'the launcher sets it, from discovery'
+    assert '/src/' not in command, (
+        'a hand-maintained package list on the deploy path is the #55 bug')
 
 
 def test_the_exposed_tools_are_the_tools_this_agent_should_have():
