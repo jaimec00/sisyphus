@@ -12,13 +12,38 @@ directly, matching ``robot_backends/test/mock_backend_fixtures.py``.
 
 from contextlib import asynccontextmanager
 import json
+import os
+import sys
 from typing import Any, AsyncIterator
 
 from mcp.client import Client
 import mcp_types as types
 from robot_backends import RobotBackend
-from robot_mcp import build_server
+from robot_mcp import build_server, WORLD_SEED_ENV, WORLD_STATE_ENV
 from robot_safety import SafetyLayer
+
+#: Environment variables a spawned server must never inherit from the
+#: developer's shell.  ``ROS_DOMAIN_ID`` would join a live ROS graph;
+#: ``ROBOT_WORLD_STATE``/``ROBOT_WORLD_SEED`` are read by ``python -m
+#: robot_mcp`` (D23) and would point the server under test at the developer's
+#: *real* world file -- it would resume that world instead of starting from the
+#: shipped scene, fail on the second run, and write production state from a
+#: test.  Anything new the server reads from the environment belongs here too.
+INHERITED_ENV_TO_DROP = ('ROS_DOMAIN_ID', WORLD_STATE_ENV, WORLD_SEED_ENV)
+
+
+def clean_environment() -> dict[str, str]:
+    """Return the environment a spawned server is launched with.
+
+    Carries the workspace packages on ``PYTHONPATH`` -- exactly what the
+    README's one-liner and its MCP client config set -- and drops everything in
+    :data:`INHERITED_ENV_TO_DROP`.
+    """
+    env = dict(os.environ)
+    env['PYTHONPATH'] = os.pathsep.join(path for path in sys.path if path)
+    for name in INHERITED_ENV_TO_DROP:
+        env.pop(name, None)
+    return env
 
 
 @asynccontextmanager

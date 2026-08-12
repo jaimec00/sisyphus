@@ -133,8 +133,12 @@ def test_writing_into_a_missing_directory_is_a_loud_refusal(tmp_path, document):
         write_document(tmp_path / 'nope' / 'world.json', document)
 
 
-def test_the_in_memory_store_never_touches_the_disk(tmp_path, document, monkeypatch):
-    """Persistence is opt-in: a plain WorldStore does no file IO at all."""
+def test_the_in_memory_store_never_writes_to_the_disk(tmp_path, document, monkeypatch):
+    """Persistence is opt-in: a plain WorldStore writes nothing, ever.
+
+    (It may *read* the shipped seed when constructed with no document; what it
+    must never do is put a byte on disk.)
+    """
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(
         store_module,

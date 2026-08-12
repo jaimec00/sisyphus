@@ -1,7 +1,7 @@
 # status — world-state-store (issue #54)
 
 - **Branch:** `feat/i54-world-state-store-json-disk-persisted-ma` (from `origin/main` @ `b8e07a0`)
-- **Phase:** implemented → red-team next
+- **Phase:** red-team round 1 fixed → test-runner next
 - **Round:** 0 (no red-team yet)
 - **Blockers:** none
 
@@ -15,7 +15,7 @@
 | 3 context | context-explorer | done — `context.md` (654 lines, 8 open questions) |
 | 4 rulings | manager | done — R1–R10 below |
 | 5 implement | implementer | done — `robot_world` package + backend/MCP wiring + D23; `pixi run test` green (672 tests, 0 failures); baseline re-cut. See `implementation.md` §4 for one judgment call inside R7 (`MockBackend.world` returns the *seed* world, not the live scene). |
-| 6 red-team | red-team | pending |
+| 6 red-team | red-team | round 1 done — 3 BLOCKs; all fixed by the implementer (BLOCK-1 env leakage, BLOCK-2 `_flush` ordering, BLOCK-3 false "opens no file" claim + weak test), plus promoted NOTE-3 (seed == live path refused) and NOTE-1 (`backend.store` docstring + pinning test). `pixi run test` green: 677 tests, 0 failures; baseline re-cut. Surviving NOTEs listed in `implementation.md` §7 for the manager to file — nothing mis-sorted. |
 | 7 test-runner | test-runner | pending |
 | 8 rebase + PR | manager | pending |
 
@@ -238,6 +238,36 @@ green; removing these types would churn all of them for no gain.
 - **Unchanged, non-negotiable:** `RobotBackend` (`interface.py`),
   `Observation`/`SkillResult`/`RobotState`/`SceneObject` and
   `SCHEMA_VERSION`. This is a data-source refactor, not a wire-format change.
+
+---
+
+## R7a — amendment (manager, after implementer escalation): `.world` returns the **seed**, not the live scene
+
+The implementer escalated a contradiction inside R7's wording, correctly.
+R7 said `.world` should be "reconstructed from the store's scene", but the
+property's *documented contract* is "the immutable world this backend was
+seeded from" and "`reset()` always returns to that same seed world". With a
+file store those two diverge the moment anything mutates.
+
+**Ruling: the implementer's reading stands.** `MockBackend.world` returns the
+**seed** (`world_from_document(self._store.seed_document(), robot=self._robot)`).
+Returning the live scene would silently change the property's meaning and make
+`reset()`'s docstring false. The live scene is reachable via `backend.store`
+and `get_observation()`. R7's "store wins for scene" clause still governs what
+the backend *drives*; it was never meant to redefine `.world`.
+
+Two forced consequences, both accepted:
+- `__init__` calls `_power_on()` rather than `reset()`. Necessary and correct:
+  `reset()` under a file store rewrites the live file from the seed, so
+  constructing a backend would have wiped the very state acceptance criterion 2
+  requires it to load.
+- `_power_on()` validates `start_column_height` against the `RobotModel`,
+  because with an injected store no `MockWorld` is in the path to do it, and
+  per R4 `WorldDocument` deliberately does not know the column range.
+
+Naming: `store.find_object(id)` rather than the issue sketch's `store.object(id)`
+— `ament_flake8` rejects `object` as a method name (A003), and `find_object` is
+already the repo's name for this lookup on `Observation`. Accepted.
 
 ---
 

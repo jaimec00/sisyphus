@@ -13,11 +13,14 @@ previous run's world (or wrote into the developer's home directory) would break
 that on its second run.
 """
 
+from mcp_fixtures import INHERITED_ENV_TO_DROP
 import pytest
 from robot_backends import MockBackend
 from robot_mcp import backend_from_options, parse_args, WORLD_SEED_ENV, WORLD_STATE_ENV
 from robot_skills import Grasp, NavigateTo, Pose
-from robot_world import FileWorldStore, read_document
+from robot_world import FileWorldStore, read_document, WorldStoreError
+from test_stdio_transport import server_parameters
+from test_world_state_persists import persisted_server
 
 
 def test_no_options_means_no_world_file(monkeypatch):
@@ -98,3 +101,36 @@ def test_a_custom_seed_is_what_reset_restores(tmp_path):
     assert [item.object_id for item in observation.objects] == ['cube_1']
     assert backend.execute(NavigateTo('kitchen')).succeeded is False
     assert backend.reset().find_object('cube_1').pose == Pose.from_xyz(0.3, 0.0, 0.8)
+
+
+def test_a_spawned_server_never_inherits_the_worlds_environment(monkeypatch):
+    """A developer's exported world file must not reach the suite's servers.
+
+    ``python -m robot_mcp`` reads ``$ROBOT_WORLD_STATE``/``$ROBOT_WORLD_SEED``,
+    and every spawned-server test copies the ambient environment.  Without this
+    guard, exporting the documented variable would make those tests resume the
+    developer's real world -- passing once against a clean file and failing
+    every run after -- *and* write production state from a test run.
+    """
+    monkeypatch.setenv(WORLD_STATE_ENV, '/home/somebody/.local/state/robot/world.json')
+    monkeypatch.setenv(WORLD_SEED_ENV, '/home/somebody/seed.json')
+    monkeypatch.setenv('ROS_DOMAIN_ID', '7')
+
+    env = server_parameters().env
+    persisted = persisted_server('/tmp/live.json').env
+
+    for name in INHERITED_ENV_TO_DROP:
+        assert name not in env, name
+        assert name not in persisted, name
+    assert env['PYTHONPATH']
+    # ...and the explicit flag is still how a persisted server is asked for.
+    assert '--world-state' in persisted_server('/tmp/live.json').args
+
+
+def test_seeding_from_the_live_file_is_refused(tmp_path):
+    """One path for both options would silently turn the ``reset`` tool into a no-op."""
+    live = tmp_path / 'world.json'
+    args = parse_args(['--world-state', str(live), '--world-seed', str(live)])
+
+    with pytest.raises(WorldStoreError, match='the same file'):
+        backend_from_options(args.world_state, args.world_seed)

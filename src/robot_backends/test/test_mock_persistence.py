@@ -179,13 +179,24 @@ def test_a_refused_skill_writes_nothing(live_path, monkeypatch):
     assert live_path.read_text(encoding='utf-8') == before
 
 
-def test_a_bare_backend_never_opens_a_file(tmp_path, monkeypatch):
-    """Persistence is opt-in: today's ``MockBackend()`` is unchanged, and file-free."""
+def test_a_bare_backend_never_writes_a_file(tmp_path, monkeypatch):
+    """Persistence is opt-in: today's ``MockBackend()`` is unchanged, and writes nothing.
+
+    "Writes nothing" is the invariant, not "opens nothing": a bare backend does
+    read the seed shipped inside ``robot_world``.  What it must never do is
+    write anything, or read a *world file* -- both are pinned here, so a future
+    default live-state path cannot slip in unnoticed.
+    """
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(
         store_module,
         'write_document',
         lambda path, document: pytest.fail(f'a bare MockBackend wrote {path}'),
+    )
+    monkeypatch.setattr(
+        store_module,
+        'read_document',
+        lambda path: pytest.fail(f'a bare MockBackend read the world file {path}'),
     )
 
     backend = MockBackend()
@@ -247,3 +258,24 @@ def test_dropping_a_held_object_persists_where_it_landed(live_path):
     persisted = read_document(live_path).find_object('mug_1')
     assert persisted.held_by is None
     assert persisted.pose == dropped.observation.find_object('mug_1').pose
+
+
+def test_going_around_the_backend_through_the_store_is_loud(live_path):
+    """The ``store`` handle can desync the scene from the grippers -- noisily.
+
+    Pinned because ``PROJECT.md``'s next step is a perception writer, and a
+    writer that removes or releases a *held* object through this handle is
+    exactly this case.  ``Observation`` refuses to represent the contradiction,
+    so the failure is a loud ``ValueError`` on the next observation rather than
+    a quietly wrong scene -- and ``reset()`` is the documented way back.
+    """
+    backend = MockBackend(store=FileWorldStore(live_path))
+    assert backend.execute(NavigateTo('kitchen')).succeeded
+    assert backend.execute(Grasp('mug_1')).succeeded
+
+    backend.store.set_held_by('mug_1', None)
+
+    with pytest.raises(ValueError, match='mug_1'):
+        backend.get_observation()
+    assert backend.reset().find_object('mug_1').held_by is None
+    assert backend.get_observation().held_objects() == ()

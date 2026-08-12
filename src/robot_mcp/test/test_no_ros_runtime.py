@@ -18,6 +18,7 @@ import os
 import subprocess
 import sys
 
+from mcp_fixtures import clean_environment
 from robot_mcp.tools import FIXED_TOOL_NAMES
 from robot_skills import SKILL_TYPES
 
@@ -51,9 +52,7 @@ print(count)
 
 def test_the_server_serves_tools_without_ros():
     """A bare interpreter can build the server and run a whole grasp through it."""
-    env = dict(os.environ)
-    env['PYTHONPATH'] = os.pathsep.join(path for path in sys.path if path)
-    env.pop('ROS_DOMAIN_ID', None)
+    env = clean_environment()
 
     completed = subprocess.run(
         [sys.executable, '-c', PROBE],

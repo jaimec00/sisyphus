@@ -199,7 +199,97 @@ was removed or moved.
 - **No ROS 2 query service** and **no perception writer** — both explicit
   non-goals here; `PROJECT.md`'s roadmap line now names them as what remains.
 
-## 6. Surviving red-team NOTEs
+## 6. Red-team round 1 — what changed
 
-None yet (no red-team round has run at the time of writing). Any that survive
-the round will be recorded here and in `status.md` for the manager to relay.
+All 3 BLOCKs fixed, plus the two NOTEs the manager promoted to required.
+
+- **BLOCK-1 — spawned servers inherited `ROBOT_WORLD_STATE`/`ROBOT_WORLD_SEED`.**
+  The env-building for subprocess tests moved into
+  `src/robot_mcp/test/mcp_fixtures.py` as `INHERITED_ENV_TO_DROP` +
+  `clean_environment()`, used by both `test_stdio_transport.py::server_parameters()`
+  and `test_no_ros_runtime.py`. The constant carries the *why* so the next
+  person adding a server env var sees the pattern.
+  `test_world_state_options.py::test_a_spawned_server_never_inherits_the_worlds_environment`
+  pins it. Verified by hand: `ROBOT_WORLD_STATE=/tmp/… python -m pytest` over
+  the three affected modules passes and creates no file.
+  Audited every other `dict(os.environ)` in the repo
+  (`robot_backends`, `robot_world`, `robot_safety`, `robot_brain`
+  `test_no_ros_runtime.py`): those probes spawn `python -c` snippets that build
+  a `MockBackend`/`WorldStore` directly and never call `parse_args`, so nothing
+  reads these variables there. Only `python -m robot_mcp` does.
+- **BLOCK-2 — `_flush` cleared the dirty flag before the commit.** Order
+  swapped, with the reasoning in the docstring; a new public `pending_write`
+  property makes the state assertable without poking `_pending`.
+  `test_file_store.py::test_a_failed_commit_leaves_the_store_dirty_and_the_next_write_repairs_it`
+  fails the first write, asserts the store still reports itself dirty and that
+  the file is stale, then shows the next mutation writing **both** changes.
+- **BLOCK-3 — "opens no file at all" was false.** All four claims
+  (`robot_world/README.md`, `robot_backends/README.md`, `store.py`,
+  `mock_backend.py`) now state the true and valuable invariant: **never writes
+  a file**; the only file opened is the read-only shipped seed.
+  `test_a_bare_backend_never_opens_a_file` → `test_a_bare_backend_never_writes_a_file`
+  and now also fails if a bare backend calls `read_document` (i.e. reads a
+  *world file*), so it tests its own name; same rename/reword in
+  `test_atomic_write.py`. Took the bonus: `default_seed_document()` is
+  `@lru_cache(maxsize=1)`, following `robot_brain.agent.config_fragment` —
+  safe because `WorldDocument` is frozen all the way down and stores copy it
+  into their own state in `_load`.
+- **NOTE-3 (promoted) — seed path == live path.** `FileWorldStore` now refuses
+  it at construction with a `WorldStoreError`, comparing `Path.resolve()` and
+  falling back to `samefile()` when both exist, so `..` paths and symlinks are
+  caught too. Enforced in the *store*, not just the CLI, so every caller
+  benefits. Tests in `test_file_store.py` (three aliasing forms + the
+  separate-seed happy path) and `test_world_state_options.py` (through the
+  parsed CLI options).
+- **NOTE-1 (promoted) — `backend.store` is a loaded gun.** The property's
+  docstring now names the constraint, and
+  `test_mock_persistence.py::test_going_around_the_backend_through_the_store_is_loud`
+  pins the behaviour: desyncing through the handle makes `get_observation()`
+  raise, and `reset()` is the way back.
+
+Counts after the round: `robot_backends` 74, `robot_mcp` 82, `robot_world` 50;
+`pixi run test` **677 tests, 0 failures**; baseline re-cut and committed.
+
+## 7. Surviving red-team NOTEs (for the manager to file; not acted on)
+
+Agreed with the manager's sorting — none look mis-sorted. Ordered by how much
+I think they matter:
+
+- **NOTE-5 — `FileWorldStore` inherits a `_seed` attribute holding the *live*
+  document.** Harmless today only because `seed_document()` is overridden. It
+  is the one I would fix next: the obvious future "avoid the re-read"
+  optimization in the base class would silently make `reset()` restore the live
+  scene. One line (`_seed = None` in the file store, or route the base class
+  through `seed_document()`).
+- **NOTE-12 — two objects may claim the same `held_by` side in a file.**
+  Harmless while `MockBackend` clears every hold at power-on, but the planned
+  ROS query service would hand out a scene `Observation` cannot represent. One
+  line in `WorldDocument.__post_init__`, next to the duplicate-id check.
+- **NOTE-11 — parse errors inside `objects` do not name which object.**
+  Contradicts R6's "fail loudly so an operator can see what went wrong" for the
+  one file a human is most likely to hand-edit.
+- **NOTE-6 — atomic-write details** (temp file's `0600` mode carried onto the
+  live file by `os.replace`; the `mkstemp` fd leaks if `os.fdopen` itself
+  raises; a `SIGKILL` between `mkstemp` and `os.replace` does leave a `.tmp`
+  behind, so the docstring's "no litter" is true for exceptions only).
+- **NOTE-7 — the atomic-write tests patch the real `os` module** process-wide
+  for the duration of the test; safe under `monkeypatch` today, wrong the
+  moment anything runs concurrently in the same interpreter.
+- **NOTE-2 — `batch()`'s commit-on-exception safety rests on `assert_refused`**
+  in another package, and neither file says so. The red team is also right that
+  `implementation.md`'s original "no rollback available" argument was weak: the
+  real reason not to roll back is that rolling back the store alone would
+  desync it from backend proprioception, so the invariant that matters is
+  validate-before-mutate across both.
+- **NOTE-4 — the seed re-read cost** (largely addressed by the BLOCK-3
+  memoization; what remains is `MockBackend.world` doing disk I/O on a
+  file-backed store, which is deliberate per R3 but undocumented on the
+  property).
+- **NOTE-8 — `parse_args`' seed-without-state message names the flags, not the
+  env vars** that may actually have caused it.
+- **NOTE-10 — `robot_world/package.xml` declares `<depend>rclpy</depend>`** for
+  a package whose own test proves it never imports it (`robot_backends` does
+  the same; `robot_mcp` does not).
+- **NOTE-13 — `start_column_height` is the one on-disk field describing the
+  robot rather than the room.** Agreed with the manager: not worth a schema
+  churn today, worth re-examining when the MuJoCo swap (#4) lands.

@@ -14,11 +14,11 @@ client config would spawn (README) and speaks JSON-RPC to it over stdio.
 """
 
 import json
-import os
 import sys
 
 import anyio
 from mcp import ClientSession, stdio_client, StdioServerParameters
+from mcp_fixtures import clean_environment
 import pytest
 from robot_backends import MockBackend
 from robot_skills import Grasp, NavigateTo
@@ -34,13 +34,14 @@ TRANSPORT_TIMEOUT_SECONDS = 30.0
 def server_parameters() -> StdioServerParameters:
     """Return the launch parameters for the server as the README documents it.
 
-    ``PYTHONPATH`` carries the workspace packages, which is exactly what the
-    README's one-liner and its MCP client config snippet set.
+    The environment comes from :func:`~mcp_fixtures.clean_environment`: the
+    workspace packages on ``PYTHONPATH``, minus the variables a spawned server
+    must not inherit from whoever is running the suite (see
+    ``INHERITED_ENV_TO_DROP`` -- a stray ``ROBOT_WORLD_STATE`` would point this
+    server at the developer's real world file).
     """
-    env = dict(os.environ)
-    env['PYTHONPATH'] = os.pathsep.join(path for path in sys.path if path)
-    env.pop('ROS_DOMAIN_ID', None)
-    return StdioServerParameters(command=sys.executable, args=['-m', 'robot_mcp'], env=env)
+    return StdioServerParameters(
+        command=sys.executable, args=['-m', 'robot_mcp'], env=clean_environment())
 
 
 async def test_a_client_drives_the_spawned_server_over_stdio():

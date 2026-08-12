@@ -25,9 +25,10 @@ Determinism: there is no clock and no random number generator anywhere in this
 module.  The same world plus the same sequence of skills always produces the
 same observations, byte for byte, so tests can assert on exact values.
 ``MockBackend()`` with no arguments keeps that promise absolutely: it builds an
-*in-memory* store and touches no file, so persistence is something a caller
-opts into by handing over a store, never something that happens behind a test's
-back.
+*in-memory* store and **writes nothing** (the only file it opens is the
+read-only seed shipped inside ``robot_world``), so persistence is something a
+caller opts into by handing over a store, never something that happens behind a
+test's back.
 
 Failure discipline: every handler validates *before* it mutates, by raising
 ``_SkillRefused``; :meth:`MockBackend.execute` turns that into a failed
@@ -114,7 +115,7 @@ class MockBackend(RobotBackend):
     and start parameters win -- and ``world`` (or the shipped default) supplies
     only the :class:`~robot_backends.mock_world.RobotModel`, because a world
     file describes the room, never the robot's body (D23).  With no store, an
-    in-memory one is built from ``world`` and no file is ever opened.
+    in-memory one is built from ``world`` and no file is ever written.
 
     Starting against an existing live-state file is a **power cycle**: the
     robot comes up at the scene's start pose with both grippers open, so any
@@ -160,7 +161,17 @@ class MockBackend(RobotBackend):
 
     @property
     def store(self) -> WorldStore:
-        """Return the store holding the live scene this backend drives."""
+        """Return the store holding the live scene this backend drives.
+
+        Read freely; **mutate through skills, not through this handle**.  The
+        backend keeps its own gripper book-keeping, and ``Observation`` refuses
+        to be built when the two disagree -- so changing an object's ``held_by``
+        here, removing an object a gripper holds, or calling ``store.reset()``
+        mid-carry makes every later :meth:`get_observation` raise until
+        :meth:`reset` re-homes the robot.  A writer that must go around the
+        skill API (perception, a test fixture) should either avoid held objects
+        or call :meth:`reset` afterwards.
+        """
         return self._store
 
     # -- RobotBackend ------------------------------------------------------

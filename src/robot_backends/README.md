@@ -40,8 +40,9 @@ observation (D19), not failures.
 
 Pass your own `MockWorld` to test a different scene; `reset()` always returns
 to that seed world. Deterministic: the same world plus the same skills always
-produces the same observations — `MockBackend()` with no arguments opens **no
-file at all** (D23), so that promise is unconditional.
+produces the same observations — `MockBackend()` with no arguments **never
+writes a file** (D23; the only file it opens is `robot_world`'s read-only
+shipped seed), so that promise is unconditional.
 
 Persistence is opt-in. Hand it a file-backed store and the world outlives the
 process:

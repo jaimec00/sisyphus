@@ -33,6 +33,7 @@ Known limits, deliberately not solved here (see the feature docs):
   calls within a process.
 """
 
+from functools import lru_cache
 from importlib import resources
 import json
 import os
@@ -111,6 +112,7 @@ def read_seed_document(path: str | os.PathLike[str] | None = None) -> WorldDocum
     return default_seed_document()
 
 
+@lru_cache(maxsize=1)
 def default_seed_document() -> WorldDocument:
     """Return the scene shipped with this package (the demo apartment).
 
@@ -118,6 +120,13 @@ def default_seed_document() -> WorldDocument:
     checkout, a symlink-installed colcon build and a wheel alike, exactly as
     ``robot_brain``'s OpenClaw config and ``robot_safety``'s ``limits.yaml``
     already do.  Read-only by construction: nothing ever writes here.
+
+    Memoized, like ``robot_brain.agent.config_fragment``: the file cannot
+    change under a running robot, and every ``MockBackend()`` would otherwise
+    pay a resource read plus a full parse and validation.  Sharing one instance
+    is safe because a :class:`WorldDocument` is frozen all the way down (a
+    ``MappingProxyType`` of locations, a tuple of frozen objects) and stores
+    copy it into their own state rather than holding it.
     """
     resource = resources.files(_RESOURCE_PACKAGE) / DEFAULT_SEED_RESOURCE
     try:

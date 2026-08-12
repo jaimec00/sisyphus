@@ -112,9 +112,10 @@ async def test_the_reset_tool_restores_the_seed_across_processes(tmp_path):
 
 async def test_the_default_command_still_writes_nothing(tmp_path, monkeypatch):
     """Without the flag the spawned server is in memory: no file, no resume."""
+    # The child inherits this process's working directory (``cwd`` is None in
+    # the launch parameters), so anything it wrote relatively would land here.
     monkeypatch.chdir(tmp_path)
     parameters = server_parameters()
-    parameters.env['PWD'] = str(tmp_path)
 
     first = await call(
         parameters,

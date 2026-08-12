@@ -16,15 +16,17 @@ survives the Mock -> MuJoCo swap.
 Two flavours, one surface:
 
 * :class:`WorldStore` -- in-memory.  ``reset()`` returns to the document it was
-  built from.  Touches no file, ever.
+  built from.  Never *writes* a file; constructed with no document it reads the
+  shipped seed once, and after that touches nothing.
 * :class:`FileWorldStore` -- backed by a live-state JSON file, seeded from a
   read-only seed file (the shipped one by default).  Every mutation is flushed
   to disk atomically, so the world survives the process.
 
 Persistence is **opt-in**: a bare :class:`WorldStore` (and therefore a bare
-``MockBackend()``) is exactly as deterministic and file-free as it was before
-this store existed.  A test or a deployment that wants a persisted world says
-so by constructing a :class:`FileWorldStore`.
+``MockBackend()``) is exactly as deterministic as it was before this store
+existed, and **writes nothing** -- the only file it opens is the read-only
+shipped seed.  A test or a deployment that wants a persisted world says so by
+constructing a :class:`FileWorldStore`.
 
 Writes and batches
 ------------------
@@ -123,6 +125,17 @@ class WorldStore:
     def seed_document(self) -> WorldDocument:
         """Return the scene :meth:`reset` restores (this store's seed)."""
         return self._seed
+
+    @property
+    def pending_write(self) -> bool:
+        """Return whether mutations are still waiting to be committed.
+
+        True inside an open :meth:`batch`, and -- for a
+        :class:`FileWorldStore` -- after a commit that failed, until one
+        succeeds.  Always False for an in-memory store outside a batch, whose
+        commit cannot fail.
+        """
+        return self._pending
 
     # -- mutations ---------------------------------------------------------
 
@@ -235,9 +248,16 @@ class WorldStore:
             self._flush()
 
     def _flush(self) -> None:
-        """Commit the pending mutations and clear the dirty flag."""
-        self._pending = False
+        """Commit the pending mutations, clearing the dirty flag only on success.
+
+        Order matters: a commit that fails (full disk, read-only mount, the
+        state directory removed under the process) must leave the store
+        *dirty*, or it would claim to be in sync with a file that is one skill
+        stale and never try again.  Because a commit writes the whole document,
+        staying dirty means the next mutation of any kind repairs the file.
+        """
         self._commit()
+        self._pending = False
 
     def _commit(self) -> None:
         """Persist the current scene.  In memory there is nothing to do."""
@@ -273,6 +293,7 @@ class FileWorldStore(WorldStore):
         """Open ``live_path``, seeding it from ``seed_path`` (or the shipped seed)."""
         self._live_path = Path(live_path)
         self._seed_path = Path(seed_path) if seed_path is not None else None
+        self._refuse_seeding_from_the_live_file()
         seed = self.seed_document()
         if self._live_path.exists():
             document = read_document(self._live_path)
@@ -294,6 +315,28 @@ class FileWorldStore(WorldStore):
     def seed_document(self) -> WorldDocument:
         """Re-read the seed from disk, so ``reset()`` restores ground truth."""
         return read_seed_document(self._seed_path)
+
+    def _refuse_seeding_from_the_live_file(self) -> None:
+        """Refuse a seed path that is the live file: ``reset()`` would be a no-op.
+
+        Pointing both at one file makes the seed read back whatever the robot
+        last wrote, so ``reset()`` silently restores the *current* scene and
+        acceptance criterion 3 quietly stops holding.  Everything else about a
+        world file fails loudly; this must too.  Paths are compared resolved,
+        not as written, so ``./world.json`` and an absolute path (or a symlink
+        to one) are caught as well.
+        """
+        if self._seed_path is None:
+            return
+        live, seed = self._live_path, self._seed_path
+        same = live.resolve() == seed.resolve()
+        if not same and live.exists() and seed.exists():
+            same = live.samefile(seed)
+        if same:
+            raise WorldStoreError(
+                f'the seed {str(seed)!r} and the live-state file {str(live)!r} are '
+                'the same file; the seed must be a separate read-only file, or '
+                'reset() would restore whatever the robot last wrote')
 
     def _commit(self) -> None:
         """Write the whole scene to the live-state file, atomically."""

@@ -30,7 +30,7 @@ arithmetic, gripper book-keeping and refusal codes stay in the backend.
 from robot_world import FileWorldStore, WorldStore
 from robot_skills import Pose
 
-store = WorldStore()                       # in memory, shipped scene, no file
+store = WorldStore()                       # in memory, shipped scene, no writes
 store.find_object('mug_1').pose            # where the mug is
 
 live = FileWorldStore('/tmp/world.json')   # same scene, persisted
@@ -48,9 +48,11 @@ FileWorldStore('/tmp/world.json').find_object('mug_1').pose   # the moved mug
 | corrupt | hard error | hard error — never silently repaired |
 
 ## Persistence is opt-in
-`WorldStore()` and `MockBackend()` touch no file at all, exactly as before this
-package existed: the Mock's documented determinism ("the same world plus the
-same skills always produces the same observations") depends on it. A persisted
+`WorldStore()` and `MockBackend()` **never write a file**, exactly as before
+this package existed: the Mock's documented determinism ("the same world plus
+the same skills always produces the same observations") depends on it. The only
+file either one opens is the read-only seed shipped inside this package, which
+no live state is ever written to (and which is memoized after the first read). A persisted
 world is asked for explicitly — `MockBackend(store=FileWorldStore(path))`, or
 `python -m robot_mcp --world-state PATH`.
 

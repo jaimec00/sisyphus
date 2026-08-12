@@ -176,3 +176,70 @@ def test_the_live_file_stays_human_readable(tmp_path, seed_file):
     text = live.read_text(encoding='utf-8')
     assert text.endswith('}\n')
     assert '\n  "start_location": "dock"' in text
+
+
+def test_a_failed_commit_leaves_the_store_dirty_and_the_next_write_repairs_it(
+    tmp_path, seed_file, monkeypatch,
+):
+    """A full disk must not make the store *believe* it is in sync.
+
+    Clearing the dirty flag before the write succeeds would strand the file one
+    mutation behind for ever: the next mutation would see a clean store, and
+    nothing would ever retry.  Because a commit writes the whole document, an
+    honest flag makes the very next mutation repair the file.
+    """
+    live = tmp_path / 'world.json'
+    store = FileWorldStore(live, seed_path=seed_file)
+    failures = []
+
+    real_write = store_module.write_document
+
+    def write_once_broken(path, document):
+        if not failures:
+            failures.append(path)
+            raise WorldStoreError('simulated full disk')
+        real_write(path, document)
+
+    monkeypatch.setattr(store_module, 'write_document', write_once_broken)
+
+    with pytest.raises(WorldStoreError, match='full disk'):
+        store.update_object_pose('cube_1', Pose.from_xyz(0.5, 0.0, 0.8))
+
+    assert failures, 'the write was never attempted'
+    assert store.pending_write is True
+    # The lost mutation is only in memory so far...
+    assert read_document(live).find_object('cube_1').pose != Pose.from_xyz(0.5, 0.0, 0.8)
+
+    # ...and the next mutation of any kind writes the whole document, so both
+    # changes land together.
+    store.set_held_by('cube_1', Side.RIGHT)
+
+    persisted = read_document(live)
+    assert persisted.find_object('cube_1').pose == Pose.from_xyz(0.5, 0.0, 0.8)
+    assert persisted.find_object('cube_1').held_by is Side.RIGHT
+    assert store.pending_write is False
+
+
+def test_a_seed_that_is_the_live_file_is_refused(tmp_path, document):
+    """Seeding from the file you write turns ``reset()`` into a silent no-op."""
+    live = tmp_path / 'world.json'
+    write_document(live, document)
+
+    with pytest.raises(WorldStoreError, match='the same file'):
+        FileWorldStore(live, seed_path=live)
+
+    # ...including when the two paths merely resolve to the same file.
+    nested = tmp_path / 'state'
+    nested.mkdir()
+    with pytest.raises(WorldStoreError, match='the same file'):
+        FileWorldStore(live, seed_path=nested / '..' / 'world.json')
+
+    link = tmp_path / 'seed_link.json'
+    link.symlink_to(live)
+    with pytest.raises(WorldStoreError, match='the same file'):
+        FileWorldStore(live, seed_path=link)
+
+    # A genuinely separate seed is of course fine.
+    separate = tmp_path / 'seed.json'
+    write_document(separate, document)
+    assert FileWorldStore(live, seed_path=separate).document() == document
