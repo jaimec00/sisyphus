@@ -26,7 +26,14 @@ Example::
 
 from robot_backends.interface import RobotBackend
 from robot_backends.mock_backend import MockBackend
-from robot_backends.mock_world import default_world, MockWorld, ObjectSpec, RobotModel
+from robot_backends.mock_world import (
+    default_world,
+    MockWorld,
+    ObjectSpec,
+    RobotModel,
+    world_from_document,
+    world_to_document,
+)
 
 __all__ = [
     'default_world',
@@ -35,4 +42,6 @@ __all__ = [
     'ObjectSpec',
     'RobotBackend',
     'RobotModel',
+    'world_from_document',
+    'world_to_document',
 ]

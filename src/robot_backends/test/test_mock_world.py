@@ -9,8 +9,17 @@
 from dataclasses import FrozenInstanceError
 
 import pytest
-from robot_backends import default_world, MockBackend, MockWorld, ObjectSpec, RobotModel
+from robot_backends import (
+    default_world,
+    MockBackend,
+    MockWorld,
+    ObjectSpec,
+    RobotModel,
+    world_from_document,
+    world_to_document,
+)
 from robot_skills import NavigateTo, Point, Pose, Side
+from robot_world import default_seed_document
 
 
 def test_default_world_supports_the_briefs_scenario():
@@ -128,3 +137,39 @@ def test_backend_exposes_the_world_it_was_seeded_from(backend):
     """The world is queryable, so callers need not guess its contents."""
     assert backend.world.start_location == 'charger'
     assert set(backend.get_observation().known_locations) == set(backend.world.locations)
+
+
+def test_default_world_is_exactly_the_shipped_seed_document():
+    """The scene is data on disk now; this function is just its Mock-shaped view."""
+    world = default_world()
+
+    assert world_to_document(world) == default_seed_document()
+    assert world_from_document(default_seed_document()) == world
+    assert world.robot == RobotModel()
+
+
+def test_converting_to_a_document_drops_what_a_world_file_may_not_describe():
+    """A document carries the scene; the robot's body and live holds stay out."""
+    world = MockWorld(
+        locations={'dock': Pose.from_xyz(0.0, 0.0, 0.0)},
+        start_location='dock',
+        objects=(ObjectSpec('cube_1', 'cube', Pose.from_xyz(0.3, 0.0, 0.8)),),
+        robot=RobotModel(reach_radius=0.5),
+    )
+
+    document = world_to_document(world)
+
+    assert not hasattr(document, 'robot')
+    assert document.find_object('cube_1').held_by is None
+    assert document.start_location == 'dock'
+    # Round tripping keeps the scene and takes the body from the argument.
+    assert world_from_document(document, robot=world.robot) == world
+    assert world_from_document(document).robot == RobotModel()
+
+
+def test_converting_refuses_the_wrong_type():
+    """The two converters are type-checked where they are called, not later."""
+    with pytest.raises(TypeError, match='must be a WorldDocument'):
+        world_from_document(default_world())
+    with pytest.raises(TypeError, match='must be a MockWorld'):
+        world_to_document(default_seed_document())

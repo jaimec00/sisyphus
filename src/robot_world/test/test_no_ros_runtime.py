@@ -4,13 +4,13 @@
 # license that can be found in the LICENSE file or at
 # https://opensource.org/licenses/MIT.
 
-"""Acceptance criterion: the tool server runs with no ROS 2 graph.
+"""Acceptance criterion: the store is pure Python, with no ROS 2 graph.
 
-An MCP client launches this server as a bare subprocess, so a stray ``rclpy``
-import -- even a lazy one inside a function -- would turn "point your agent at
-this command" into "source a ROS workspace and start a graph first".  Mirrors
-``robot_backends/test/test_no_ros_runtime.py``: a clean-subprocess run plus a
-static scan, because either one alone has a blind spot.
+Wrapping the store in a ROS query service is a later step (the brief's own
+non-goal); until then a stray ``rclpy`` import -- even a lazy one inside a
+function -- would make "read the world file" require a sourced workspace and a
+running graph.  Mirrors ``robot_backends/test/test_no_ros_runtime.py``: a
+clean-subprocess run plus a static scan, because either alone has a blind spot.
 """
 
 import ast
@@ -18,27 +18,13 @@ import os
 import subprocess
 import sys
 
-from mcp_fixtures import clean_environment
-from robot_mcp.tools import FIXED_TOOL_NAMES
-from robot_skills import SKILL_TYPES
-
 PROBE = """
 import sys
+import tempfile
 
-import anyio
-from mcp.client import Client
-
-from robot_mcp import build_server
-
-async def main():
-    async with Client(build_server()) as client:
-        listed = await client.list_tools()
-        await client.call_tool('navigate_to', {'location': 'kitchen'})
-        result = await client.call_tool('grasp', {'object_id': 'mug_1'})
-        assert result.structured_content['status'] == 'ok', result.structured_content
-        return len(listed.tools)
-
-count = anyio.run(main)
+import robot_world
+from robot_skills import Pose, Side
+from robot_world import FileWorldStore, WorldStore
 
 ros_modules = sorted(
     name for name in sys.modules
@@ -46,13 +32,24 @@ ros_modules = sorted(
 )
 assert not ros_modules, 'ROS modules imported: %s' % ros_modules
 
-print(count)
+assert WorldStore().find_object('mug_1').graspable is True
+
+with tempfile.TemporaryDirectory() as directory:
+    path = directory + '/world.json'
+    store = FileWorldStore(path)
+    store.update_object_pose('mug_1', Pose.from_xyz(0.3, 2.0, 0.75))
+    store.set_held_by('mug_1', Side.LEFT)
+    reopened = FileWorldStore(path)
+    assert reopened.find_object('mug_1').held_by is Side.LEFT
+    print(reopened.find_object('mug_1').pose.position.y)
 """
 
 
-def test_the_server_serves_tools_without_ros():
-    """A bare interpreter can build the server and run a whole grasp through it."""
-    env = clean_environment()
+def test_the_store_round_trips_a_world_file_without_ros():
+    """A bare interpreter can load, mutate, persist and reload a world."""
+    env = dict(os.environ)
+    env['PYTHONPATH'] = os.pathsep.join(path for path in sys.path if path)
+    env.pop('ROS_DOMAIN_ID', None)
 
     completed = subprocess.run(
         [sys.executable, '-c', PROBE],
@@ -64,9 +61,7 @@ def test_the_server_serves_tools_without_ros():
     )
 
     assert completed.returncode == 0, completed.stderr
-    # Derived, not a literal: adding a skill to the seam must not break a test
-    # about ROS isolation.
-    assert completed.stdout.strip() == str(len(SKILL_TYPES) + len(FIXED_TOOL_NAMES))
+    assert completed.stdout.strip() == '2.0'
 
 
 #: Module roots this package may not reach for, at import time or lazily.
@@ -127,9 +122,10 @@ def find_forbidden_imports(source: str, roots: tuple[str, ...] = FORBIDDEN_ROOTS
     ``importlib.import_module('rclpy')`` (positional or by keyword) are all
     caught, while a lookalike module name or the word in a docstring is not.
 
-    Known limit: a dynamic import whose module name is not a literal cannot be
-    detected statically.  The clean-subprocess test above is the backstop for
-    anything that actually executes on the import path.
+    Known limit: a dynamic import whose module name is not a literal --
+    ``import_module(MODULE_NAME)`` -- cannot be detected statically and is not
+    caught here.  The clean-subprocess test above is the backstop for anything
+    that actually executes on the import path.
     """
     findings = []
     for node in ast.walk(ast.parse(source)):
@@ -173,6 +169,10 @@ def test_the_import_detector_catches_every_form_it_claims_to():
     # ...and it does not fire on prose or on a module that merely starts with it.
     assert find_forbidden_imports(SAMPLE_WITHOUT_IMPORTS) == []
 
+    # A plain substring grep would miss three of the four and would also be
+    # fooled by the clean sample's lookalike import.
+    assert SAMPLE_WITH_LAZY_IMPORTS.count('import rclpy') == 1
+
 
 def _python_files(root: str) -> list[str]:
     """Return every ``.py`` file under ``root``, recursively, sorted."""
@@ -188,10 +188,10 @@ def _python_files(root: str) -> list[str]:
 
 
 def test_no_source_file_imports_rclpy():
-    """This package may not reach for rclpy, even lazily inside a function."""
-    import robot_mcp
+    """The store may not reach for rclpy, even lazily inside a function."""
+    import robot_world
 
-    root = os.path.dirname(robot_mcp.__file__)
+    root = os.path.dirname(robot_world.__file__)
     paths = _python_files(root)
     for path in paths:
         with open(path, encoding='utf-8') as handle:
@@ -200,4 +200,4 @@ def test_no_source_file_imports_rclpy():
         assert not findings, f'{os.path.relpath(path, root)}: {findings}'
 
     scanned = {os.path.relpath(path, root) for path in paths}
-    assert {'__init__.py', '__main__.py', 'schemas.py', 'server.py', 'tools.py'} <= scanned
+    assert {'__init__.py', 'document.py', 'storage.py', 'store.py'} <= scanned, scanned

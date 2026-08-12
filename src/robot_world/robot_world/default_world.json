@@ -1,0 +1,194 @@
+{
+  "world_schema_version": 1,
+  "start_location": "charger",
+  "start_column_height": 0.3,
+  "locations": {
+    "charger": {
+      "position": {
+        "x": 0.0,
+        "y": 0.0,
+        "z": 0.0
+      },
+      "orientation": {
+        "x": 0.0,
+        "y": 0.0,
+        "z": 0.0,
+        "w": 1.0
+      }
+    },
+    "kitchen": {
+      "position": {
+        "x": 2.0,
+        "y": 0.0,
+        "z": 0.0
+      },
+      "orientation": {
+        "x": 0.0,
+        "y": 0.0,
+        "z": 0.0,
+        "w": 1.0
+      }
+    },
+    "table": {
+      "position": {
+        "x": 0.0,
+        "y": 2.0,
+        "z": 0.0
+      },
+      "orientation": {
+        "x": 0.0,
+        "y": 0.0,
+        "z": 0.0,
+        "w": 1.0
+      }
+    },
+    "living_room": {
+      "position": {
+        "x": -2.0,
+        "y": 1.0,
+        "z": 0.0
+      },
+      "orientation": {
+        "x": 0.0,
+        "y": 0.0,
+        "z": 0.0,
+        "w": 1.0
+      }
+    }
+  },
+  "objects": [
+    {
+      "object_id": "mug_1",
+      "label": "mug",
+      "pose": {
+        "position": {
+          "x": 2.3,
+          "y": 0.1,
+          "z": 0.9
+        },
+        "orientation": {
+          "x": 0.0,
+          "y": 0.0,
+          "z": 0.0,
+          "w": 1.0
+        }
+      },
+      "graspable": true,
+      "held_by": null
+    },
+    {
+      "object_id": "plate_1",
+      "label": "plate",
+      "pose": {
+        "position": {
+          "x": 2.3,
+          "y": -0.1,
+          "z": 0.9
+        },
+        "orientation": {
+          "x": 0.0,
+          "y": 0.0,
+          "z": 0.0,
+          "w": 1.0
+        }
+      },
+      "graspable": true,
+      "held_by": null
+    },
+    {
+      "object_id": "bowl_1",
+      "label": "bowl",
+      "pose": {
+        "position": {
+          "x": 2.25,
+          "y": 0.0,
+          "z": 0.92
+        },
+        "orientation": {
+          "x": 0.0,
+          "y": 0.0,
+          "z": 0.0,
+          "w": 1.0
+        }
+      },
+      "graspable": true,
+      "held_by": null
+    },
+    {
+      "object_id": "counter_1",
+      "label": "counter",
+      "pose": {
+        "position": {
+          "x": 2.4,
+          "y": 0.0,
+          "z": 0.45
+        },
+        "orientation": {
+          "x": 0.0,
+          "y": 0.0,
+          "z": 0.0,
+          "w": 1.0
+        }
+      },
+      "graspable": false,
+      "held_by": null
+    },
+    {
+      "object_id": "book_1",
+      "label": "book",
+      "pose": {
+        "position": {
+          "x": 0.3,
+          "y": 2.1,
+          "z": 0.75
+        },
+        "orientation": {
+          "x": 0.0,
+          "y": 0.0,
+          "z": 0.0,
+          "w": 1.0
+        }
+      },
+      "graspable": true,
+      "held_by": null
+    },
+    {
+      "object_id": "cup_1",
+      "label": "cup",
+      "pose": {
+        "position": {
+          "x": 0.3,
+          "y": 1.9,
+          "z": 0.75
+        },
+        "orientation": {
+          "x": 0.0,
+          "y": 0.0,
+          "z": 0.0,
+          "w": 1.0
+        }
+      },
+      "graspable": true,
+      "held_by": null
+    },
+    {
+      "object_id": "sofa_1",
+      "label": "sofa",
+      "pose": {
+        "position": {
+          "x": -2.0,
+          "y": 1.6,
+          "z": 0.4
+        },
+        "orientation": {
+          "x": 0.0,
+          "y": 0.0,
+          "z": 0.0,
+          "w": 1.0
+        }
+      },
+      "graspable": false,
+      "held_by": null
+    }
+  ]
+}

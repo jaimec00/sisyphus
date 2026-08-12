@@ -8,9 +8,19 @@
 
 A :class:`MockWorld` is *data*: named locations, objects with poses, where the
 robot starts, and a crude :class:`RobotModel` standing in for kinematics.  It
-holds no state -- :class:`~robot_backends.mock_backend.MockBackend` copies it
-into mutable state on construction and on every ``reset()``, which is what
-makes runs reproducible without any clock or random number generator.
+holds no state -- the live scene lives in a
+:class:`~robot_world.WorldStore` (D23), which
+:class:`~robot_backends.mock_backend.MockBackend` reads and mutates, and which
+``reset()`` restores from its seed.  Nothing here has a clock or a random
+number generator, which is what keeps runs reproducible.
+
+Since D23 the *scene* half of a world -- locations, objects, start parameters
+-- is a :class:`~robot_world.WorldDocument`, and :func:`default_world` loads
+the seed **file** shipped with ``robot_world`` rather than building a Python
+literal.  :class:`MockWorld` survives as the Mock's own view of that scene
+plus the one thing a world file must never describe: the robot's body
+(:class:`RobotModel`).  :func:`world_from_document` and
+:func:`world_to_document` convert between the two.
 
 Tests that need a different situation build their own :class:`MockWorld`
 rather than reaching into a backend's internals.
@@ -22,8 +32,16 @@ from typing import Mapping
 
 from robot_skills import Point, Pose, Side
 from robot_skills.validation import as_finite_float, as_identifier
+from robot_world import default_seed_document, WorldDocument, WorldObject
 
-__all__ = ['MockWorld', 'ObjectSpec', 'RobotModel', 'default_world']
+__all__ = [
+    'default_world',
+    'MockWorld',
+    'ObjectSpec',
+    'RobotModel',
+    'world_from_document',
+    'world_to_document',
+]
 
 
 @dataclass(frozen=True)
@@ -170,8 +188,66 @@ class MockWorld:
         return self.locations[self.start_location]
 
 
+def world_from_document(
+    document: WorldDocument,
+    robot: RobotModel | None = None,
+) -> MockWorld:
+    """Build a :class:`MockWorld` from a world document plus a robot model.
+
+    ``held_by`` is dropped: a :class:`MockWorld` is a *seed* description, and
+    "who is holding this" is live state belonging to the store and the robot.
+    """
+    if not isinstance(document, WorldDocument):
+        raise TypeError(
+            f'document must be a WorldDocument, got {type(document).__name__}')
+    return MockWorld(
+        locations=dict(document.locations),
+        start_location=document.start_location,
+        objects=tuple(
+            ObjectSpec(
+                object_id=item.object_id,
+                label=item.label,
+                pose=item.pose,
+                graspable=item.graspable,
+            )
+            for item in document.objects
+        ),
+        start_column_height=document.start_column_height,
+        robot=robot if robot is not None else RobotModel(),
+    )
+
+
+def world_to_document(world: MockWorld) -> WorldDocument:
+    """Build a world document from a :class:`MockWorld`, dropping its robot model.
+
+    The inverse of :func:`world_from_document` for everything a world *file*
+    may describe: the robot's body is hardware description and never travels
+    in a document (D23).
+    """
+    if not isinstance(world, MockWorld):
+        raise TypeError(f'world must be a MockWorld, got {type(world).__name__}')
+    return WorldDocument(
+        locations=dict(world.locations),
+        start_location=world.start_location,
+        objects=tuple(
+            WorldObject(
+                object_id=spec.object_id,
+                label=spec.label,
+                pose=spec.pose,
+                graspable=spec.graspable,
+            )
+            for spec in world.objects
+        ),
+        start_column_height=world.start_column_height,
+    )
+
+
 def default_world() -> MockWorld:
     """Return the standard demo apartment used by the Mock backend and tests.
+
+    Loaded from the seed file shipped with ``robot_world``
+    (``robot_world/default_world.json``), not from a literal here: since D23
+    the scene is data on disk, and this function is the Mock-shaped view of it.
 
     Four named locations (``charger``, ``kitchen``, ``table``,
     ``living_room``) and seven objects, including the graspable ``mug_1`` on
@@ -191,23 +267,4 @@ def default_world() -> MockWorld:
     the two is ~0.41 m away, well inside the 0.85 m reach), so neither needs an
     ``extend_column`` first.
     """
-    return MockWorld(
-        locations={
-            'charger': Pose.from_xyz(0.0, 0.0, 0.0),
-            'kitchen': Pose.from_xyz(2.0, 0.0, 0.0),
-            'table': Pose.from_xyz(0.0, 2.0, 0.0),
-            'living_room': Pose.from_xyz(-2.0, 1.0, 0.0),
-        },
-        start_location='charger',
-        objects=(
-            ObjectSpec('mug_1', 'mug', Pose.from_xyz(2.30, 0.10, 0.90), graspable=True),
-            ObjectSpec('plate_1', 'plate', Pose.from_xyz(2.30, -0.10, 0.90), graspable=True),
-            ObjectSpec('bowl_1', 'bowl', Pose.from_xyz(2.25, 0.00, 0.92), graspable=True),
-            ObjectSpec(
-                'counter_1', 'counter', Pose.from_xyz(2.40, 0.00, 0.45), graspable=False),
-            ObjectSpec('book_1', 'book', Pose.from_xyz(0.30, 2.10, 0.75), graspable=True),
-            ObjectSpec('cup_1', 'cup', Pose.from_xyz(0.30, 1.90, 0.75), graspable=True),
-            ObjectSpec('sofa_1', 'sofa', Pose.from_xyz(-2.00, 1.60, 0.40), graspable=False),
-        ),
-        start_column_height=0.3,
-    )
+    return world_from_document(default_seed_document())

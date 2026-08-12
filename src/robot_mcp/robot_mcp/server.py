@@ -31,12 +31,21 @@ Three things it does own, because MCP has no opinion on them:
   deployment can tighten it, and there is deliberately no way -- argument, env
   var or code path -- to obtain a server without one.
 
+Where the world lives is a *deployment* choice, so it is a command-line one:
+``--world-state PATH`` (or ``$ROBOT_WORLD_STATE``) puts the scene in a JSON
+file that survives restarts, ``--world-seed PATH`` overrides the scene
+``reset`` restores.  With neither, the world is in memory and dies with the
+process -- the pre-D23 behaviour, kept as the default on purpose so that
+running the documented command never writes to disk behind anyone's back.
+
 Pure Python: no ROS graph is needed to run or test it (``test_no_ros_runtime``).
 """
 
+import argparse
 from dataclasses import replace
 import json
-from typing import Any, Mapping
+import os
+from typing import Any, Mapping, Sequence
 
 import anyio
 from mcp.server.lowlevel import Server
@@ -61,14 +70,23 @@ from robot_skills import (
     SKILL_TYPES,
     SkillResult,
 )
+from robot_world import FileWorldStore
 
 __all__ = [
+    'backend_from_options',
     'build_server',
     'default_safety_layer',
     'main',
+    'parse_args',
     'run_stdio',
     'SkillToolRouter',
+    'WORLD_SEED_ENV',
+    'WORLD_STATE_ENV',
 ]
+
+#: Environment variables the world-state flags fall back to.
+WORLD_STATE_ENV = 'ROBOT_WORLD_STATE'
+WORLD_SEED_ENV = 'ROBOT_WORLD_SEED'
 
 #: Server identity reported to the client during initialization.
 SERVER_NAME = 'robot_mcp'
@@ -333,6 +351,60 @@ async def run_stdio(
         await server.run(read_stream, write_stream, server.create_initialization_options())
 
 
-def main() -> None:
+def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
+    """Parse the server's command line, falling back to the environment.
+
+    A flag beats its environment variable, which beats "no world file at all".
+    ``--world-seed`` on its own is refused: it would silently do nothing.
+    """
+    parser = argparse.ArgumentParser(
+        prog='robot_mcp',
+        description='Serve the robot skill API as MCP tools over stdio.',
+    )
+    parser.add_argument(
+        '--world-state',
+        metavar='PATH',
+        default=os.environ.get(WORLD_STATE_ENV) or None,
+        help=(
+            'JSON file holding the live world state, created from the seed if '
+            f'absent. Without it (or ${WORLD_STATE_ENV}) the world is in '
+            'memory and dies with the process.'),
+    )
+    parser.add_argument(
+        '--world-seed',
+        metavar='PATH',
+        default=os.environ.get(WORLD_SEED_ENV) or None,
+        help=(
+            'JSON file holding the read-only seed scene that reset() restores '
+            f'(or ${WORLD_SEED_ENV}); defaults to the scene shipped with '
+            'robot_world. Requires --world-state.'),
+    )
+    args = parser.parse_args(argv)
+    if args.world_seed is not None and args.world_state is None:
+        parser.error(
+            '--world-seed needs --world-state: with no live-state file there is '
+            'nothing for a seed to seed')
+    return args
+
+
+def backend_from_options(
+    world_state: str | None = None,
+    world_seed: str | None = None,
+) -> RobotBackend | None:
+    """Return the backend those options ask for, or ``None`` for the default.
+
+    ``None`` means "let :func:`build_server` make its own in-memory Mock" --
+    which is exactly today's behaviour, and stays the default deliberately:
+    a server that persisted by default would write into whatever directory it
+    happened to start in and would resume a previous run's world without
+    anyone asking it to (D23).
+    """
+    if world_state is None:
+        return None
+    return MockBackend(store=FileWorldStore(world_state, seed_path=world_seed))
+
+
+def main(argv: Sequence[str] | None = None) -> None:
     """Console-script entry point: run the stdio server."""
-    anyio.run(run_stdio)
+    args = parse_args(argv)
+    anyio.run(run_stdio, backend_from_options(args.world_state, args.world_seed))

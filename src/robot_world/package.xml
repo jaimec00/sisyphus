@@ -1,16 +1,15 @@
 <?xml version="1.0"?>
 <?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
 <package format="3">
-  <name>robot_backends</name>
+  <name>robot_world</name>
   <version>0.0.0</version>
-  <description>Backend abstraction: Mock | Sim (MuJoCo) | Real behind one interface.</description>
+  <description>World-state store: the map and the object registry, persisted as JSON (D23).</description>
   <maintainer email="hejaca00@gmail.com">Jaime</maintainer>
   <license>MIT</license>
 
   <buildtool_depend>ament_python</buildtool_depend>
   <depend>rclpy</depend>
   <depend>robot_skills</depend>
-  <depend>robot_world</depend>
 
   <test_depend>ament_copyright</test_depend>
   <test_depend>ament_flake8</test_depend>
