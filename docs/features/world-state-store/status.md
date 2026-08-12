@@ -1,7 +1,7 @@
 # status — world-state-store (issue #54)
 
 - **Branch:** `feat/i54-world-state-store-json-disk-persisted-ma` (from `origin/main` @ `b8e07a0`)
-- **Phase:** rulings recorded → implementer next
+- **Phase:** implemented → red-team next
 - **Round:** 0 (no red-team yet)
 - **Blockers:** none
 
@@ -14,7 +14,7 @@
 | 2 provision+probe deps | manager | **n/a** — no new third-party dependency. The brief mandates stdlib `json` and explicitly excludes PyYAML from the write path. Nothing to `pixi add`, nothing to probe. |
 | 3 context | context-explorer | done — `context.md` (654 lines, 8 open questions) |
 | 4 rulings | manager | done — R1–R10 below |
-| 5 implement | implementer | pending |
+| 5 implement | implementer | done — `robot_world` package + backend/MCP wiring + D23; `pixi run test` green (672 tests, 0 failures); baseline re-cut. See `implementation.md` §4 for one judgment call inside R7 (`MockBackend.world` returns the *seed* world, not the live scene). |
 | 6 red-team | red-team | pending |
 | 7 test-runner | test-runner | pending |
 | 8 rebase + PR | manager | pending |
