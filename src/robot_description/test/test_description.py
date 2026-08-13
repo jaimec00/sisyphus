@@ -20,10 +20,11 @@ precise signal instead of a fused pass/fail:
    model stays valid (``base_link`` -> ``base`` passes ``check_urdf``
    happily) -- the likeliest PR2-PR7 regression, since every consumer of this
    description names links.
-4. every ``<mesh filename=...>`` in the expansion is resolved through the
-   installed share tree and must exist on disk. ``check_urdf`` does not open
-   mesh files, so a typo'd or uninstalled ``.stl`` is otherwise green here
-   and red at ``robot_state_publisher``/RViz/MuJoCo.
+4. every file the description *names* (``FILE_BEARING_TAGS``: ``<mesh>``,
+   ``<texture>``) is resolved and must exist on disk. Neither ``check_urdf``
+   nor ``urdf_parser_py`` ever opens one, so a typo'd or uninstalled ``.stl``
+   or ``.png`` is otherwise green here and red at
+   ``robot_state_publisher``/RViz/MuJoCo.
 
 Plus the two wiring asserts that have no tool: the top level really includes
 the three subassemblies, and the share layout is really installed.
@@ -40,11 +41,12 @@ There is no source-tree fallback, by design. It follows that this suite runs
 under ``colcon test`` (which puts the package's install prefix on
 ``AMENT_PREFIX_PATH``) after a ``colcon build``, not against a bare checkout.
 
-Extending this in PR2+: add the new links to ``EXPECTED_LINKS`` and add
-whatever joint/limit assertions the subassembly earns. Keep the link set
-exact -- a set that is allowed to grow silently stops being a gate. The mesh
-and include asserts are over an *empty* set and a *fixed* set today; they cost
-nothing until PR2 adds the first ``.stl``, and bite from that moment on.
+Extending this in PR2+: add the new links to ``EXPECTED_LINKS``, add any new
+file-naming element to ``FILE_BEARING_TAGS``, and add whatever joint/limit
+assertions the subassembly earns. Keep the link set exact -- a set that is
+allowed to grow silently stops being a gate. The asset and include asserts are
+over an *empty* set and a *fixed* set today; they cost nothing until PR2 adds
+the first ``.stl``, and bite from that moment on.
 """
 
 import os
@@ -67,6 +69,15 @@ SUBASSEMBLIES = ('base.xacro', 'column.xacro', 'arm.xacro')
 
 #: xacro's namespace, needed to find <xacro:include> in the *unexpanded* file.
 XACRO_NS = 'http://www.ros.org/wiki/xacro'
+
+#: Every element that names a file on disk via a `filename` attribute. A list,
+#: not a literal in the test, because "the gate only knows about one tag" is
+#: itself the bug: <texture> was invisible for exactly as long as <mesh> was
+#: hardcoded. Add the tag here when the description learns to name a new kind
+#: of file. Known next one, deliberately not added yet: MuJoCo's
+#: <mujoco><compiler meshdir=.../></mujoco>, which is PR7's to add along with
+#: the MJCF conversion that can actually test it.
+FILE_BEARING_TAGS = ('mesh', 'texture')
 
 
 def _require_tool(name):
@@ -92,12 +103,13 @@ def _require_expansion(expansion):
     return expansion.stdout
 
 
-def _resolve_mesh(filename, share_dir):
-    """Resolve a URDF mesh reference to an absolute path, the way ROS tooling does.
+def _resolve_asset_path(filename, share_dir):
+    """Resolve a URDF file reference to an absolute path, the way ROS tooling does.
 
     Handles the ``package://<pkg>/<rel>`` form every ROS consumer uses,
     ``file://`` and absolute paths, and treats anything else as relative to
-    this package's own share directory.
+    this package's own share directory. Naive on purpose: real ``package://``
+    resolution is the same join, so the gate resolves what the runtime will.
     """
     if filename.startswith('package://'):
         pkg, _, relative = filename[len('package://'):].partition('/')
@@ -105,7 +117,7 @@ def _resolve_mesh(filename, share_dir):
             pkg_share = get_package_share_directory(pkg)
         except PackageNotFoundError:
             pytest.fail(
-                "mesh reference names package '%s', which is not on the ament "
+                "asset reference names package '%s', which is not on the ament "
                 'index: %s' % (pkg, filename))
         return os.path.join(pkg_share, relative)
     if filename.startswith('file://'):
@@ -144,7 +156,13 @@ def expanded_urdf_path(expansion, tmp_path_factory):
 
 
 def test_share_layout_is_installed(share_dir):
-    """The urdf/ and meshes/ install dirs exist, with every source file in them."""
+    """The urdf/ and meshes/ install dirs exist, holding the four known .xacro files.
+
+    Scope, since the name invites reading more into it: this checks the
+    top level and SUBASSEMBLIES, not every file in urdf/. A PR2-added
+    urdf/wheel.xacro is covered instead by the expansion itself, which fails
+    loudly if an included file never reached the install tree.
+    """
     urdf_dir = os.path.join(share_dir, 'urdf')
     meshes_dir = os.path.join(share_dir, 'meshes')
     assert os.path.isdir(urdf_dir), 'missing install dir: %s' % urdf_dir
@@ -201,29 +219,36 @@ def test_link_set_is_exactly_the_expected_links(expansion):
             sorted(EXPECTED_LINKS - links), sorted(links - EXPECTED_LINKS)))
 
 
-def test_every_mesh_reference_resolves(expansion, share_dir):
-    """Every mesh the description names exists in the installed share tree.
+def test_every_asset_reference_resolves(expansion, share_dir):
+    """Every file the description names -- of any FILE_BEARING_TAGS kind -- exists.
 
     Empty today (PR1 ships no geometry) and deliberately so: this is the same
     shape as EXPECTED_LINKS, costing nothing until PR2 imports the first
     LeRobot .stl and load-bearing from that moment. check_urdf validates the
-    model but never opens a mesh file, so without this a typo'd filename, a
-    mesh committed to src/ but not installed, or one referenced and never
-    committed at all is green here and red at bringup.
+    model but never opens a mesh or a texture, so without this a typo'd
+    filename, an asset committed to src/ but not installed, or one referenced
+    and never committed at all is green here and red at bringup.
     """
     root = ElementTree.fromstring(_require_expansion(expansion))
-    references = [element.get('filename') for element in root.iter('mesh')]
-    assert all(references), (
-        'a <mesh> element in the expansion has no filename attribute')
-    missing = [reference for reference in references
-               if not os.path.isfile(_resolve_mesh(reference, share_dir))]
-    assert not missing, (
-        '%d of %d mesh reference(s) do not resolve to a file in the installed '
-        'share tree (source-tree-only meshes count as missing -- setup.py must '
-        'install them, and the workspace may need a rebuild): %s' % (
-            len(missing), len(references),
-            ['%s -> %s' % (reference, _resolve_mesh(reference, share_dir))
-             for reference in missing]))
+    references = [(tag, element.get('filename'))
+                  for tag in FILE_BEARING_TAGS
+                  for element in root.iter(tag)]
+    unnamed = ['<%s> (%s)' % (tag, 'no filename attribute' if filename is None
+                              else 'empty filename attribute')
+               for tag, filename in references if not filename]
+    assert not unnamed, (
+        'element(s) in the expansion name no file: %s' % unnamed)
+    unresolved = [(tag, filename, _resolve_asset_path(filename, share_dir))
+                  for tag, filename in references
+                  if not os.path.isfile(_resolve_asset_path(filename, share_dir))]
+    assert not unresolved, (
+        '%d of %d asset reference(s) do not resolve to a file on disk. '
+        'package:// and bare relative references resolve through the '
+        '*installed* share tree, so an asset that is only in the source tree '
+        'counts as missing -- setup.py must install it, and the workspace may '
+        'need a rebuild: %s' % (
+            len(unresolved), len(references),
+            ['<%s> %s -> %s' % item for item in unresolved]))
 
 
 def test_robot_is_named(expansion):

@@ -17,8 +17,13 @@ Expand it by hand with:
 xacro $(ros2 pkg prefix --share robot_description)/urdf/robot.urdf.xacro
 ```
 
-`test/test_description.py` is the CI gate the later PRs extend: it expands the
-*installed* top-level xacro, parses the expansion with `check_urdf`, and
-asserts the link set. Status: package + gate; no geometry yet. See
+`test/test_description.py` is the CI gate the later PRs extend. Against the
+*installed* share tree, it asserts: the layout is installed; the top level
+includes exactly the three subassemblies; `xacro` expands it; `check_urdf`
+accepts the expansion; the link set is exactly `EXPECTED_LINKS`; every file the
+description names (`<mesh>`, `<texture>`) exists on disk; and the robot is
+named. Extend `EXPECTED_LINKS` and `FILE_BEARING_TAGS` as the description
+grows — both are module-level constants for that reason. Status: package +
+gate; no geometry yet. See
 `docs/design/PROJECT.md` for the architecture and `docs/design/decisions.md`
 D26/D27 for the hardware lineage and the packaging call.
