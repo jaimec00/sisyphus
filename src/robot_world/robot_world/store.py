@@ -279,7 +279,7 @@ class WorldStore:
             entry for entry in self._objects.values()
             if entry.object_id != item.object_id
         ]
-        if not duplicate_hold_sides((*others, item)):
+        if item.held_by not in duplicate_hold_sides((*others, item)):
             return
         holder = next(entry for entry in others if entry.held_by is item.held_by)
         raise WorldStoreError(
