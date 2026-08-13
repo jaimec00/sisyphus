@@ -14,8 +14,8 @@ Worktree base: `origin/main` @ 5fb6f21
 | 5. Implementer | done — 7 commits, tree clean, no ruling deviations |
 | 6. Red-team | done — R1: 3 BLOCK / 6 NOTE; R2 (scoped to fix diff): 1 BLOCK / 5 NOTE |
 | 7. Fix rounds (max 2) | done — 2 of 2 used; all 4 BLOCKs closed, verified both directions |
-| 8. Test-runner | running |
-| 9. PR + ready | pending |
+| 8. Test-runner | done — PASS: 712 tests, 0 failures, AUDIT PASSED |
+| 9. PR + ready | opening PR |
 
 Blockers: none.
 
