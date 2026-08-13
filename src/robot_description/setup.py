@@ -22,10 +22,12 @@ setup(
     # Known limit: these globs are flat, and `data_files` cannot copy a
     # directory, so the first `meshes/<subdir>/x.stl` fails the *build* with
     # "can't copy ...: doesn't exist or not a regular file" -- loud and
-    # immediate, but the message does not name the cause. Deliberately not
-    # pre-solved here: PR2 imports the first real mesh set and can walk the
-    # tree (one data_files tuple per directory) against actual files rather
-    # than against a guess about their layout.
+    # immediate, but the message does not name the cause. Still deliberately
+    # not pre-solved: PR2 (the base) turned out to need no meshes at all --
+    # primitives are the better collision geometry for a mobile base and the
+    # upstream omniwheel STL is 15 MB (D29) -- so the `os.walk` version is
+    # owed by the first PR that actually lands meshes, written against their
+    # real layout rather than a guess at it.
     data_files=[
         ('share/ament_index/resource_index/packages',
             ['resource/' + package_name]),
@@ -39,7 +41,7 @@ setup(
     maintainer_email='hejaca00@gmail.com',
     description=(
         'Robot description: URDF/Xacro + MJCF '
-        '(4-wheel base + extendable column + 2 arms).'),
+        '(3-omniwheel holonomic base + extendable column + 2 arms).'),
     license='MIT',
     extras_require={'test': ['pytest']},
     entry_points={

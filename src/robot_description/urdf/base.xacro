@@ -2,8 +2,185 @@
 <!--
   Mobile base: LeKiwi 3-omniwheel holonomic base (D26).
 
-  Deliberately empty: PR1 ships the package and the expand/parse gate only.
-  The wheel links/joints and their mount to `base_link` land in PR2.
+  Authored parametrically rather than copied. The upstream LeKiwi URDF is a raw
+  CAD export (16-digit float origins, a drive_motor_mount -> ST3215_Servo_Motor
+  -> omni_wheel_mount chain per wheel, a 15 MB omniwheel STL referenced three
+  times); what is cribbed from it is *facts*, not files:
+
+  - Joint names `base_left_wheel` / `base_back_wheel` / `base_right_wheel` and
+    their `continuous` type: SIGRobotics-UIUC/LeKiwi, `URDF/JOINT_NAMES.md`
+    (Apache-2.0), which records that the URDF was deliberately renamed to match
+    the LeRobot driver's motor keys so joint-state and command dictionaries are
+    directly comparable between driver and model. Do not "improve" these names.
+  - `wheel_radius = 0.05` and `base_radius = 0.125`: huggingface/lerobot,
+    `src/lerobot/robots/lekiwi/lekiwi.py` (`_body_to_wheel_raw` /
+    `_wheel_raw_to_body` defaults), Apache-2.0.
+  - Mount convention (60 / 180 / 300 deg) and axis sign: derived from that same
+    driver and checked numerically against its kinematic matrix (see the
+    comment on the angle properties below, and D29).
+  - Chassis-as-primitive: Vector-Wangel/XLeRobot models the IKEA Raskog cart
+    frame this base carries (D26) with box collisions and has no wheel joints
+    at all, so there is no wheel geometry there to crib either. MIT.
+
+  No third-party file is vendored, so there is no NOTICE file to carry; this
+  header is the attribution (D29 / R3-R4).
+
+  Shape: `base_link` is the assembly's root frame and is declared by
+  robot.urdf.xacro, not here (D27). This file attaches `base_chassis_link` to
+  it with a fixed joint, exactly as the column (PR3) and arms (PR4) will.
 -->
 <robot xmlns:xacro="http://www.ros.org/wiki/xacro">
+
+  <!-- ==================================================================
+       Dimensions. Two of these are sourced numbers; the rest are honest
+       placeholders. Which is which is stated per property, because a fake
+       citation is worse than an estimate that says it is one.
+       ================================================================== -->
+
+  <!-- SOURCED (LeRobot `lekiwi.py`): omniwheel radius, m. -->
+  <xacro:property name="wheel_radius" value="0.05"/>
+  <!-- SOURCED (LeRobot `lekiwi.py`): distance from the base's centre of
+       rotation to each wheel's axle centre, m. This is the number the driver's
+       body<->wheel kinematics uses; changing it changes the robot's turning
+       gain, not just its looks. -->
+  <xacro:property name="base_radius" value="0.125"/>
+
+  <!-- ESTIMATED: axial thickness of an omniwheel, m. Not published upstream;
+       chosen to look like the LeKiwi wheel. -->
+  <xacro:property name="wheel_width" value="0.03"/>
+  <!-- ESTIMATED: the drive plate / chassis puck, m. Radius is deliberately a
+       little larger than base_radius + wheel_width/2 so the wheels do not
+       stick out past the body. -->
+  <xacro:property name="chassis_radius" value="0.15"/>
+  <xacro:property name="chassis_height" value="0.06"/>
+  <!-- ESTIMATED: height of the chassis puck's centre above `base_link`, m.
+       `base_link` sits at axle height, so this lifts the plate to sit just
+       above the wheels' axles. -->
+  <xacro:property name="chassis_z_offset" value="0.03"/>
+
+  <!-- ESTIMATED: masses, kg. Plausible for a Raskog-cart-framed drive base;
+       nothing upstream publishes them. Inertias below are *computed* from the
+       dimensions above, so retuning a dimension cannot leave a stale inertia
+       tensor behind. -->
+  <xacro:property name="chassis_mass" value="6.0"/>
+  <xacro:property name="wheel_mass" value="0.15"/>
+
+  <!-- Wheel mount angles, degrees, measured about +z from +x in the REP-103
+       body frame (x forward, y left, z up). Named individually rather than
+       generated from a "120" step so that the 120-degree spacing is a property
+       of these three values that the gate can assert, instead of an arithmetic
+       identity that is true by construction.
+
+       TRAP, recorded because it is easy to get backwards: the LeRobot driver's
+       `angles = np.radians(np.array([240, 0, 120]) - 90)` is the wheels'
+       *rolling directions*, not their mount positions. Mount position phi and
+       rolling direction d are related by d = z x r = (-sin phi, cos phi); with
+       the mounts below, [[-sin phi, cos phi, base_radius]] reproduces the
+       driver's kinematic matrix exactly. See D29. -->
+  <xacro:property name="wheel_angle_left" value="60"/>
+  <xacro:property name="wheel_angle_back" value="180"/>
+  <xacro:property name="wheel_angle_right" value="300"/>
+
+  <!-- ==================================================================
+       Geometry
+       ================================================================== -->
+
+  <!-- The base's own body. `base_link` (the root frame, declared in
+       robot.urdf.xacro) carries no geometry; the chassis hangs off it. -->
+  <joint name="base_chassis_joint" type="fixed">
+    <parent link="base_link"/>
+    <child link="base_chassis_link"/>
+    <origin xyz="0 0 ${chassis_z_offset}" rpy="0 0 0"/>
+  </joint>
+
+  <link name="base_chassis_link">
+    <visual>
+      <geometry>
+        <cylinder radius="${chassis_radius}" length="${chassis_height}"/>
+      </geometry>
+    </visual>
+    <collision>
+      <geometry>
+        <cylinder radius="${chassis_radius}" length="${chassis_height}"/>
+      </geometry>
+    </collision>
+    <inertial>
+      <mass value="${chassis_mass}"/>
+      <!-- Solid cylinder about its own centre, spin axis z. -->
+      <inertia
+        ixx="${chassis_mass * (3 * chassis_radius * chassis_radius
+                               + chassis_height * chassis_height) / 12}"
+        iyy="${chassis_mass * (3 * chassis_radius * chassis_radius
+                               + chassis_height * chassis_height) / 12}"
+        izz="${chassis_mass * chassis_radius * chassis_radius / 2}"
+        ixy="0" ixz="0" iyz="0"/>
+    </inertial>
+  </link>
+
+  <!-- Ground projection of the base. `base_link` stays the URDF root (D27), so
+       this is its *child*, not its parent, at one wheel radius below axle
+       height. Consequence for PR6/Nav2: odometry must publish
+       `odom -> base_link`, never `odom -> base_footprint`, or base_footprint
+       ends up with two TF parents. -->
+  <joint name="base_footprint_joint" type="fixed">
+    <parent link="base_link"/>
+    <child link="base_footprint"/>
+    <origin xyz="0 0 ${-wheel_radius}" rpy="0 0 0"/>
+  </joint>
+
+  <link name="base_footprint"/>
+
+  <!--
+    One omniwheel, mounted radially at `angle` degrees around `base_link`.
+
+    `name` is the *joint* name (a LeRobot motor key, see the header); the link
+    is `${name}_link`, derived here so the pairing cannot drift.
+
+    The rpy `(0, pi/2, angle)` makes the child link's +z the wheel's spin axis,
+    pointing radially outward: the conventional wheel-link frame, and what
+    PR7's MJCF and any wheel controller expect. The axis is therefore written
+    as `0 0 1` in that rotated frame rather than as a radial vector with zero
+    rpy: it is the *composition* that PR6 depends on. With it, a positive joint
+    velocity drives the contact point along +d = z x r, the same sign the
+    driver's `wheel_linear_speeds` uses.
+  -->
+  <xacro:macro name="omni_wheel" params="name angle">
+    <joint name="${name}" type="continuous">
+      <parent link="base_link"/>
+      <child link="${name}_link"/>
+      <origin
+        xyz="${base_radius * cos(radians(angle))} ${base_radius * sin(radians(angle))} 0"
+        rpy="0 ${pi / 2} ${radians(angle)}"/>
+      <axis xyz="0 0 1"/>
+    </joint>
+
+    <link name="${name}_link">
+      <visual>
+        <geometry>
+          <cylinder radius="${wheel_radius}" length="${wheel_width}"/>
+        </geometry>
+      </visual>
+      <collision>
+        <geometry>
+          <cylinder radius="${wheel_radius}" length="${wheel_width}"/>
+        </geometry>
+      </collision>
+      <inertial>
+        <mass value="${wheel_mass}"/>
+        <!-- Solid cylinder, spin axis z (= the joint axis). -->
+        <inertia
+          ixx="${wheel_mass * (3 * wheel_radius * wheel_radius
+                               + wheel_width * wheel_width) / 12}"
+          iyy="${wheel_mass * (3 * wheel_radius * wheel_radius
+                               + wheel_width * wheel_width) / 12}"
+          izz="${wheel_mass * wheel_radius * wheel_radius / 2}"
+          ixy="0" ixz="0" iyz="0"/>
+      </inertial>
+    </link>
+  </xacro:macro>
+
+  <xacro:omni_wheel name="base_left_wheel" angle="${wheel_angle_left}"/>
+  <xacro:omni_wheel name="base_back_wheel" angle="${wheel_angle_back}"/>
+  <xacro:omni_wheel name="base_right_wheel" angle="${wheel_angle_right}"/>
+
 </robot>

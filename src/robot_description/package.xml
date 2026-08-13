@@ -3,7 +3,7 @@
 <package format="3">
   <name>robot_description</name>
   <version>0.0.0</version>
-  <description>Robot description: URDF/Xacro + MJCF (4-wheel base + extendable column + 2 arms).</description>
+  <description>Robot description: URDF/Xacro + MJCF (3-omniwheel holonomic base + extendable column + 2 arms).</description>
   <maintainer email="hejaca00@gmail.com">Jaime</maintainer>
   <license>MIT</license>
 
@@ -15,8 +15,14 @@
 
   <!-- The expand/parse gate (test/test_description.py) shells out to the
        xacro and check_urdf CLIs and parses the result with urdf_parser_py,
-       and resolves the installed share/ dir through the ament index. -->
+       and resolves the installed share/ dir through the ament index.
+       robot_state_publisher is the fifth: the gate starts the node on the
+       expanded model, because it builds a KDL tree and so rejects
+       descriptions the two parsers above accept. Declared here as well as
+       pinned in pixi.toml, because an acceptance criterion must not depend
+       on a transitive closure. -->
   <test_depend>ament_index_python</test_depend>
+  <test_depend>robot_state_publisher</test_depend>
   <test_depend>urdfdom</test_depend>
   <test_depend>urdfdom_py</test_depend>
   <test_depend>xacro</test_depend>
