@@ -15,9 +15,10 @@ Worktree base: `origin/main` @ 5fb6f21
 | 6. Red-team | done — R1: 3 BLOCK / 6 NOTE; R2 (scoped to fix diff): 1 BLOCK / 5 NOTE |
 | 7. Fix rounds (max 2) | done — 2 of 2 used; all 4 BLOCKs closed, verified both directions |
 | 8. Test-runner | done — PASS: 712 tests, 0 failures, AUDIT PASSED |
-| 9. PR + ready | opening PR |
+| 9. PR + ready | **done — PR #62, ready for Sisyphus** |
 
-Blockers: none.
+Blockers: none. **READY** — green against current `main` (0 behind at PR time).
+PR: https://github.com/jaimec00/sisyphus/pull/62
 
 ## Phase 2 — provisioning + execute-verified API probe
 
