@@ -6,17 +6,27 @@
 
 """The expand/parse gate for the robot description -- the harness PRs 2-7 extend.
 
-Three tools, three failure modes, one per test function so a later PR gets a
+Four tools, four failure modes, one per test function so a later PR gets a
 precise signal instead of a fused pass/fail:
 
 1. the ``xacro`` CLI expands ``robot.urdf.xacro`` (catches broken XML, a
    missing include, an undefined property or macro),
 2. the ``check_urdf`` CLI parses the expansion (catches URDF that is
    well-formed XML but not a valid model -- a duplicate link name, a joint
-   naming a link that does not exist, a disconnected tree),
-3. ``urdf_parser_py`` re-parses it and the link set is asserted exactly
-   (catches a degenerate expansion that parses fine but describes nothing,
-   which ``check_urdf`` is happy with).
+   naming a link that does not exist, a disconnected tree, a zero-link
+   expansion),
+3. ``urdf_parser_py`` re-parses it and the link set is asserted exactly. Its
+   unique catch is a link that is *renamed* or silently dropped while the
+   model stays valid (``base_link`` -> ``base`` passes ``check_urdf``
+   happily) -- the likeliest PR2-PR7 regression, since every consumer of this
+   description names links.
+4. every ``<mesh filename=...>`` in the expansion is resolved through the
+   installed share tree and must exist on disk. ``check_urdf`` does not open
+   mesh files, so a typo'd or uninstalled ``.stl`` is otherwise green here
+   and red at ``robot_state_publisher``/RViz/MuJoCo.
+
+Plus the two wiring asserts that have no tool: the top level really includes
+the three subassemblies, and the share layout is really installed.
 
 The CLIs are used rather than ``xacro.process_file`` because the CLI is what a
 launch file actually runs, and rc + captured stderr is a legible failure.
@@ -24,22 +34,25 @@ launch file actually runs, and rc + captured stderr is a legible failure.
 Everything resolves through ``get_package_share_directory``, i.e. the
 *installed* ``share/robot_description/`` tree -- never a path relative to this
 file. That is deliberate: it makes the install wiring in ``setup.py`` part of
-what this gate verifies, so a .xacro that exists in the source tree but never
-reaches the install tree fails here instead of at robot bringup. There is no
-source-tree fallback, by design. It follows that this suite runs under
-``colcon test`` (which puts the package's install prefix on
+what this gate verifies, so a .xacro or a mesh that exists in the source tree
+but never reaches the install tree fails here instead of at robot bringup.
+There is no source-tree fallback, by design. It follows that this suite runs
+under ``colcon test`` (which puts the package's install prefix on
 ``AMENT_PREFIX_PATH``) after a ``colcon build``, not against a bare checkout.
 
 Extending this in PR2+: add the new links to ``EXPECTED_LINKS`` and add
 whatever joint/limit assertions the subassembly earns. Keep the link set
-exact -- a set that is allowed to grow silently stops being a gate.
+exact -- a set that is allowed to grow silently stops being a gate. The mesh
+and include asserts are over an *empty* set and a *fixed* set today; they cost
+nothing until PR2 adds the first ``.stl``, and bite from that moment on.
 """
 
 import os
 import shutil
 import subprocess
+import xml.etree.ElementTree as ElementTree
 
-from ament_index_python.packages import get_package_share_directory
+from ament_index_python.packages import get_package_share_directory, PackageNotFoundError
 import pytest
 from urdf_parser_py.urdf import URDF
 
@@ -47,18 +60,59 @@ from urdf_parser_py.urdf import URDF
 #: the root frame and nothing else; every later PR extends this deliberately.
 EXPECTED_LINKS = {'base_link'}
 
-#: Subassembly files the top level includes. Empty in PR1, but they must be
-#: installed or the expansion cannot resolve them.
+#: Subassembly files the top level must include -- a wiring contract, not just
+#: a list of files that happen to be installed. Deleting an <xacro:include> is
+#: otherwise invisible here (the file stays installed and stays linted).
 SUBASSEMBLIES = ('base.xacro', 'column.xacro', 'arm.xacro')
+
+#: xacro's namespace, needed to find <xacro:include> in the *unexpanded* file.
+XACRO_NS = 'http://www.ros.org/wiki/xacro'
 
 
 def _require_tool(name):
     """Return the path to an executable on PATH, failing loudly if it is absent."""
     path = shutil.which(name)
     assert path is not None, (
-        "'%s' is not on PATH; it is declared in package.xml and provided by the "
-        'pixi environment -- run inside `pixi run`.' % name)
+        "'%s' is not on PATH; it is pinned in pixi.toml and declared in "
+        'package.xml -- run inside `pixi run`.' % name)
     return path
+
+
+def _require_expansion(expansion):
+    """Return the expanded XML, or fail naming the real culprit.
+
+    Every assertion downstream of the expansion routes through this, so a
+    broken .xacro reports as one legible root cause plus N pointers to it
+    rather than N raw ``Document is empty`` parse errors.
+    """
+    assert expansion.returncode == 0, (
+        'xacro expansion failed (rc %d), so this assertion never ran -- see '
+        'test_xacro_expands_without_error for the root cause.\n%s' % (
+            expansion.returncode, expansion.stderr))
+    return expansion.stdout
+
+
+def _resolve_mesh(filename, share_dir):
+    """Resolve a URDF mesh reference to an absolute path, the way ROS tooling does.
+
+    Handles the ``package://<pkg>/<rel>`` form every ROS consumer uses,
+    ``file://`` and absolute paths, and treats anything else as relative to
+    this package's own share directory.
+    """
+    if filename.startswith('package://'):
+        pkg, _, relative = filename[len('package://'):].partition('/')
+        try:
+            pkg_share = get_package_share_directory(pkg)
+        except PackageNotFoundError:
+            pytest.fail(
+                "mesh reference names package '%s', which is not on the ament "
+                'index: %s' % (pkg, filename))
+        return os.path.join(pkg_share, relative)
+    if filename.startswith('file://'):
+        return filename[len('file://'):]
+    if os.path.isabs(filename):
+        return filename
+    return os.path.join(share_dir, filename)
 
 
 @pytest.fixture(scope='module')
@@ -103,6 +157,24 @@ def test_share_layout_is_installed(share_dir):
             'needs a rebuild.' % installed)
 
 
+def test_top_level_includes_every_subassembly(top_level_xacro):
+    """The top level wires in exactly the three subassemblies, no more, no fewer.
+
+    Installed-on-disk and included-in-the-robot are independent properties:
+    drop an <xacro:include> and the file goes on being installed and linted
+    while its links quietly leave the robot. Read from the *unexpanded* file,
+    since expansion is what erases the includes.
+    """
+    root = ElementTree.parse(top_level_xacro).getroot()
+    included = {element.get('filename')
+                for element in root.iter('{%s}include' % XACRO_NS)}
+    expected = set(SUBASSEMBLIES)
+    assert included == expected, (
+        'subassembly includes drifted in %s: missing %s, unexpected %s' % (
+            top_level_xacro, sorted(expected - included),
+            sorted(included - expected)))
+
+
 def test_xacro_expands_without_error(expansion):
     """The xacro CLI expands the top-level file with rc 0."""
     assert expansion.returncode == 0, (
@@ -110,8 +182,9 @@ def test_xacro_expands_without_error(expansion):
     assert expansion.stdout.strip(), 'xacro exited 0 but produced no output'
 
 
-def test_check_urdf_parses_the_expansion(expanded_urdf_path):
+def test_check_urdf_parses_the_expansion(expansion, expanded_urdf_path):
     """check_urdf accepts the expanded description as a valid URDF model."""
+    _require_expansion(expansion)
     proc = subprocess.run(
         [_require_tool('check_urdf'), expanded_urdf_path],
         capture_output=True, text=True, check=False)
@@ -121,14 +194,39 @@ def test_check_urdf_parses_the_expansion(expanded_urdf_path):
 
 def test_link_set_is_exactly_the_expected_links(expansion):
     """The parsed model contains exactly EXPECTED_LINKS -- no more, no fewer."""
-    robot = URDF.from_xml_string(expansion.stdout)
+    robot = URDF.from_xml_string(_require_expansion(expansion))
     links = {link.name for link in robot.links}
     assert links == EXPECTED_LINKS, (
         'link set drifted: missing %s, unexpected %s' % (
             sorted(EXPECTED_LINKS - links), sorted(links - EXPECTED_LINKS)))
 
 
+def test_every_mesh_reference_resolves(expansion, share_dir):
+    """Every mesh the description names exists in the installed share tree.
+
+    Empty today (PR1 ships no geometry) and deliberately so: this is the same
+    shape as EXPECTED_LINKS, costing nothing until PR2 imports the first
+    LeRobot .stl and load-bearing from that moment. check_urdf validates the
+    model but never opens a mesh file, so without this a typo'd filename, a
+    mesh committed to src/ but not installed, or one referenced and never
+    committed at all is green here and red at bringup.
+    """
+    root = ElementTree.fromstring(_require_expansion(expansion))
+    references = [element.get('filename') for element in root.iter('mesh')]
+    assert all(references), (
+        'a <mesh> element in the expansion has no filename attribute')
+    missing = [reference for reference in references
+               if not os.path.isfile(_resolve_mesh(reference, share_dir))]
+    assert not missing, (
+        '%d of %d mesh reference(s) do not resolve to a file in the installed '
+        'share tree (source-tree-only meshes count as missing -- setup.py must '
+        'install them, and the workspace may need a rebuild): %s' % (
+            len(missing), len(references),
+            ['%s -> %s' % (reference, _resolve_mesh(reference, share_dir))
+             for reference in missing]))
+
+
 def test_robot_is_named(expansion):
     """The model carries the robot's name, so downstream tooling can identify it."""
-    robot = URDF.from_xml_string(expansion.stdout)
+    robot = URDF.from_xml_string(_require_expansion(expansion))
     assert robot.name == 'sisyphus', 'unexpected robot name: %r' % robot.name
