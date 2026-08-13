@@ -1,13 +1,16 @@
 # Sisyphus
 
 An autonomous household-chore robot: an LLM "brain" driving a mobile manipulator
-(four-wheel base, extendable column, two arms), built on **ROS 2 Jazzy** and
+(holonomic base, extendable column, two arms), built on **ROS 2 Jazzy** and
 developed **sim-first** in MuJoCo.
 
 > **Early-stage.** This repo currently holds the architecture, the development
 > workflow, and the package skeleton — not yet a working robot. See
-> [`docs/design/PROJECT.md`](docs/design/PROJECT.md) for the full design and
-> [`docs/design/decisions.md`](docs/design/decisions.md) for the decision log.
+> [`docs/design/spec.md`](docs/design/spec.md) for what the robot currently is,
+> [`docs/design/decisions.md`](docs/design/decisions.md) for the decision log
+> (the source of truth), and
+> [`docs/design/PROJECT.md`](docs/design/PROJECT.md) for the goal and open
+> questions.
 
 ## Layout
 - `src/robot_*` — ROS 2 packages: `robot_brain`, `robot_skills`, `robot_safety`,
