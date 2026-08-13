@@ -325,3 +325,142 @@ batch.
 - **The include test reads the top level only.** A subassembly that includes a
   fourth file is not covered; that is deliberate (PR1 owns the top-level wiring
   contract) but worth knowing before PR4 nests macros.
+
+---
+
+# Round 3 — the last fix round
+
+One BLOCK (B4) and three NOTEs the manager folded in. Two commits, both green:
+
+| commit | fixes |
+| --- | --- |
+| `63904a8` | B4 + N7 + N10 + N11 |
+| `ffd2758` | D27's asset clause widened to match |
+
+Test count is **unchanged at 7 non-linter** (a rename must not move it), so the
+baseline needed no re-cut: `--packages-select robot_description
+--update-baseline` reported `0 package(s) changed` and left the file untouched.
+`git diff --numstat origin/main..HEAD -- scripts/test_baseline.json` → `1 1`,
+still the single `robot_description: 0 → 7` line.
+
+## B4 — `<texture>`, and the shape that let it happen
+
+The finding is correct and I have no argument with it. My round-2 fix closed
+the instance and left the class open: `root.iter('mesh')` is a hardcoded tag in
+a test whose entire purpose is to notice files the other tools never open. The
+red-team's T1 repro passes 7/7 on my round-2 code — I reproduced it before
+changing anything.
+
+Fixed shape-first, as directed:
+
+- `FILE_BEARING_TAGS = ('mesh', 'texture')` at module level, with a comment
+  saying *why* it is a constant ("the gate only knows about one tag" is the
+  bug) and naming `<mujoco><compiler meshdir=...>` as the known next tag.
+- `test_every_mesh_reference_resolves` → `test_every_asset_reference_resolves`;
+  `_resolve_mesh` → `_resolve_asset_path`. The names no longer promise less
+  than they do.
+- The extension instruction now sits next to the `EXPECTED_LINKS` one in the
+  module docstring, and the failure message names the offending tag
+  (`<texture> package://... -> /abs/...`).
+
+Verified both directions, plus a regression check that the original mesh case
+still bites after the rename:
+
+```
+### T1: red-team's exact texture repro (named material + per-visual, neither file exists)
+  round-2 code: 7 passed
+  now:          1 failure, test_every_asset_reference_resolves only
+  AssertionError: 2 of 2 asset reference(s) do not resolve to a file on disk ...
+    ['<texture> package://robot_description/meshes/i_do_not_exist.png -> .../meshes/i_do_not_exist.png',
+     '<texture> package://robot_description/meshes/also_missing.png -> .../meshes/also_missing.png']
+
+### T2 (positive control): <texture> naming meshes/README.md, which IS installed
+  10 tests, 0 failures        # the test can pass, not just fail
+
+### E3 (regression): missing <mesh> still caught after the rename
+  1 failure, test_every_asset_reference_resolves only, message tagged '<mesh>'
+```
+
+`<mujoco><compiler meshdir=...>` was **not** chased, per instruction, and I
+agree with the reasoning: `mujoco` is a `pixi.toml` TODO and not in the env, so
+the sub-claim (MuJoCo hard-errors on a missing asset) is untestable here today,
+and `meshdir` names a *directory* rather than a file, so it would need a
+different resolution branch written against no real input. It is a one-line
+comment in `FILE_BEARING_TAGS`, nothing more.
+
+## N10 — two messages that misdescribed their own branch
+
+```
+### M3: <mesh filename=""/>
+  before: "a <mesh> element in the expansion has no filename attribute"   # it has one; it is empty
+  now:    "element(s) in the expansion name no file: ['<mesh> (empty filename attribute)']"
+
+### M4: <mesh/> with no attribute
+  now:    "element(s) in the expansion name no file: ['<mesh> (no filename attribute)']"
+
+### M9: /opt/nope/a.stl
+  before: "do not resolve to a file in the installed share tree"          # never looked there
+  now:    "do not resolve to a file on disk. package:// and bare relative references
+           resolve through the *installed* share tree ..."  ['<mesh> /opt/nope/a.stl -> /opt/nope/a.stl']
+```
+
+## N11 and N7 — two docs describing a gate that no longer exists
+
+`test_share_layout_is_installed`'s docstring said "with every source file in
+them" while checking four hardcoded names; it now states its scope and says
+where a PR2-added `urdf/wheel.xacro` *is* covered (the expansion). The package
+`README.md` still described the three-tool gate from round 1 — the one permanent
+doc a PR2 author reads first, and the one place I did not look when fixing N1.
+It now enumerates all seven asserts and points at both extension constants.
+D27's asset clause was widened in the same spirit (`ffd2758`).
+
+## Round-3 commands, real output
+
+```
+$ pixi run --frozen build
+Summary: 9 packages finished [10.3s]
+
+$ pixi run --frozen python scripts/check_test_integrity.py \
+      --packages-select robot_description --update-baseline
+1 packages, 10 tests collected, 7 of them non-linter
+AUDIT PASSED: every expected package collected tests
+wrote .../scripts/test_baseline.json (0 package(s) changed); commit it
+
+$ git diff --numstat origin/main..HEAD -- scripts/test_baseline.json
+1	1	scripts/test_baseline.json
+
+$ pixi run test
+Summary: 712 tests, 0 errors, 0 failures, 0 skipped
+robot_description      10        0       0         0         7       +0  ok
+10 packages, 712 tests collected, 682 of them non-linter
+AUDIT PASSED: every expected package collected tests
+All stages passed.
+```
+
+Every perturbation ran on a committed file and was reverted with `git checkout
+--`; `git status --short src/robot_description` checked after each batch.
+
+## Disagreements
+
+None. B4 was a fair hit on work I had done the day before, and the instruction
+to fix the *shape* rather than the instance is the right correction — the tuple
+is what makes N8/N9/`meshdir` cheap to close later instead of another round of
+this.
+
+## Surviving gaps, stated plainly
+
+- **`<mujoco><compiler meshdir=...>` is unchecked**, by decision, and named in
+  the code as the next tag. PR7 owns it.
+- **N8** — a nested `<xacro:include>` deleted *inside* a subassembly is
+  unasserted. Backstopped from PR2 by the link-set assert (the links leave with
+  it); the recursive walk belongs in PR2, written against real nesting.
+- **N9** — a duplicated top-level include passes. `./base.xacro` failing is a
+  *feature* (it enforces D27's relative-include rule) and was deliberately not
+  "fixed".
+- **N5** — xacro's stderr is still ignored at rc 0, so a description that
+  expands only via deprecated syntax passes quietly.
+- **N2** — `@pytest.mark.skip` still does not trip the ratchet
+  (`scripts/check_test_integrity.py`, outside owned paths), and **`robot_world`'s
+  floor is still 11 below its live count on `main`**.
+- The asset test has still never seen a real `.stl` or `.png`; its controls are
+  synthetic (`meshes/README.md` standing in for an installed asset).
