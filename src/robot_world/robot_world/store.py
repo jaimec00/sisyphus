@@ -67,15 +67,33 @@ class WorldStore:
         store.reset()                              # back to the seed scene
     """
 
-    def __init__(self, document: WorldDocument | None = None) -> None:
-        """Create a store holding ``document`` (the shipped seed by default)."""
+    def __init__(
+        self,
+        document: WorldDocument | None = None,
+        *,
+        seed: WorldDocument | None = None,
+    ) -> None:
+        """Create a store holding ``document`` (the shipped seed by default).
+
+        ``seed`` is the scene :meth:`reset` restores, and defaults to
+        ``document`` -- the whole truth for an in-memory store, whose starting
+        scene *is* its ground truth.  A store that comes up on a scene which has
+        already drifted from ground truth (a :class:`FileWorldStore` reopening a
+        live file it wrote days ago) passes the two separately, so ``_seed`` is
+        never quietly "whatever we happened to load".
+        """
         if document is not None and not isinstance(document, WorldDocument):
             raise TypeError(
                 f'document must be a WorldDocument, got {type(document).__name__}')
-        self._seed = document if document is not None else read_seed_document()
+        if seed is not None and not isinstance(seed, WorldDocument):
+            raise TypeError(
+                f'seed must be a WorldDocument, got {type(seed).__name__}')
+        if document is None:
+            document = read_seed_document()
+        self._seed = seed if seed is not None else document
         self._batch_depth = 0
         self._pending = False
-        self._load(self._seed)
+        self._load(document)
 
     # -- queries -----------------------------------------------------------
 
@@ -333,7 +351,7 @@ class FileWorldStore(WorldStore):
         else:
             document = seed
             write_document(self._live_path, document)
-        super().__init__(document)
+        super().__init__(document, seed=seed)
 
     @property
     def live_path(self) -> Path:
@@ -346,7 +364,17 @@ class FileWorldStore(WorldStore):
         return self._seed_path
 
     def seed_document(self) -> WorldDocument:
-        """Re-read the seed from disk, so ``reset()`` restores ground truth."""
+        """Re-read the seed from disk, so ``reset()`` restores ground truth.
+
+        The re-read is the D23 mechanism, not an optimization to be removed:
+        the seed is a *file*, so replacing that file must change what
+        ``reset()`` restores -- which is what lets an operator re-seed a
+        running robot.  The inherited ``_seed`` is kept honest anyway (the
+        constructor is handed the seed separately from the live document), so
+        collapsing this override into ``return self._seed`` would no longer
+        restore a *live* scene as if it were the seed; it would just quietly
+        stop following the file.
+        """
         return read_seed_document(self._seed_path)
 
     def _refuse_seeding_from_the_live_file(self) -> None:

@@ -211,6 +211,42 @@ def test_reset_restores_the_seed_scene(document):
     assert store.find_object('cube_1').pose == Pose.from_xyz(1.0, 0.1, 0.8)
 
 
+def test_the_seed_is_not_disturbed_by_anything_the_store_does(document):
+    """``seed_document()`` keeps answering ground truth, mutation after mutation."""
+    store = WorldStore(document)
+    store.update_object_pose('cube_1', Pose.from_xyz(9.0, 9.0, 9.0))
+    store.set_held_by('cube_1', Side.LEFT)
+    store.remove_object('anvil_1')
+    store.add_object(WorldObject('tray_1', 'tray', Pose()))
+
+    assert store.seed_document() == document
+    store.reset()
+    assert store.document() == document
+    assert store.seed_document() == document
+
+
+def test_a_store_can_be_told_its_seed_separately_from_its_scene(document):
+    """Coming up on a drifted scene is not the same as being seeded from it.
+
+    The distinction is what a :class:`FileWorldStore` reopening a live file
+    needs: the scene it loads is *not* the scene ``reset()`` must restore.
+    """
+    drifted = WorldStore(document)
+    drifted.update_object_pose('cube_1', Pose.from_xyz(9.0, 9.0, 9.0))
+    scene = drifted.document()
+
+    store = WorldStore(scene, seed=document)
+
+    assert store.document() == scene
+    assert store.seed_document() == document
+    store.reset()
+    assert store.document() == document
+
+    # ...and the new argument is type-checked where it is written, like the other.
+    with pytest.raises(TypeError, match='seed must be a WorldDocument'):
+        WorldStore(document, seed={'locations': {}})
+
+
 def test_the_document_is_a_snapshot_not_a_live_view(document):
     """``document()`` returns the current scene, frozen at the moment it is asked."""
     store = WorldStore(document)

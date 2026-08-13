@@ -81,6 +81,58 @@ def test_reset_restores_from_the_seed_file_not_from_memory(tmp_path, seed_file, 
     assert read_document(live).find_object('cube_1').pose == Pose.from_xyz(0.4, 0.4, 0.4)
 
 
+def test_a_reopened_store_resets_to_the_seed_not_to_the_scene_it_opened(
+    tmp_path, seed_file, document,
+):
+    """A store that comes up on a drifted world still knows its ground truth.
+
+    The second store is constructed from the *live* file, which by then differs
+    from the seed in every way a chore can change it.  Its seed is still the
+    seed -- including the inherited ``_seed`` attribute, read here through the
+    un-overridden base method, so the day someone collapses
+    ``FileWorldStore.seed_document()`` into ``return self._seed`` they do not
+    silently get "whatever the live file said at startup" back.
+    """
+    live = tmp_path / 'world.json'
+    first = FileWorldStore(live, seed_path=seed_file)
+    first.update_object_pose('cube_1', Pose.from_xyz(9.0, 9.0, 9.0))
+    first.set_held_by('cube_1', Side.LEFT)
+    first.remove_object('anvil_1')
+
+    second = FileWorldStore(live, seed_path=seed_file)
+    drifted = second.document()
+    assert drifted != document
+
+    assert second.seed_document() == document
+    assert WorldStore.seed_document(second) == document
+
+    second.reset()
+
+    assert second.document() == document
+    assert second.document() != drifted
+    assert read_document(live) == document
+
+
+def test_mutating_the_working_scene_never_changes_what_reset_restores(
+    tmp_path, seed_file, document,
+):
+    """The seed is untouchable through the store: only the live file moves."""
+    live = tmp_path / 'world.json'
+    store = FileWorldStore(live, seed_path=seed_file)
+
+    store.update_object_pose('cube_1', Pose.from_xyz(9.0, 9.0, 9.0))
+    store.set_held_by('cube_1', Side.RIGHT)
+    store.add_object(WorldObject('tray_1', 'tray', Pose.from_xyz(1.0, 0.0, 0.7)))
+    store.remove_object('anvil_1')
+
+    assert store.seed_document() == document
+    assert WorldStore.seed_document(store) == document
+    assert read_document(seed_file) == document
+
+    store.reset()
+    assert store.document() == document
+
+
 def test_reset_rewrites_the_live_file(tmp_path, seed_file, document):
     """The restored scene reaches disk, so the next process sees the reset too."""
     live = tmp_path / 'world.json'
