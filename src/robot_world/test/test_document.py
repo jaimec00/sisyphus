@@ -12,6 +12,7 @@ import json
 import pytest
 from robot_skills import Pose, SCHEMA_VERSION_KEY, SerializationError, Side
 from robot_world import (
+    duplicate_hold_sides,
     WORLD_SCHEMA_VERSION,
     WORLD_SCHEMA_VERSION_KEY,
     WorldDocument,
@@ -146,6 +147,49 @@ def test_scene_invariants_are_enforced_at_the_parse_boundary(document):
     data['locations'] = {}
     with pytest.raises(SerializationError, match='must not be empty'):
         WorldDocument.from_dict(data)
+
+    # A gripper has one hand: two objects cannot both name the same side.
+    data = document.to_dict()
+    data['objects'][0]['held_by'] = 'left'
+    data['objects'][1]['held_by'] = 'left'
+    with pytest.raises(SerializationError, match='held by the same gripper: left'):
+        WorldDocument.from_dict(data)
+
+    # ...and the same is true built in Python, not only parsed from a file.
+    with pytest.raises(ValueError, match='held by the same gripper: right'):
+        WorldDocument(
+            locations=dict(document.locations),
+            start_location=document.start_location,
+            objects=(
+                WorldObject('cube_1', 'cube', Pose(), held_by=Side.RIGHT),
+                WorldObject('anvil_1', 'anvil', Pose(), held_by=Side.RIGHT),
+            ),
+        )
+
+
+def test_one_object_per_gripper_is_all_the_rule_forbids(document):
+    """Both grippers may be full, and any number of objects held by nobody."""
+    both_hands = WorldDocument(
+        locations=dict(document.locations),
+        start_location=document.start_location,
+        objects=(
+            WorldObject('cube_1', 'cube', Pose(), held_by=Side.LEFT),
+            WorldObject('anvil_1', 'anvil', Pose(), held_by=Side.RIGHT),
+            WorldObject('tray_1', 'tray', Pose()),
+            WorldObject('mug_1', 'mug', Pose()),
+        ),
+    )
+
+    assert duplicate_hold_sides(both_hands.objects) == []
+    assert WorldDocument.from_dict(both_hands.to_dict()) == both_hands
+    assert duplicate_hold_sides(document.objects) == []
+    assert duplicate_hold_sides(()) == []
+    assert duplicate_hold_sides(
+        (WorldObject('a', 'cube', Pose(), held_by=Side.LEFT),
+         WorldObject('b', 'cube', Pose(), held_by=Side.RIGHT),
+         WorldObject('c', 'cube', Pose(), held_by=Side.RIGHT),
+         WorldObject('d', 'cube', Pose(), held_by=Side.LEFT))
+    ) == [Side.LEFT, Side.RIGHT]
 
 
 def test_document_is_immutable_and_defensively_copied():

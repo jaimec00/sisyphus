@@ -45,7 +45,7 @@ from types import MappingProxyType
 from typing import Iterator, Mapping
 
 from robot_skills import Pose, Side
-from robot_world.document import WorldDocument, WorldObject
+from robot_world.document import duplicate_hold_sides, WorldDocument, WorldObject
 from robot_world.storage import (
     read_document,
     read_seed_document,
@@ -160,17 +160,25 @@ class WorldStore:
         The store records the fact; deciding it -- and keeping it agreeing with
         the gripper's own book-keeping, which ``Observation`` enforces -- is the
         backend's job, because "my hand is full" is a statement about the robot.
+
+        A gripper that already holds something is refused, immediately and
+        including inside a :meth:`batch`, because a direct reader of the store
+        sees the in-memory scene rather than the committed file.  Moving a hold
+        is therefore two calls, in the order the physical robot must also use:
+        clear the old object (``set_held_by(old, None)``), then set the new one.
         """
         item = self._require(object_id)
         if item.held_by == side:
             return
-        self._replace(WorldObject(
+        updated = WorldObject(
             object_id=item.object_id,
             label=item.label,
             pose=item.pose,
             graspable=item.graspable,
             held_by=side,
-        ))
+        )
+        self._refuse_hold_conflict(updated)
+        self._replace(updated)
 
     def add_object(self, item: WorldObject) -> None:
         """Register a new object, refusing an id that is already taken."""
@@ -180,6 +188,7 @@ class WorldStore:
         if item.object_id in self._objects:
             raise WorldStoreError(
                 f'the world store already holds an object {item.object_id!r}')
+        self._refuse_hold_conflict(item)
         self._objects[item.object_id] = item
         self._touch()
 
@@ -235,6 +244,30 @@ class WorldStore:
                 f'no object {object_id!r} in the world store; registered: '
                 f'{", ".join(sorted(self._objects)) or "(none)"}')
         return item
+
+    def _refuse_hold_conflict(self, item: WorldObject) -> None:
+        """Refuse ``item`` if it would leave one gripper holding two objects.
+
+        Called *before* the registry changes, so a refused mutation leaves the
+        scene byte-identical -- a store that raised half way would be worse than
+        one that never tried.  The rule itself lives in
+        :func:`~robot_world.document.duplicate_hold_sides`, the same scan
+        :class:`~robot_world.WorldDocument` validates whole scenes with; only
+        the refusal wording is the store's own.
+        """
+        if item.held_by is None:
+            return
+        others = [
+            entry for entry in self._objects.values()
+            if entry.object_id != item.object_id
+        ]
+        if not duplicate_hold_sides((*others, item)):
+            return
+        holder = next(entry for entry in others if entry.held_by is item.held_by)
+        raise WorldStoreError(
+            f'cannot record {item.object_id!r} as held by the {item.held_by.value} '
+            f'gripper: it already holds {holder.object_id!r}; release that first '
+            f'(set_held_by({holder.object_id!r}, None))')
 
     def _replace(self, item: WorldObject) -> None:
         """Swap one registry entry for an updated copy, keeping its position."""

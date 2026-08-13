@@ -8,7 +8,7 @@
 
 import pytest
 from robot_skills import Pose, Side
-from robot_world import WorldObject, WorldStore, WorldStoreError
+from robot_world import WorldDocument, WorldObject, WorldStore, WorldStoreError
 
 
 def test_the_store_answers_the_queries_the_brain_needs(document):
@@ -52,6 +52,121 @@ def test_moving_and_holding_an_object(document):
     store.set_held_by('cube_1', None)
     assert store.find_object('cube_1').held_by is None
     assert store.find_object('cube_1').pose == where
+
+
+def test_a_gripper_cannot_be_given_a_second_object_to_hold(document, monkeypatch):
+    """The second claim on one gripper is refused, and changes nothing at all."""
+    commits = []
+    monkeypatch.setattr(WorldStore, '_commit', lambda self: commits.append(1))
+    store = WorldStore(document)
+    store.set_held_by('cube_1', Side.LEFT)
+    before = store.document()
+    commits.clear()
+
+    with pytest.raises(WorldStoreError, match='left gripper: it already holds'):
+        store.set_held_by('anvil_1', Side.LEFT)
+
+    # Check-then-mutate: the refused call left the registry byte-identical,
+    # dirtied nothing, and therefore cost no write.
+    assert store.document() == before
+    assert store.find_object('cube_1').held_by is Side.LEFT
+    assert store.find_object('anvil_1').held_by is None
+    assert commits == []
+    assert store.pending_write is False
+
+
+def test_a_refused_hold_inside_a_batch_leaves_the_batch_intact(document, monkeypatch):
+    """A refusal mid-batch corrupts neither the scene nor the batch book-keeping."""
+    commits = []
+    monkeypatch.setattr(WorldStore, '_commit', lambda self: commits.append(1))
+    store = WorldStore(document)
+
+    # A refusal is immediate inside a batch too: the in-memory scene is exactly
+    # what a direct reader sees, so it may not go inconsistent until commit.
+    with store.batch():
+        store.set_held_by('cube_1', Side.RIGHT)
+        with pytest.raises(WorldStoreError, match='right gripper: it already holds'):
+            store.set_held_by('anvil_1', Side.RIGHT)
+        assert store.find_object('anvil_1').held_by is None
+        assert commits == []
+    assert commits == [1]
+    assert store.pending_write is False
+
+    # The batch's depth came back to zero, so the next mutation commits at once.
+    store.set_held_by('cube_1', None)
+    assert commits == [1, 1]
+
+    # A batch whose only call is refused leaves nothing pending to commit.
+    store.set_held_by('cube_1', Side.LEFT)
+    commits.clear()
+    with store.batch():
+        with pytest.raises(WorldStoreError, match='it already holds'):
+            store.set_held_by('anvil_1', Side.LEFT)
+    assert commits == []
+    assert store.pending_write is False
+
+
+def test_a_new_object_cannot_arrive_in_a_full_gripper(document):
+    """``add_object`` is the other way a hold could collide, and is checked too."""
+    store = WorldStore(document)
+    store.set_held_by('cube_1', Side.RIGHT)
+
+    with pytest.raises(WorldStoreError, match='right gripper: it already holds'):
+        store.add_object(WorldObject('tray_1', 'tray', Pose(), held_by=Side.RIGHT))
+    assert store.find_object('tray_1') is None
+    assert [item.object_id for item in store.objects()] == ['cube_1', 'anvil_1']
+
+    # The free gripper is another matter: that object does join the scene.
+    store.add_object(WorldObject('tray_1', 'tray', Pose(), held_by=Side.LEFT))
+    assert store.find_object('tray_1').held_by is Side.LEFT
+
+
+def test_a_hold_changes_hands_by_clearing_it_first(document):
+    """Releasing is never refused; clear-then-set is how an object moves gripper."""
+    store = WorldStore(document)
+    store.set_held_by('cube_1', Side.LEFT)
+
+    store.set_held_by('cube_1', None)
+    store.set_held_by('anvil_1', Side.LEFT)
+    assert store.find_object('anvil_1').held_by is Side.LEFT
+
+    # Both grippers full at once is legal -- one object each.
+    store.set_held_by('cube_1', Side.RIGHT)
+    assert [item.held_by for item in store.objects()] == [Side.RIGHT, Side.LEFT]
+
+    # Re-asserting a hold the object already has stays a no-op, not a conflict.
+    store.set_held_by('cube_1', Side.RIGHT)
+    store.set_held_by('anvil_1', None)
+    store.set_held_by('anvil_1', None)
+    assert store.find_object('anvil_1').held_by is None
+
+
+def test_a_conflicting_scene_cannot_reach_a_store_at_all(document):
+    """Loading needs no check of its own: a document cannot describe a conflict."""
+    with pytest.raises(ValueError, match='held by the same gripper'):
+        WorldDocument(
+            locations=dict(document.locations),
+            start_location=document.start_location,
+            objects=(
+                WorldObject('cube_1', 'cube', Pose(), held_by=Side.LEFT),
+                WorldObject('anvil_1', 'anvil', Pose(), held_by=Side.LEFT),
+            ),
+        )
+
+    # A *legal* held scene loads, and survives a round trip through reset().
+    carried = WorldDocument(
+        locations=dict(document.locations),
+        start_location=document.start_location,
+        objects=(
+            WorldObject('cube_1', 'cube', Pose(), held_by=Side.LEFT),
+            WorldObject('anvil_1', 'anvil', Pose(), held_by=Side.RIGHT),
+        ),
+    )
+    store = WorldStore(carried)
+    assert store.find_object('cube_1').held_by is Side.LEFT
+    store.set_held_by('cube_1', None)
+    store.reset()
+    assert store.document() == carried
 
 
 def test_objects_can_join_and_leave_the_scene(document):

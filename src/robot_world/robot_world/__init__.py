@@ -30,6 +30,7 @@ Example::
 
 from robot_world.document import (
     check_world_schema_version,
+    duplicate_hold_sides,
     WORLD_SCHEMA_VERSION,
     WORLD_SCHEMA_VERSION_KEY,
     WorldDocument,
@@ -51,6 +52,7 @@ __all__ = [
     'default_seed_document',
     'DEFAULT_SEED_RESOURCE',
     'document_text',
+    'duplicate_hold_sides',
     'FileWorldStore',
     'read_document',
     'read_seed_document',

@@ -120,6 +120,28 @@ def test_a_schema_violating_live_file_is_refused(tmp_path, seed_file, document):
         FileWorldStore(live, seed_path=seed_file)
 
 
+def test_a_live_file_holding_one_object_in_two_grippers_is_refused(
+    tmp_path, seed_file, document,
+):
+    """An impossible scene on disk is refused at load, like any other corruption.
+
+    Recovering it is a hand repair (or deleting the file), not a silent
+    rewrite: overwriting an inconsistent world with the seed would destroy the
+    evidence of whatever produced it.
+    """
+    live = tmp_path / 'world.json'
+    data = document.to_dict()
+    data['objects'][0]['held_by'] = 'right'
+    data['objects'][1]['held_by'] = 'right'
+    text = json.dumps(data)
+    live.write_text(text, encoding='utf-8')
+
+    with pytest.raises(WorldStoreError, match='held by the same gripper: right'):
+        FileWorldStore(live, seed_path=seed_file)
+
+    assert live.read_text(encoding='utf-8') == text
+
+
 def test_a_missing_or_corrupt_seed_is_a_hard_error(tmp_path):
     """A broken install / misconfiguration fails at startup, not mid-chore."""
     live = tmp_path / 'world.json'
