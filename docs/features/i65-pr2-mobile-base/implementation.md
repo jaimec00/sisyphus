@@ -243,12 +243,33 @@ Two items to surface; neither is a blocker and neither was acted on beyond what
 is written above.
 
 1. **R6's "PR6 therefore needs no sign fix-up" is an over-claim** (§ above).
-   The model is implemented exactly as ruled and matches upstream LeKiwi; D29
-   records the precise statement (positive joint velocity ⇒ contact patch along
-   `+d̂` ⇒ body along `−d̂`, versus the driver's `+d̂`) and says PR6/PR7 must
-   confirm the physical motor sign in sim rather than assume it. If you would
-   rather D29 restated `status.md` verbatim, say so and I will change it — but
-   I did not want an append-only entry to hand PR6 a sign it cannot rely on.
+   **RESOLVED** — the manager re-derived it independently, agreed, and ruled
+   D29's wording stands as written. It then caught the inverse of the #55
+   failure mode in my work: D29 was right while the **source comment still
+   carried the over-claim**, and `base.xacro` is the file a PR6 author actually
+   reads. Fixed in a follow-up commit, applying the "a claim wrong in N places
+   is probably wrong in an N+1th" heuristic to my own text:
+   - `urdf/base.xacro`, the `omni_wheel` macro comment — the tail clause "the
+     same sign the driver's `wheel_linear_speeds` uses" is replaced by the
+     precise three-sentence version (contact patch along `+d̂` ⇒ body along
+     `−d̂`; driver's positive ⇒ body along `+d̂`; motor direction is a
+     calibration fact to confirm in sim), pointing at D29 rather than
+     re-deriving.
+   - `urdf/base.xacro`, the attribution header — "Mount convention … **and axis
+     sign**: … checked numerically against its kinematic matrix" was the same
+     conflation in miniature (the matrix check verifies the *mount mapping*,
+     not the axis sign). Split into the convention (verified two ways) and the
+     sign (spelled out on the macro).
+   - `test_wheel_mounts_are_120_degrees_apart`'s axis assertion message — the
+     clause "which is what makes a positive joint velocity roll the wheel the
+     way the driver expects" asserted the same false fact *in a failure
+     message*, which is worse than saying nothing. Replaced with what the
+     assertion actually checks: the wheel-link frame convention shared with
+     upstream, and the composition PR6/PR7 read the kinematics off (D29).
+
+   No geometry, property value or D29 text changed; the suite re-ran green
+   (754 tests, 0 failures) with the baseline unchanged at 12 (`+0`), confirming
+   the assert-message edit still lints and still fires.
 2. **Follow-up candidates** (issue comments are yours to post, per CLAUDE.md):
    - Nothing in the workspace validates `package.xml` as XML, and colcon's
      failure mode for an invalid one is a silent build-type downgrade with a

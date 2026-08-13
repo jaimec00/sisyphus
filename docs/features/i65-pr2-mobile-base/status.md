@@ -114,9 +114,21 @@ geometrically true — no 180° flip, despite `[240, 0, 120]` reading like one.
 
 Axis sign, also checked by execution: with the joint `axis` set to the outward
 radial `r = (cos phi, sin phi, 0)`, a **positive** joint velocity drives the
-contact point along `+d`, i.e. the same sign convention the driver's
-`wheel_linear_speeds` uses. `np.cross(r, [0,0,-wheel_radius]) == d*wheel_radius`
-for all three wheels. PR6 therefore needs no sign fix-up.
+wheel's contact-patch *material* along `+d`
+(`np.cross(r, [0,0,-wheel_radius]) == d*wheel_radius` for all three wheels).
+
+> **Corrected during Phase 5** (implementer escalation, ratified by the manager
+> after re-deriving it). This paragraph originally continued "…i.e. the same
+> sign convention the driver's `wheel_linear_speeds` uses. PR6 therefore needs
+> no sign fix-up." That conflates the contact patch with the body: under the
+> no-slip constraint `v_axle = -theta_dot * wheel_radius * d`, so a positive
+> joint velocity moves the **body** along `-d`, while the driver's positive
+> wheel speed means the body along `+d`. Whether a physical Feetech motor's
+> positive direction matches the URDF axis is a **calibration** fact, not a
+> geometric one, and upstream LeKiwi carries the same relation — so the model
+> is unchanged, but PR6/PR7 must confirm the sign in sim rather than assume it.
+> The precise statement is what landed in **D29**; this note exists so the
+> ephemeral doc does not contradict the durable one (the #55 lesson).
 
 ## Phase 4 — manager rulings (binding, but not assumed correct)
 

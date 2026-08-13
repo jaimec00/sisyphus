@@ -15,9 +15,12 @@
   - `wheel_radius = 0.05` and `base_radius = 0.125`: huggingface/lerobot,
     `src/lerobot/robots/lekiwi/lekiwi.py` (`_body_to_wheel_raw` /
     `_wheel_raw_to_body` defaults), Apache-2.0.
-  - Mount convention (60 / 180 / 300 deg) and axis sign: derived from that same
-    driver and checked numerically against its kinematic matrix (see the
-    comment on the angle properties below, and D29).
+  - Mount convention (60 / 180 / 300 deg): derived from that same driver and
+    checked numerically against its kinematic matrix, then independently
+    against upstream's own wheel axes resolved through its CAD link chain. The
+    spin-axis *convention* comes from the same place; its *sign* relative to
+    the driver's motor commands is spelled out on the macro below (see also
+    the comment on the angle properties, and D29).
   - Chassis-as-primitive: Vector-Wangel/XLeRobot models the IKEA Raskog cart
     frame this base carries (D26) with box collisions and has no wheel joints
     at all, so there is no wheel geometry there to crib either. MIT.
@@ -140,9 +143,15 @@
     pointing radially outward: the conventional wheel-link frame, and what
     PR7's MJCF and any wheel controller expect. The axis is therefore written
     as `0 0 1` in that rotated frame rather than as a radial vector with zero
-    rpy: it is the *composition* that PR6 depends on. With it, a positive joint
-    velocity drives the contact point along +d = z x r, the same sign the
-    driver's `wheel_linear_speeds` uses.
+    rpy: it is the *composition* that PR6 depends on.
+
+    Sign, stated precisely because it is easy to over-claim: a positive joint
+    velocity moves the wheel's contact-patch *material* along +d = z x r,
+    which under the rolling constraint moves the *body* along -d, whereas the
+    driver's positive `wheel_linear_speeds` means the body moves along +d.
+    Whether a physical Feetech motor's positive direction matches this axis is
+    a calibration fact to confirm in sim, not a geometric one; upstream LeKiwi
+    carries the same relation. See D29 rather than re-deriving it here.
   -->
   <xacro:macro name="omni_wheel" params="name angle">
     <joint name="${name}" type="continuous">

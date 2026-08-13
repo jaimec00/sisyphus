@@ -461,8 +461,9 @@ def test_wheel_mounts_are_120_degrees_apart(parsed_model):
                    for i in range(3)), (
             "%s's spin axis, rotated into base_link coordinates, is %s; it must "
             'be the outward radial direction %s at its own mount angle '
-            '(%.4f deg), which is what makes a positive joint velocity roll '
-            'the wheel the way the driver expects' % (
+            '(%.4f deg) -- the wheel-link frame convention this model shares '
+            'with upstream LeKiwi, and the composition PR6/PR7 read the wheel '
+            'kinematics off (D29)' % (
                 name, [round(v, 6) for v in axis_in_base],
                 [round(v, 6) for v in expected], angle))
 
