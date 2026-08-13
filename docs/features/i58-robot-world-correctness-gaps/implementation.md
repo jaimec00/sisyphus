@@ -9,6 +9,7 @@ Owned paths: `src/robot_world/` only (R10). Nothing outside it was edited.
 | `e01d68c` | criterion 1 — `held_by` uniqueness, both layers, with tests |
 | `a777eef` | criterion 2 — `_seed` genuinely holds the seed, with tests |
 | `6a11e15` | follow-up hardening of the store-layer check (see "Surprises") |
+| `f34e998` | round-1 review fixes N1–N3 (see "Round 1 review fixes") |
 
 Each commit is green on its own (`src/robot_world/test` was run from the
 package directory after each).
@@ -100,11 +101,12 @@ unchanged in behaviour: with no `seed`, `_seed` is `document`, as before.
 exist.
 
 **The disk re-read stays** (R8). `FileWorldStore.seed_document()` still calls
-`read_seed_document(self._seed_path)`; its docstring now says why (it is the
-D23 mechanism — replacing the seed *file* must change what `reset()` restores,
-which `test_reset_restores_from_the_seed_file_not_from_memory` pins) and what
-the honest `_seed` buys: collapsing the override would no longer restore a
-drifted live scene as ground truth, it would merely stop following the file.
+`read_seed_document(self._seed_path)`; its docstring says why — it is the D23
+mechanism, replacing the seed *file* must change what `reset()` restores, which
+`test_reset_restores_from_the_seed_file_not_from_memory` pins — and notes that
+`__init__` obtains the seed through it, before `_seed` exists. (The docstring
+originally also claimed a collapsed override would "quietly stop following the
+file"; that was wrong and was corrected in round 1 — see N1 below.)
 
 ## Tests (R9)
 
@@ -183,9 +185,71 @@ path? `_grasp` refuses an already-held object and resolves a *free* gripper via
 book-keeping and store `held_by` are set and cleared together, and `_power_on`
 clears both, so they cannot diverge. Confirmed by both suites staying green.
 
+## Round 1 review fixes (`f34e998`)
+
+No BLOCKs were found. Three of the six NOTEs were scoped in by the manager; the
+other three (N4, N5, N6, plus the `_grasp` ordering) are out of scope here and
+are being routed to the issue.
+
+**N1 — the `seed_document()` docstring predicted a failure that cannot happen.**
+It claimed collapsing the override into `return self._seed` would "quietly stop
+following the file". False: `FileWorldStore.__init__` calls the *virtual*
+`self.seed_document()` (store.py:348) **before** `super().__init__` assigns
+`_seed` (store.py:354), so the naive collapse dies at construction. Probe P1,
+run:
+
+```
+AttributeError: 'FileWorldStore' object has no attribute '_seed'
+```
+
+The docstring now gives the real reason the re-read stays — the seed is a
+*file*, and replacing it must change what `reset()` restores (an operator
+re-seeding a running robot), which is what the pre-existing
+`test_reset_restores_from_the_seed_file_not_from_memory` pins — and notes that
+`__init__` consumes `seed_document()` before `_seed` exists, so this is not an
+attribute read waiting to happen. Docstring only; no behaviour changed.
+
+For the record, the two failure modes are pinned from opposite directions:
+dropping `seed=` is caught by the **new** tests; the *plausible* refactor
+(`__init__` re-reads directly, `seed_document()` returns `self._seed`) is caught
+by the **pre-existing** test, and passes the new one — precisely because R7 made
+`_seed` honest.
+
+**N2 — criterion 2 hung on a single assertion.** `WorldStore.seed_document(second)
+== document` was the only assertion in the suite that failed when `seed=` was
+dropped, so deleting one line un-pinned the criterion. Now
+`test_mutating_the_working_scene_never_changes_what_reset_restores` also reopens
+a store over the drifted live file and asserts
+`WorldStore.seed_document(reopened) == document`, and the headline test asserts
+`WorldStore.seed_document(second) != drifted` alongside the equality so it
+states both halves of the claim. Re-ran probe P2: dropping `seed=` now fails
+**two** independent tests (was one).
+
+**N3 — the ordering assertion could not discriminate.** The input's
+first-appearance order was also `LEFT, RIGHT`, so a first-appearance
+implementation would have passed. Input flipped to `RIGHT, RIGHT, LEFT, LEFT`,
+expectation unchanged (`[Side.LEFT, Side.RIGHT]`); passes, so the assertion now
+genuinely pins the declaration-order guarantee the two-side message depends on.
+
+### Red-team probes, run
+
+| probe | result |
+| --- | --- |
+| P1 (N1's `AttributeError`) | **confirms N1** — `AttributeError ... '_seed'` at construction; applying the collapse for real fails **21 of 64** package tests, loudly and immediately |
+| P2 (N2's single-assertion thinness) | after the fix, dropping `seed=` fails 2 tests, not 1 |
+| P3 (N3's ordering) | passes with the reversed input — free strengthening, no bug |
+| P4 (N4's redundant write) | **confirms N4** — `Side.LEFT` then `'left'`: writes 1 → 2. Out of scope; for the issue |
+| P5 (`StopIteration` unreachability) | `ok` — 6561 `set_held_by` sequences over 3 objects, nothing escaped, every resulting scene re-validated through Layer A |
+
+Also established while there: **`deepcopy(WorldDocument)` raises `TypeError:
+cannot pickle 'mappingproxy' object`.** So the deep copy the issue proposed is
+not merely unnecessary (R7) — it is impossible without first unwrapping the
+proxy, which would mean building a *less* immutable document to copy it.
+
 ## Escalations
 
-None. No ruling looked wrong in implementation.
+None. No ruling looked wrong at implementation time; R8's stated rationale was
+corrected after the review (see N1 above and the correction in `status.md`).
 
 ## Surprises / notes for the manager
 
@@ -213,4 +277,12 @@ None. No ruling looked wrong in implementation.
   consumers (the query service), not for internal wiring — a reviewer who
   considers that speculative can drop the `__init__` line without touching
   anything else.
-* **No surviving red-team NOTEs yet** (no red-team pass at time of writing).
+* **Surviving red-team NOTEs** (not fixed here, for the manager to route to the
+  issue): **N4** — `set_held_by(id, 'left')` after `set_held_by(id, Side.LEFT)`
+  bypasses the `item.held_by == side` short circuit (`Side` has no `str` mixin)
+  and costs a redundant whole-document write; pre-existing, confirmed by probe
+  P4. **N5** — D23 gains a semantic startup-failure class the decision log does
+  not record (`decisions.md` is not an owned path). **N6** — `MockBackend.store`'s
+  docstring still says a desync shows up on the next `get_observation()`; it now
+  raises at the call (`robot_backends`, out of scope per R10), as does the
+  `_grasp` mutate-then-raise ordering it flagged.

@@ -101,6 +101,27 @@ behaviour. R7 makes `_seed` correct as defense-in-depth so that a *future*
 maintainer who does collapse the override gets correct behaviour anyway — it
 does not replace the re-read. Keep both; say why in the override's docstring.
 
+> **Corrected after the round-1 review (N1).** The last claim was wrong, and the
+> shipped docstring inherited it. `FileWorldStore.__init__` calls the *virtual*
+> `self.seed_document()` **before** `super().__init__` assigns `_seed`, so the
+> naive collapse into `return self._seed` does not "get correct behaviour
+> anyway" and does not silently drift either — it dies at construction with
+> `AttributeError: 'FileWorldStore' object has no attribute '_seed'` (probe P1,
+> run: confirmed; applying the collapse for real fails 21 of the package's 64
+> tests — every `FileWorldStore` construction, plus `test_no_ros_runtime.py`).
+> What is actually pinned,
+> from two directions:
+> * dropping `seed=` from `super().__init__(document, seed=seed)` → the **new**
+>   tests fail (two of them, after round-1 fix N2);
+> * the *plausible* refactor (re-read in `__init__`, `seed_document()` returns
+>   `self._seed`) → the **pre-existing**
+>   `test_reset_restores_from_the_seed_file_not_from_memory` fails, because it
+>   replaces the seed *file* after construction and demands `reset()` follow it.
+>
+> So the re-read must stay for the operator-re-seeds-a-running-robot reason,
+> not for a defense-in-depth-against-collapse reason. The docstring now says
+> that. R8's instruction (keep the re-read, do not collapse it) stands.
+
 ### Tests
 
 **R9 — Minimum new coverage** (match existing conventions: sentence-shaped
@@ -172,3 +193,21 @@ conversion as inferred-but-not-traced; trace it.
   `world_to_document`/`world_from_document` traced: neither ever sets `held_by`,
   so no conflict can be synthesized — nothing to escalate.
 - No escalations. Surviving NOTEs: none yet (no red-team pass).
+- Round 1 review: no BLOCKs, six NOTEs (`red_team.md`). Implementer fixed the
+  three the manager scoped in — N1 (docstring told a failure mode that cannot
+  happen), N2 (criterion 2 hung on one assertion), N3 (ordering assertion could
+  not discriminate) — in `f34e998`. R8 above corrected in place.
+- Probes run for the record: **P1** confirms N1 (`AttributeError` at
+  construction, not a quiet drift); **P2** now fails **two** tests instead of one
+  after the N2 fix; **P3** passes with the reversed input (free strengthening);
+  **P4** confirms N4 (`Side.LEFT` then `'left'` → writes 1 → 2, a redundant disk
+  write; out of scope, routed to the issue); **P5** exhausts 6561 `set_held_by`
+  sequences over 3 objects with no escaping `StopIteration`/`ValueError`.
+- Also established: `deepcopy(WorldDocument)` raises `TypeError: cannot pickle
+  'mappingproxy' object` — the issue's proposed deep copy is not merely
+  unnecessary (R7), it is impossible without unwrapping the proxy.
+- Surviving NOTEs for the manager to route outward: **N4** (string `side`
+  bypasses the no-op short circuit → redundant write; pre-existing), **N5** (D23
+  amendment, `decisions.md` not an owned path), **N6** (`MockBackend.store`
+  docstring) and the `_grasp` mutate-then-raise ordering (both `robot_backends`,
+  out of scope per R10). Not touched by the implementer.
