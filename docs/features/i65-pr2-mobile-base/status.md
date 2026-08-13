@@ -11,8 +11,8 @@ Worktree base: `origin/main` @ 3d07063
 | 2. Provision + probe deps | done |
 | 3. Context explorer | done — `context.md`, 5 open questions |
 | 4. Manager rulings | done — R1–R14 below |
-| 5. Implementer | running |
-| 6. Red-team | pending |
+| 5. Implementer | done — see `implementation.md`; ratchet 7 -> 12, full suite green |
+| 6. Red-team | ready to start |
 | 7. Fix rounds (max 2) | pending |
 | 8. Test-runner | pending |
 | 9. PR + ready | pending |
