@@ -15,9 +15,10 @@ survives the Mock -> MuJoCo swap.
 
 Two flavours, one surface:
 
-* :class:`WorldStore` -- in-memory.  ``reset()`` returns to the document it was
-  built from.  Never *writes* a file; constructed with no document it reads the
-  shipped seed once, and after that touches nothing.
+* :class:`WorldStore` -- in-memory.  ``reset()`` returns to its seed, which is
+  the document it was built from unless one is passed separately.  Never
+  *writes* a file; constructed with no document it reads the shipped seed once,
+  and after that touches nothing.
 * :class:`FileWorldStore` -- backed by a live-state JSON file, seeded from a
   read-only seed file (the shipped one by default).  Every mutation is flushed
   to disk atomically, so the world survives the process.
@@ -45,7 +46,7 @@ from types import MappingProxyType
 from typing import Iterator, Mapping
 
 from robot_skills import Pose, Side
-from robot_world.document import WorldDocument, WorldObject
+from robot_world.document import duplicate_hold_sides, WorldDocument, WorldObject
 from robot_world.storage import (
     read_document,
     read_seed_document,
@@ -67,15 +68,33 @@ class WorldStore:
         store.reset()                              # back to the seed scene
     """
 
-    def __init__(self, document: WorldDocument | None = None) -> None:
-        """Create a store holding ``document`` (the shipped seed by default)."""
+    def __init__(
+        self,
+        document: WorldDocument | None = None,
+        *,
+        seed: WorldDocument | None = None,
+    ) -> None:
+        """Create a store holding ``document`` (the shipped seed by default).
+
+        ``seed`` is the scene :meth:`reset` restores, and defaults to
+        ``document`` -- the whole truth for an in-memory store, whose starting
+        scene *is* its ground truth.  A store that comes up on a scene which has
+        already drifted from ground truth (a :class:`FileWorldStore` reopening a
+        live file it wrote days ago) passes the two separately, so ``_seed`` is
+        never quietly "whatever we happened to load".
+        """
         if document is not None and not isinstance(document, WorldDocument):
             raise TypeError(
                 f'document must be a WorldDocument, got {type(document).__name__}')
-        self._seed = document if document is not None else read_seed_document()
+        if seed is not None and not isinstance(seed, WorldDocument):
+            raise TypeError(
+                f'seed must be a WorldDocument, got {type(seed).__name__}')
+        if document is None:
+            document = read_seed_document()
+        self._seed = seed if seed is not None else document
         self._batch_depth = 0
         self._pending = False
-        self._load(self._seed)
+        self._load(document)
 
     # -- queries -----------------------------------------------------------
 
@@ -160,17 +179,25 @@ class WorldStore:
         The store records the fact; deciding it -- and keeping it agreeing with
         the gripper's own book-keeping, which ``Observation`` enforces -- is the
         backend's job, because "my hand is full" is a statement about the robot.
+
+        A gripper that already holds something is refused, immediately and
+        including inside a :meth:`batch`, because a direct reader of the store
+        sees the in-memory scene rather than the committed file.  Moving a hold
+        is therefore two calls, in the order the physical robot must also use:
+        clear the old object (``set_held_by(old, None)``), then set the new one.
         """
         item = self._require(object_id)
         if item.held_by == side:
             return
-        self._replace(WorldObject(
+        updated = WorldObject(
             object_id=item.object_id,
             label=item.label,
             pose=item.pose,
             graspable=item.graspable,
             held_by=side,
-        ))
+        )
+        self._refuse_hold_conflict(updated)
+        self._replace(updated)
 
     def add_object(self, item: WorldObject) -> None:
         """Register a new object, refusing an id that is already taken."""
@@ -180,6 +207,7 @@ class WorldStore:
         if item.object_id in self._objects:
             raise WorldStoreError(
                 f'the world store already holds an object {item.object_id!r}')
+        self._refuse_hold_conflict(item)
         self._objects[item.object_id] = item
         self._touch()
 
@@ -235,6 +263,30 @@ class WorldStore:
                 f'no object {object_id!r} in the world store; registered: '
                 f'{", ".join(sorted(self._objects)) or "(none)"}')
         return item
+
+    def _refuse_hold_conflict(self, item: WorldObject) -> None:
+        """Refuse ``item`` if it would leave one gripper holding two objects.
+
+        Called *before* the registry changes, so a refused mutation leaves the
+        scene byte-identical -- a store that raised half way would be worse than
+        one that never tried.  The rule itself lives in
+        :func:`~robot_world.document.duplicate_hold_sides`, the same scan
+        :class:`~robot_world.WorldDocument` validates whole scenes with; only
+        the refusal wording is the store's own.
+        """
+        if item.held_by is None:
+            return
+        others = [
+            entry for entry in self._objects.values()
+            if entry.object_id != item.object_id
+        ]
+        if item.held_by not in duplicate_hold_sides((*others, item)):
+            return
+        holder = next(entry for entry in others if entry.held_by is item.held_by)
+        raise WorldStoreError(
+            f'cannot record {item.object_id!r} as held by the {item.held_by.value} '
+            f'gripper: it already holds {holder.object_id!r}; release that first '
+            f'(set_held_by({holder.object_id!r}, None))')
 
     def _replace(self, item: WorldObject) -> None:
         """Swap one registry entry for an updated copy, keeping its position."""
@@ -300,7 +352,7 @@ class FileWorldStore(WorldStore):
         else:
             document = seed
             write_document(self._live_path, document)
-        super().__init__(document)
+        super().__init__(document, seed=seed)
 
     @property
     def live_path(self) -> Path:
@@ -313,7 +365,15 @@ class FileWorldStore(WorldStore):
         return self._seed_path
 
     def seed_document(self) -> WorldDocument:
-        """Re-read the seed from disk, so ``reset()`` restores ground truth."""
+        """Re-read the seed from disk, so ``reset()`` restores ground truth.
+
+        The re-read is the D23 mechanism, not an optimization to be removed:
+        the seed is a *file*, so replacing that file must change what
+        ``reset()`` restores -- which is how an operator re-seeds a running
+        robot, and what ``test_reset_restores_from_the_seed_file_not_from_memory``
+        pins.  It is also how ``__init__`` obtains the seed, before ``_seed``
+        exists, so this is not an attribute read waiting to happen.
+        """
         return read_seed_document(self._seed_path)
 
     def _refuse_seeding_from_the_live_file(self) -> None:

@@ -25,7 +25,11 @@ What is deliberately **not** in here:
 
 ``held_by`` **is** here, because "the mug is in the left gripper" is a fact
 about the mug.  A backend coming up against an existing live file starts with
-empty grippers and therefore clears it (see :mod:`robot_world.store`).
+empty grippers and therefore clears it (see :mod:`robot_world.store`).  A
+gripper has one hand, so at most one object may name each side:
+:func:`duplicate_hold_sides` is that rule, enforced here for a whole scene and
+again on every store mutation, so nobody reading the world -- a file, a
+document or a live store -- can find one gripper holding two things.
 
 Parsing is strict in the same way the skill API is (see
 :mod:`robot_skills.serialization`, whose helpers are reused verbatim): unknown
@@ -44,7 +48,7 @@ the current version and a *different* stamp is a loud error.
 
 from dataclasses import dataclass
 from types import MappingProxyType
-from typing import Any, Mapping, Self
+from typing import Any, Iterable, Mapping, Self
 
 from robot_skills import Pose, SerializationError, Side
 from robot_skills.serialization import (
@@ -64,6 +68,7 @@ from robot_skills.validation import as_finite_float, as_identifier, as_optional_
 
 __all__ = [
     'check_world_schema_version',
+    'duplicate_hold_sides',
     'WORLD_SCHEMA_VERSION',
     'WORLD_SCHEMA_VERSION_KEY',
     'WorldDocument',
@@ -166,6 +171,23 @@ class WorldObject(JsonSerializable):
             )
 
 
+def duplicate_hold_sides(objects: Iterable[WorldObject]) -> list[Side]:
+    """Return every gripper side claimed by more than one of ``objects``.
+
+    The one definition of "``held_by`` is unique": a gripper has one hand, so at
+    most one object may name each :class:`~robot_skills.Side` at a time (any
+    number may be held by nobody).  Both places that enforce it --
+    :meth:`WorldDocument.__post_init__` for whole scenes, and
+    :class:`~robot_world.WorldStore`'s mutators for a live registry -- call this
+    rather than re-deriving it, because two copies of an invariant drift.
+
+    The result is in :class:`~robot_skills.Side` declaration order, so a message
+    built from it is stable; it is empty for a scene that holds the invariant.
+    """
+    sides = [item.held_by for item in objects if item.held_by is not None]
+    return [side for side in Side if sides.count(side) > 1]
+
+
 @dataclass(frozen=True)
 class WorldDocument(JsonSerializable):
     """A whole scene: the map, the object registry, and the start parameters.
@@ -205,6 +227,11 @@ class WorldDocument(JsonSerializable):
         if duplicates:
             raise ValueError(
                 f'WorldDocument.objects has duplicate object_id(s): {", ".join(duplicates)}')
+        held_twice = duplicate_hold_sides(objects)
+        if held_twice:
+            raise ValueError(
+                'WorldDocument.objects has more than one object held by the same '
+                f'gripper: {", ".join(side.value for side in held_twice)}')
         object.__setattr__(self, 'objects', objects)
 
         start = as_identifier(self.start_location, name='WorldDocument.start_location')

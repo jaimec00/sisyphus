@@ -81,6 +81,68 @@ def test_reset_restores_from_the_seed_file_not_from_memory(tmp_path, seed_file, 
     assert read_document(live).find_object('cube_1').pose == Pose.from_xyz(0.4, 0.4, 0.4)
 
 
+def test_a_reopened_store_resets_to_the_seed_not_to_the_scene_it_opened(
+    tmp_path, seed_file, document,
+):
+    """A store that comes up on a drifted world still knows its ground truth.
+
+    The second store is constructed from the *live* file, which by then differs
+    from the seed in every way a chore can change it.  Its seed is still the
+    seed -- including the inherited ``_seed`` attribute, read here through the
+    un-overridden base method: ``FileWorldStore`` hands the true seed to
+    ``super().__init__`` rather than letting ``_seed`` default to the live
+    document it just loaded.  Losing that ``seed=`` is what this test catches;
+    the seed file being re-read on every ``reset()`` is pinned separately, by
+    ``test_reset_restores_from_the_seed_file_not_from_memory``.
+    """
+    live = tmp_path / 'world.json'
+    first = FileWorldStore(live, seed_path=seed_file)
+    first.update_object_pose('cube_1', Pose.from_xyz(9.0, 9.0, 9.0))
+    first.set_held_by('cube_1', Side.LEFT)
+    first.remove_object('anvil_1')
+
+    second = FileWorldStore(live, seed_path=seed_file)
+    drifted = second.document()
+    assert drifted != document
+
+    assert second.seed_document() == document
+    assert WorldStore.seed_document(second) == document
+
+    second.reset()
+
+    assert second.document() == document
+    assert second.document() != drifted
+    assert read_document(live) == document
+
+
+def test_mutating_the_working_scene_never_changes_what_reset_restores(
+    tmp_path, seed_file, document,
+):
+    """The seed is untouchable through the store: only the live file moves."""
+    live = tmp_path / 'world.json'
+    store = FileWorldStore(live, seed_path=seed_file)
+
+    store.update_object_pose('cube_1', Pose.from_xyz(9.0, 9.0, 9.0))
+    store.set_held_by('cube_1', Side.RIGHT)
+    store.add_object(WorldObject('tray_1', 'tray', Pose.from_xyz(1.0, 0.0, 0.7)))
+    store.remove_object('anvil_1')
+
+    assert store.seed_document() == document
+    assert WorldStore.seed_document(store) == document
+    assert read_document(seed_file) == document
+
+    # ...and a store opened on the drifted live file is seeded from the seed
+    # too, not from what it happened to load (pinned here as well as in
+    # ``test_a_reopened_store_resets_to_the_seed_not_to_the_scene_it_opened``,
+    # so losing that guarantee takes editing two tests, not deleting one line).
+    reopened = FileWorldStore(live, seed_path=seed_file)
+    assert reopened.document() != document
+    assert WorldStore.seed_document(reopened) == document
+
+    store.reset()
+    assert store.document() == document
+
+
 def test_reset_rewrites_the_live_file(tmp_path, seed_file, document):
     """The restored scene reaches disk, so the next process sees the reset too."""
     live = tmp_path / 'world.json'
@@ -118,6 +180,28 @@ def test_a_schema_violating_live_file_is_refused(tmp_path, seed_file, document):
     live.write_text('[]', encoding='utf-8')
     with pytest.raises(WorldStoreError, match='expected a JSON object'):
         FileWorldStore(live, seed_path=seed_file)
+
+
+def test_a_live_file_holding_one_object_in_two_grippers_is_refused(
+    tmp_path, seed_file, document,
+):
+    """An impossible scene on disk is refused at load, like any other corruption.
+
+    Recovering it is a hand repair (or deleting the file), not a silent
+    rewrite: overwriting an inconsistent world with the seed would destroy the
+    evidence of whatever produced it.
+    """
+    live = tmp_path / 'world.json'
+    data = document.to_dict()
+    data['objects'][0]['held_by'] = 'right'
+    data['objects'][1]['held_by'] = 'right'
+    text = json.dumps(data)
+    live.write_text(text, encoding='utf-8')
+
+    with pytest.raises(WorldStoreError, match='held by the same gripper: right'):
+        FileWorldStore(live, seed_path=seed_file)
+
+    assert live.read_text(encoding='utf-8') == text
 
 
 def test_a_missing_or_corrupt_seed_is_a_hard_error(tmp_path):
