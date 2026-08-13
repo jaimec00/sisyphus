@@ -46,6 +46,9 @@ before any non-trivial work.
 context (sonnet) → manager rules on open questions → implement + tests (opus) →
 red-team (opus, read-only) → fix (≤2 rounds) → test-runner (sonnet) →
 repeat until green → PR.
+The red-team is **read-only to the worktree, not shell-less**: it has `Bash` to
+*verify* (run tests, reproduce a scenario) and labels each finding VERIFIED or
+UNVERIFIED, but never edits source or tests and never leaves the tree dirty.
 Full narrative in `DEVELOPMENT.md`; orchestration in `.claude/commands/run-feature.md`.
 
 ## Red-team severity rubric

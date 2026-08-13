@@ -12,7 +12,8 @@ canonical**; this document defers to it.
 - **Worktree manager (laptop, Claude Code)** — engineering manager for one
   worktree. Runs the loop below, dispatching worker subagents. Reports "ready".
 - **Worker subagents (laptop)** — `context-explorer` (sonnet),
-  `implementer` (opus), `red-team` (opus, read-only), `test-runner` (sonnet).
+  `implementer` (opus), `red-team` (opus, verifies by running; never edits),
+  `test-runner` (sonnet).
 - **Operational agent (laptop, Claude Code)** — one-shot agent for
   bypass-the-loop operational/meta changes (docs, `.claude`, scripts). Sisyphus
   hands it a change prompt; it authors the change and opens the PR, stopping at
@@ -80,8 +81,11 @@ pixi run openclaw doctor               # what the schema cannot catch: globs,
    implementer; a genuine design fork escalates to Sisyphus instead.
 5. **Implement** — `implementer` builds the feature + tests, commits in small
    increments, writes `implementation.md`.
-6. **Red-team** — `red-team` (read-only) reviews source + tests vs. acceptance
-   criteria → `red_team.md` (severity rubric).
+6. **Red-team** — `red-team` reviews source + tests vs. acceptance criteria →
+   `red_team.md` (severity rubric). It has a shell **for verification only** —
+   it runs the code to confirm or refute its own claims (findings are labeled
+   VERIFIED / UNVERIFIED) but never edits source or tests, and perturbation
+   experiments happen on a copy outside the worktree.
 7. **Fix** — `implementer` addresses BLOCK items (≤2 rounds; surviving NOTES →
    follow-up **comment on the issue**; Sisyphus files them).
 8. **Test** — `test-runner` runs the suite, reporting pass/fail + log path only.
