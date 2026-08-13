@@ -1,7 +1,7 @@
 {
-  "comment": "Per-package non-linter test counts: the floor scripts/check_test_integrity.py ratchets against. Regenerate with `python scripts/check_test_integrity.py --update-baseline`; a drop below these numbers fails `pixi run test`.",
+  "comment": "Per-package counts of the tests that actually ran and are not ament linters: the floor scripts/check_test_integrity.py ratchets against. This file is maintained by `pixi run test`, which raises a floor whenever a package produces more -- commit it with the change that grew the suite. Producing FEWER than these numbers (tests deleted, skipped, or no longer collected) fails `pixi run test` unless the run is told to allow it with ALLOW_TEST_DECREASE=1 or --allow-decrease.",
   "packages": {
-    "_workspace_tooling": 126,
+    "_workspace_tooling": 163,
     "robot_backends": 74,
     "robot_brain": 50,
     "robot_bringup": 0,
@@ -10,6 +10,6 @@
     "robot_perception": 0,
     "robot_safety": 176,
     "robot_skills": 106,
-    "robot_world": 50
+    "robot_world": 61
   }
 }
