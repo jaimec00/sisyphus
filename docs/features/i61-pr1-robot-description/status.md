@@ -11,10 +11,10 @@ Worktree base: `origin/main` @ 5fb6f21
 | 2. Provision + probe deps | done |
 | 3. Context explorer | done — `context.md`, 5 open questions |
 | 4. Manager rulings | done — R1–R14 below |
-| 5. Implementer | running |
-| 6. Red-team | pending |
-| 7. Fix rounds (max 2) | pending |
-| 8. Test-runner | pending |
+| 5. Implementer | done — 7 commits, tree clean, no ruling deviations |
+| 6. Red-team | done — R1: 3 BLOCK / 6 NOTE; R2 (scoped to fix diff): 1 BLOCK / 5 NOTE |
+| 7. Fix rounds (max 2) | done — 2 of 2 used; all 4 BLOCKs closed, verified both directions |
+| 8. Test-runner | running |
 | 9. PR + ready | pending |
 
 Blockers: none.
@@ -128,8 +128,18 @@ inside the suite. If it nonetheless proves unreliable, **escalate to the manager
   and semantic errors, so it is a real gate.
 - **link set** — `urdf_parser_py.urdf.URDF.from_xml_string(...)`, assert
   `{l.name for l in robot.links} == {'base_link'}`. A real parse, not an XPath
-  scrape. This assert — not `check_urdf` — is the load-bearing one: it catches a
-  degenerate zero-link expansion regardless of how `check_urdf` treats it.
+  scrape.
+
+  **Corrected after round-1 red-team (was wrong as originally written).** This
+  ruling claimed the link-set assert was load-bearing because it catches a
+  degenerate zero-link expansion "regardless of how `check_urdf` treats it".
+  That is **false**: a zero-link expansion fails `check_urdf` too (VERIFIED).
+  The set assert's genuine unique catch is a link that is **renamed or silently
+  dropped while the model stays valid** (`base_link` → `base`: 1 failed, 4
+  passed) — which is the likelier PR2–PR7 regression anyway, since every
+  consumer names links. The three-tool design stands; my stated reason for it
+  did not. Same false sentence was corrected in `test_description.py`'s
+  docstring and in D27 (red-team N1).
 
 Write these as **separate test functions** (plus one asserting both
 `share/robot_description/urdf` and `.../meshes` exist), so PRs 2–7 get a precise
@@ -195,3 +205,37 @@ lines are already done — do not re-run `pixi add`.
 Not a blocker and **not** this PR's job to fix. Routed as a **follow-up comment on
 issue #61** at ready time, per CLAUDE.md's feedback routing. Handled by the
 manager; the implementer ignores it.
+
+## Phases 6–7 — red-team rounds and outcomes
+
+**Round 1 (full implementation): 3 BLOCK, all VERIFIED by execution.**
+- **B1** — the gate was blind to `<mesh filename=...>`: a nonexistent `.stl`
+  passed all five tests. `meshes/` is a directory *this* PR ships.
+- **B2** — nothing asserted the top level actually *includes* the
+  subassemblies; deleting all three `<xacro:include>` lines still passed. The
+  issue's own acceptance criterion was untested, and
+  `test_share_layout_is_installed` was false comfort (it kept asserting
+  `arm.xacro` was installed after the arm had left the robot).
+- **B3** — `check_urdf` was present only transitively via the unpinned
+  `ros-jazzy-desktop = "*"`; the pinned `urdfdom-py` does not depend on
+  `urdfdom`.
+- **N1 upgraded by the manager to must-fix**: D27 asserted as fact a claim the
+  red-team disproved. `decisions.md` is permanent and least-reviewed — the #55
+  lesson. Corrected in D27, the test docstring, and ruling R4 above.
+
+**Round 2 (scoped to the fix diff): 1 BLOCK.** The N+1 heuristic paid:
+- **B4** — B1's fix hardcoded `root.iter('mesh')`, so `<texture filename=...>`
+  inside `<material>` still passed (`7 passed`, vs `1 failed` for the identical
+  `<mesh>` shape). The fix had *moved* the blind spot, not closed it. Refixed as
+  a class: module-level `FILE_BEARING_TAGS`, and the test/helper renamed off
+  `mesh` so the name stops lying and the next tag has an obvious home.
+
+Deliberately **not** fixed, routed as follow-ups on issue #61: N2 (`@pytest.mark.skip`
+does not trip the ratchet — pre-existing in `check_test_integrity.py`, outside
+owned paths), N5 (stderr ignored at rc 0), N8 (nested includes inside
+`base.xacro` — backstopped by the link-set assert from PR2), N9 (duplicate
+top-level include), `<mujoco><compiler meshdir=...>` (PR7 owns it; the
+supporting claim is UNVERIFIED and `mujoco` is not in the env), and
+**`robot_world`'s ratchet floor being 11 below its live count on `main`** —
+independently confirmed by both the implementer and the red-team as real and
+pre-existing, untouched by this branch.
