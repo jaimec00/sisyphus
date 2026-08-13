@@ -1,0 +1,10 @@
+<?xml version="1.0"?>
+<!--
+  Extendable column: one linear-rail STS3215 lift, modeled as a single
+  prismatic joint (D26).
+
+  Deliberately empty: PR1 ships the package and the expand/parse gate only.
+  The column links and the prismatic joint land in PR3.
+-->
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro">
+</robot>

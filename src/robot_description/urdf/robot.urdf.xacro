@@ -1,0 +1,28 @@
+<?xml version="1.0"?>
+<!--
+  Sisyphus: the top-level robot description.
+
+  This file is the single entry point every consumer expands (launch files,
+  the MuJoCo conversion, the test gate in test/test_description.py); nothing
+  should ever include base/column/arm directly. It owns exactly two things:
+  the root frame, and the order the subassemblies are pulled in.
+
+  `base_link` is declared *here*, not in base.xacro: it is the robot's root
+  frame, so it belongs to the assembly rather than to any one subassembly:
+  the base geometry attaches *to* it via a joint (PR2), as do the column
+  (PR3) and the arms (PR4).
+
+  Includes are deliberately *relative* (no `$(find robot_description)`), so a
+  source checkout and the installed share/ tree expand identically, which is
+  what lets the gate expand the installed copy and mean it.
+-->
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro" name="sisyphus">
+
+  <xacro:include filename="base.xacro"/>
+  <xacro:include filename="column.xacro"/>
+  <xacro:include filename="arm.xacro"/>
+
+  <!-- Root frame of the whole robot. Everything else hangs off this. -->
+  <link name="base_link"/>
+
+</robot>
