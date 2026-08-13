@@ -14,10 +14,18 @@ setup(
     # `$(find robot_description)` in a launch file) -- unlike robot_world's
     # seed, this data is read by *other* packages, not by code in this one.
     #
-    # Globbed, never hand-listed: a new .xacro in PR2-PR7 must be installed
+    # Globbed, never hand-listed: a new *file* in PR2-PR7 must be installed
     # without anyone remembering to register it here. A file that exists in
     # the source tree but not the install tree is exactly the break the
     # expand/parse gate resolves through the share dir to catch.
+    #
+    # Known limit: these globs are flat, and `data_files` cannot copy a
+    # directory, so the first `meshes/<subdir>/x.stl` fails the *build* with
+    # "can't copy ...: doesn't exist or not a regular file" -- loud and
+    # immediate, but the message does not name the cause. Deliberately not
+    # pre-solved here: PR2 imports the first real mesh set and can walk the
+    # tree (one data_files tuple per directory) against actual files rather
+    # than against a guess about their layout.
     data_files=[
         ('share/ament_index/resource_index/packages',
             ['resource/' + package_name]),
