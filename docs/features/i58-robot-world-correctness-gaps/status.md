@@ -1,8 +1,15 @@
 # Status: robot_world — two correctness gaps (#58)
 
-- **Phase:** manager rulings recorded → dispatching implementer
-- **Round:** 0 (no red-team pass yet)
+- **Phase:** **READY** — PR #60 open, green against current main (`fbc1852`)
+- **Round:** 2 of 2 complete (no BLOCK findings in either round)
 - **Blockers:** none
+- **Gate:** `pixi run test` 705 tests / 0 failures, audit passed, ratchet
+  `robot_world +11`; `pixi run boot-smoke` 7 passed; run by the test-runner
+  *after* the rebase onto `fbc1852`
+- **Outward comments posted:** follow-ups on issue #58 (N4, N5, N6+`_grasp`,
+  N10), retro on PR #60
+- **Left for Sisyphus:** squash-merge, and delete this `docs/features/` dir
+  (the docs-clean check reads as failing until then — expected)
 - **Branch:** `feat/i58-robot-world-two-correctness-gaps-to-clos`
 - **Owned paths:** `src/robot_world/` only
 - **New dependencies:** none (step-2 provisioning is a no-op for this feature)
