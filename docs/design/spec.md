@@ -107,11 +107,30 @@ end-effector decision); wrist cameras; microphone (D26).
   top level; includes are **relative** so a source checkout and the installed
   tree expand identically; install uses `glob()`, never a hand-maintained list
   (D27, applying D24).
+- **The base is built** (D29): `base.xacro` is a parametric 3-omniwheel
+  holonomic base — `base_chassis_link` and `base_footprint` as fixed children
+  of `base_link`, plus one wheel macro instantiated at **60°/180°/300°** on
+  `continuous` joints named `base_{left,back,right}_wheel` (the LeRobot
+  driver's motor keys). Each wheel's spin axis is the **outward radial**, and
+  the driver's `[240, 0, 120]` array is *rolling directions*, not mount
+  positions. Every dimension is an `<xacro:property>`; `wheel_radius = 0.05`
+  and `base_radius = 0.125` are sourced from LeRobot's `lekiwi.py`, the rest
+  are marked estimates. Because `base_footprint` is a child of `base_link`,
+  odometry must publish `odom → base_link`, never `odom → base_footprint`.
+- **Geometry is primitives; `meshes/` is still empty** (D29). No third-party
+  mesh is vendored, so D27's flat-glob limit stands and the `os.walk` install
+  rewrite is owed by the first PR that lands real meshes (expected: the arms).
+  Column, arms, grippers, camera and the MJCF are still to come.
 - **The CI gate expands the *installed* copy**, resolved through the ament index
   with no source-tree fallback: `xacro` CLI expands → `check_urdf` parses →
   `urdf_parser_py` re-parses and the link set is asserted **exactly** → every
   file the description names (`<mesh>`, `<texture>`) resolves in the installed
-  share tree (D27).
+  share tree (D27); plus, from the base on, that there are exactly three
+  `continuous` wheel joints with the expected names, that they are mounted
+  120° apart on one circle with radial spin axes, that `base_footprint` sits
+  one wheel radius below the axle plane, that every non-frame link has a real
+  inertial, and that **`robot_state_publisher` loads the model** — it builds a
+  KDL tree, so it rejects models `check_urdf` accepts (D29).
 - **`RobotModel` is still in code** and will later be read *from* the URDF —
   the URDF is canonical for kinematics/geometry, MJCF carries a thin sim-only
   physics layer on top (D23; roadmap in
