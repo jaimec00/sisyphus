@@ -147,11 +147,19 @@ merges, then pruned. The nightly job cleans stragglers.
 - **Test-integrity guard (`pixi run test`):** refuses to call a hollow run
   green — a package with no result file, zero collected tests, or an
   all-skipped suite fails. It also **ratchets**: `scripts/test_baseline.json`
-  records each package's non-linter test count, and dropping below it fails,
-  as does a package that grows implementation code while its only tests are
-  ament linters. When tests are legitimately added or removed, re-cut the
-  floor and commit it in the same PR:
-  `pixi run python scripts/check_test_integrity.py --update-baseline`.
+  records how many non-linter tests each package actually *ran* (a skipped
+  test counts for nothing, so `@pytest.mark.skip` trips the floor exactly as
+  deleting the test would), and producing fewer fails — as does a package that
+  grows implementation code while its only tests are ament linters. **The
+  floor maintains itself upwards:** an otherwise-green run rewrites the file
+  to what the suite now produces, so a PR that adds tests simply commits the
+  bumped `scripts/test_baseline.json` alongside them — no flag, nothing to
+  remember, no drift. Going *down* is the gate and stays deliberate: losing
+  tests fails the run unless it is told otherwise with
+  `ALLOW_TEST_DECREASE=1 pixi run test` (or `--allow-decrease`), which re-cuts
+  that one floor down and passes. Neither direction is ever written from a run
+  that is not otherwise green, and `pixi run test-audit` never writes at all
+  (D28).
 - **Laptop nightly cron:** runs the full suite on `main`, reports regressions.
 - **Sisyphus (Pi) cron:** polls open PR statuses + manager comments (escalations,
   follow-ups, retros), squash-merges green PRs (escalating to Jaime only when a merge is genuinely tricky), answers escalations.

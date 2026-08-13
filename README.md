@@ -32,8 +32,14 @@ produced no result file, collected zero tests, or skipped every test it
 collected — `colcon test` alone reports all three as green. Every package
 whose `package.xml` this repo tracks is audited (`COLCON_IGNORE` grants no
 exemption); packages imported into `src/` from elsewhere are listed but not
-required to have tests. Use `pixi run test-audit` to re-read the last run's
-results, with their age, without re-running anything.
+required to have tests. It also **ratchets** each package against the count of
+tests it ran last time (`scripts/test_baseline.json`), so a suite cannot
+quietly shrink — by deletion or by `@pytest.mark.skip`. That floor keeps
+itself: a green run raises it and leaves the updated file to be committed with
+the tests that grew it, while *lowering* one is deliberate
+(`ALLOW_TEST_DECREASE=1 pixi run test`). Use `pixi run test-audit` to re-read
+the last run's results, with their age, without re-running anything — it never
+writes.
 
 ## Development
 Built by a hierarchy of coding agents (context → implement → red-team → test →
