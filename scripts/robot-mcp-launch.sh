@@ -17,8 +17,16 @@
 # and keeping them separate is what lets the gate's boot-smoke run the identical
 # code path the deployment runs. So the deployed command wraps it:
 #
-#   ssh -T laptop bash -lc 'exec pixi run --frozen \
-#     --manifest-path <repo>/pixi.toml <repo>/scripts/robot-mcp-launch.sh'
+#   ssh -T laptop "bash -lc 'exec pixi run --frozen \
+#     --manifest-path <repo>/pixi.toml <repo>/scripts/robot-mcp-launch.sh'"
+#
+# The outer quotes are not decoration. `ssh` appends its arguments "separated by
+# spaces, before it is sent to the server to be executed" (ssh(1)) and never
+# re-quotes, so the *whole* remote command must be one argument carrying its own
+# quoting. Written as separate words, the remote sees `bash -lc exec pixi ...`,
+# `bash -c` takes only the next word as its command string, and the remote runs
+# a bare `exec` -- a no-op that exits 0 having started nothing. `-lc` is a login
+# shell, which is what puts `pixi` on PATH for a non-interactive ssh command.
 #
 # Trailing arguments are forwarded to the server (`--world-state PATH`, ...).
 set -euo pipefail

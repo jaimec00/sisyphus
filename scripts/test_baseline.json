@@ -1,9 +1,9 @@
 {
   "comment": "Per-package non-linter test counts: the floor scripts/check_test_integrity.py ratchets against. Regenerate with `python scripts/check_test_integrity.py --update-baseline`; a drop below these numbers fails `pixi run test`.",
   "packages": {
-    "_workspace_tooling": 111,
+    "_workspace_tooling": 126,
     "robot_backends": 74,
-    "robot_brain": 48,
+    "robot_brain": 50,
     "robot_bringup": 0,
     "robot_description": 0,
     "robot_mcp": 82,

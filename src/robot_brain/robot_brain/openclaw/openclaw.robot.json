@@ -8,9 +8,7 @@
         "args": [
           "-T",
           "laptop",
-          "bash",
-          "-lc",
-          "exec pixi run --frozen --manifest-path /home/sisyphus/worktrees/main/pixi.toml /home/sisyphus/worktrees/main/scripts/robot-mcp-launch.sh"
+          "bash -lc 'exec pixi run --frozen --manifest-path /home/sisyphus/worktrees/main/pixi.toml /home/sisyphus/worktrees/main/scripts/robot-mcp-launch.sh'"
         ],
         "env": {},
         "requestTimeoutMs": 120000,

@@ -93,6 +93,25 @@ def test_every_check_reports_even_when_an_earlier_one_failed(
     assert 'no widget' in err and 'no sprocket' in err
 
 
+def test_a_dangling_symlink_is_named_as_one(tmp_path, capsys):
+    """Saying "is missing" would be a falsehood about a path ``ls`` shows.
+
+    A half-cleaned ``node_modules`` leaves the ``.bin`` symlink pointing at a
+    file that is gone.  The remedy is the same command either way, so the only
+    thing at stake is whether the message sends the reader looking for the
+    right thing.
+    """
+    binary = tmp_path / guard.OPENCLAW_RELATIVE_PATH
+    binary.parent.mkdir(parents=True)
+    binary.symlink_to(tmp_path / 'openclaw' / 'openclaw.mjs')
+
+    rc = guard.main(['--repo-root', str(tmp_path)])
+
+    err = capsys.readouterr().err
+    assert rc == 1
+    assert 'is a broken symlink' in err
+
+
 def test_the_guard_finds_this_repository_by_its_marker(monkeypatch):
     """Run with no arguments it must check *this* checkout, not a parent.
 

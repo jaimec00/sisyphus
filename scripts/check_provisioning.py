@@ -78,7 +78,15 @@ def check_openclaw_cli(repo_root):
     binary = repo_root / OPENCLAW_RELATIVE_PATH
     if binary.is_file() and os.access(binary, os.X_OK):
         return None
-    state = 'is not executable' if binary.exists() else 'is missing'
+    if binary.exists():
+        state = 'is not executable'
+    elif binary.is_symlink():
+        # `exists()` follows the link, so a half-cleaned `node_modules` would
+        # otherwise be reported as "missing" while `ls` shows the name sitting
+        # right there -- ten minutes of confusion for one word.
+        state = 'is a broken symlink'
+    else:
+        state = 'is missing'
     return (f'the OpenClaw CLI {state}:\n'
             f'    {binary}\n'
             f'  Six robot_brain tests run it (test_openclaw_validates.py puts '

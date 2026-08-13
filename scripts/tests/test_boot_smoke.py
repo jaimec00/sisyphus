@@ -25,7 +25,6 @@ which must fail -- see :func:`test_dropping_a_required_package_breaks_the_boot`.
 import os
 from pathlib import Path
 import subprocess
-import sys
 
 import anyio
 from mcp import ClientSession, stdio_client, StdioServerParameters
@@ -65,8 +64,10 @@ MANIFEST = ('<?xml version="1.0"?>\n'
             '<package format="3"><name>{name}</name></package>\n')
 
 #: A stand-in for ``python`` that starts no server and reports what the
-#: launcher handed it: the discovered path, then the argument vector.
-INTERPRETER_STUB = '#!/usr/bin/env bash\necho "$PYTHONPATH"\necho "$@"\n'
+#: launcher handed it: the discovered path, then one argument per line, so an
+#: argument containing a space is distinguishable from two arguments.
+INTERPRETER_STUB = ('#!/usr/bin/env bash\necho "$PYTHONPATH"\n'
+                    'printf \'%s\\n\' "$@"\n')
 
 
 def undiscovered_environment() -> dict[str, str]:
@@ -126,9 +127,10 @@ def written_repository_root(tmp_path: Path, packages) -> Path:
     """
     root = tmp_path / 'repo'
     (root / 'scripts').mkdir(parents=True)
+    (root / 'src').mkdir()
     (root / LAUNCHER).symlink_to(REPO_ROOT / LAUNCHER)
     for package in packages:
-        (root / 'src' / package).mkdir(parents=True)
+        (root / 'src' / package).mkdir()
         (root / 'src' / package / 'package.xml').write_text(
             MANIFEST.format(name=package))
     return root
@@ -226,18 +228,27 @@ def test_an_inherited_pythonpath_is_appended_not_clobbered(tmp_path):
 
 
 def test_the_servers_own_arguments_are_forwarded(tmp_path):
-    """``--world-state`` and friends belong to the server, not the launcher."""
+    """``--world-state`` and friends belong to the server, not the launcher.
+
+    One argument per line, and a path with a space in it, so that ``"$@"``
+    losing its quotes -- which would split that path into two arguments the
+    server cannot use -- is visible here rather than at a deployment.
+    """
     root = written_repository_root(tmp_path, ['robot_alpha'])
 
-    completed = run_launcher(root, '--world-state', '/tmp/world.json')
+    completed = run_launcher(root, '--world-state', '/tmp/a world.json')
 
     assert completed.returncode == 0, completed.stderr
-    assert completed.stdout.splitlines()[1] == (
-        '-m robot_mcp --world-state /tmp/world.json')
+    assert completed.stdout.splitlines()[1:] == [
+        '-m', 'robot_mcp', '--world-state', '/tmp/a world.json']
 
 
-def test_a_root_with_no_packages_refuses_to_launch(tmp_path):
+def test_a_root_with_an_empty_source_tree_refuses_to_launch(tmp_path):
     """Discovering nothing is a bug, not an empty path to launch with.
+
+    ``src/`` exists and holds no manifest -- the state a mis-set repo root or a
+    half-checked-out tree produces, and the one the glob's unmatched-pattern
+    behaviour has to be right about.
 
     A launcher that silently ``exec``s with an empty ``PYTHONPATH`` would
     reproduce #55 exactly -- a green-looking start followed by an import error
@@ -254,16 +265,21 @@ def test_a_root_with_no_packages_refuses_to_launch(tmp_path):
     assert not completed.stdout, 'it must not reach the interpreter at all'
 
 
-def test_the_stripped_environment_really_hands_the_child_nothing(tmp_path):
+def test_the_stripped_environment_really_hands_the_child_nothing():
     """The control for every test below: without the launcher, nothing imports.
 
     If this ever passes an import, the environment these tests spawn children
     in is *not* stripped, and their green means nothing -- discovery could be
     deleted outright and the child would still find the packages.
+
+    It is spawned the way the launcher's child is spawned, and no other way:
+    ``python`` resolved from ``PATH`` (not ``sys.executable``) and the working
+    directory inherited (not pinned). The control must not be able to drift
+    away from the thing it controls -- if ``cwd`` or the interpreter ever
+    *does* start mattering, this must feel it first.
     """
     completed = subprocess.run(
-        [sys.executable, '-c', 'import robot_mcp'],
-        cwd=str(REPO_ROOT), env=undiscovered_environment(),
+        ['python', '-c', 'import robot_mcp'], env=undiscovered_environment(),
         stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=60)
 
     assert completed.returncode != 0

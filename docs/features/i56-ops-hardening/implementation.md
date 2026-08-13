@@ -10,6 +10,7 @@ Commits (small, each green):
 | `bf8f11c` | the OpenClaw fragment, its test and the two READMEs repointed at the launcher (R3/R4) |
 | `cf94057` | `run-feature.md` steps 6/7/9 + one line in `DEVELOPMENT.md` (R9/R10) |
 | `73e16db` | D24, written last and re-read against the final diff (R11 / task 4 dogfooded) |
+| *(fix round 1)* | B1, B2, N1/N2/N4/N5/N6/N7/N8/N9 — see "Fix round 1" at the bottom |
 
 ## Final design
 
@@ -54,10 +55,10 @@ Seven tests, three of them integration:
 - `test_every_package_with_a_manifest_lands_on_the_path`,
   `test_an_inherited_pythonpath_is_appended_not_clobbered`,
   `test_the_servers_own_arguments_are_forwarded`,
-  `test_a_root_with_no_packages_refuses_to_launch` — cheap unit tests of
-  discovery (R8's "welcome in addition"). They make discovery observable by
-  shadowing `python` on `PATH` with a stub that prints `$PYTHONPATH` and
-  `"$@"`, so nothing boots.
+  `test_a_root_with_an_empty_source_tree_refuses_to_launch` — cheap unit tests
+  of discovery (R8's "welcome in addition"). They make discovery observable by
+  shadowing `python` on `PATH` with a stub that prints `$PYTHONPATH` and then
+  one argument per line, so nothing boots.
 - `test_the_stripped_environment_really_hands_the_child_nothing` — the control:
   `python -c 'import robot_mcp'` in the same child environment **must fail**.
   Without it, a leaked `PYTHONPATH` would silently make everything below
@@ -94,16 +95,18 @@ copy-pasteable line.
 ### 4. The repoint (R3/R4)
 
 `openclaw.robot.json`'s launch string is now
-`exec pixi run --frozen --manifest-path <repo>/pixi.toml <repo>/scripts/robot-mcp-launch.sh`
+`bash -lc 'exec pixi run --frozen --manifest-path <repo>/pixi.toml <repo>/scripts/robot-mcp-launch.sh'`
+as **one** `args` element (the quoting matters — see B1 in the fix round below)
 — no `PYTHONPATH`, no package names. `REQUIRED_PACKAGES` is deleted;
 `test_the_launch_command_carries_every_package_the_server_needs` became
 `test_the_launch_command_leaves_the_package_list_to_the_launcher`, asserting the
-*negative* (`'PYTHONPATH' not in command`, `'/src/' not in command`), and
+*negative* over the whole server entry (`'PYTHONPATH' not in
+json.dumps(server())`, likewise `'/src/'`), and
 `test_the_launch_command_starts_this_repos_server_over_stdio` now asserts the
 launcher — **and that the launcher it names exists in this checkout**, so
-renaming or moving the script fails here rather than on the Pi. Test count
-unchanged (rewrites, not removals): `robot_brain` stayed at 48 non-linter, so
-no baseline re-cut was needed and `scripts/test_baseline.json` is untouched.
+renaming or moving the script fails here rather than on the Pi. The rewrite
+removed no tests and the fix round added two, so `robot_brain` went 48 → 50 and
+`scripts/test_baseline.json` was re-cut (see B2).
 
 Both READMEs were updated: the `robot_mcp` "Run it" section (one-liner, client
 JSON — now with **no `env` block at all**, since the path is discovered) and the
@@ -213,3 +216,156 @@ the same class of drift as a hand-written list, and it costs one line.
    pixi put there). That is correct inside the pixi env and is what the gate
    exercises; a caller who runs it outside any env gets bash's
    `python: command not found`, which is legible but not as loud as `die`.
+
+---
+
+# Fix round 1 (red-team round 1)
+
+Both BLOCKs were real. I reproduced each myself before touching anything —
+the red-team had no shell, so its findings arrived as high-confidence claims,
+and the manager's own reproductions are independent of mine.
+
+## B1 — the shipped launch command was a silent no-op. Fixed.
+
+**Reproduced** (`bash -c` simulating the flatten-and-reparse `ssh` + the remote
+`$SHELL -c` perform):
+
+```
+$ bash -c "bash -lc exec pixi --version"   ; echo rc=$?   # (no output) rc=0
+$ bash -c "bash -lc 'exec pixi --version'" ; echo rc=$?   # pixi 0.76.1  rc=0
+$ bash -c 'bash -lc echo A B C'            ; echo rc=$?   # (no output) rc=0
+```
+
+`ssh` appends its arguments "separated by spaces, before it is sent to the
+server to be executed" (`ssh(1)`) and never re-quotes; `bash -c` takes only
+the **next word** as its command string and assigns the rest to `$0`, `$1`, ….
+So the remote ran a bare `exec` — a no-op — and exited **0 having started
+nothing**. The worst possible failure for this PR: green, silent, no tools.
+The manager is right that the shape is pre-existing (the old string had the
+same disease), and equally right that we own the line now.
+
+**Fix:** the whole remote command is now a **single `args` element** carrying
+its own quoting —
+`"bash -lc 'exec pixi run --frozen --manifest-path <repo>/pixi.toml <repo>/scripts/robot-mcp-launch.sh'"`.
+The login shell is **kept** (I cannot verify from here that `pixi` resolves on
+a non-interactive `ssh` command on the Pi→laptop hop, and `-lc` is what makes
+`PATH` right), so the quoting is embedded rather than the wrapper dropped.
+
+**Verified the way the manager asked — by simulating the flatten, not by
+running a locally-quoted variant:**
+
+```
+remote="bash -lc 'exec pixi run --frozen --manifest-path $PWD/pixi.toml $PWD/scripts/robot-mcp-launch.sh'"
+printf '{"jsonrpc":"2.0","id":1,"method":"initialize",...}\n' | bash -c "$remote"
+  → rc=0, exactly 1 line on stdout (the initialize result), pixi's manifest warning on stderr
+old="bash -lc exec pixi run --frozen --manifest-path $PWD/pixi.toml $PWD/scripts/robot-mcp-launch.sh"
+printf 'x\n' | bash -c "$old"
+  → rc=0, 0 bytes of output          # the bug, reproduced against the same launcher
+```
+
+**And it has a test now** (the red-team's suggestion, sharpened):
+`test_the_flattened_remote_command_is_one_the_remote_shell_can_run` builds the
+flattened remote string the way `ssh` builds it (`remote_command()`: everything
+after the first non-option argument, space-joined), `shlex.split`s it, and
+asserts `['bash', '-lc', <one command string>]` with **nothing after the command
+string** (anything there becomes `$0`, `$1`, … and never executes), then splits
+the inner string and asserts it `exec`s and ends at the launcher. Confirmed to
+bite: restoring the three-element `["bash", "-lc", "exec …"]` form makes it fail
+(along with the N2 test), 2 failed / 15 passed.
+
+### The N+1 enumeration (every place a launch command is spelled out)
+
+The heuristic paid: **there was an N+1th the report did not name.**
+
+| # | place | state |
+|---|---|---|
+| 1 | `src/robot_brain/robot_brain/openclaw/openclaw.robot.json:8-12` — the shipped argv | **was broken → fixed** |
+| 2 | `scripts/robot-mcp-launch.sh:19-21` — the header comment showing the deployed command | **N+1th, found by this enumeration: it showed `ssh -T laptop bash -lc 'exec …'`, which is the *same bug* even typed by hand at a terminal (the local shell quotes the string into one argv element, then `ssh` flattens it again). Fixed, with the reason spelled out.** |
+| 3 | `src/robot_brain/README.md:121-125` — step 4's manual probe | was a **third** shape (`ssh -T laptop 'pixi run …'`, no login shell) → rewritten to the shipped shape, with the quoting explained |
+| 4 | `src/robot_brain/README.md:130-138` — the "what *has* been checked" claim | **was false** → now states exactly what was simulated (`bash -c "<flattened>"`) and that the `ssh` hop and the remote login `PATH` remain unverified |
+| 5 | `src/robot_brain/README.md:107-115` — step 3, the two hand-edited paths | accurate; now also pinned by a test (N2) |
+| 6 | `src/robot_mcp/README.md:106-118` — the local one-liner (twice) | correct (no `ssh`, no shell in between); verified by direct execution and by the boot-smoke |
+| 7 | `src/robot_mcp/README.md:128-141` — the MCP client JSON | correct: `command: "pixi"` + argv array, spawned directly with no shell, so no quoting question arises |
+| 8 | `src/robot_mcp/README.md:164` — the `--world-state` example | correct (launcher forwards arguments; covered by a test) |
+| 9 | `src/robot_brain/test/test_openclaw_config.py` | now asserts the flattened form (B1) and the one-checkout invariant (N2) |
+| 10 | `docs/design/decisions.md` D24 | prose only, no command; gained an accepted-gaps bullet (N9) |
+| 11 | `docs/features/i56-ops-hardening/status.md` R1 | **still shows the broken shape** — it is the manager's file and ephemeral (deleted at merge), so I did not edit it. Flagging rather than touching. |
+
+One correction to the dispatch: the false "was checked" claim is in
+**`src/robot_brain/README.md`**, not `src/robot_mcp/README.md` (the latter makes
+no verification claim at all — its commands are local and are the ones the
+boot-smoke actually runs). Fixed where it lives.
+
+## B2 — the new gate tests were not ratchet-protected. Fixed.
+
+The report and the manager are right and `context.md` §2 was wrong: the guard's
+own docstring says to re-cut on **additions**, and a floor 15 below the actual
+count protects nothing that this PR added.
+
+```
+python scripts/check_test_integrity.py --update-baseline
+  baseline _workspace_tooling: 111 -> 126
+  baseline robot_brain: 48 -> 50
+```
+
+Exactly two entries moved (`_workspace_tooling` +15: 7 boot-smoke + 8
+provisioning; `robot_brain` +2: the two new launch-command tests). Every other
+package is byte-identical — checked in the diff.
+
+**Verified the floor now bites:** moving both new test files out of
+`scripts/tests/` and running `pixi run test` →
+
+```
+_workspace_tooling  114  …  111  -15  below-baseline
+FAIL _workspace_tooling: 111 non-linter tests, 15 below the baseline of 126 …
+FAILED stages: test integrity audit          EXIT=1
+```
+
+Before this change that deletion left the run green.
+
+## NOTEs addressed
+
+- **N1** — the negative assertion now runs over `json.dumps(server())`, so a
+  hand-written `PYTHONPATH` reappearing in the server entry's `env` block is
+  caught too. I did **not** drop `"env": {}` from the fragment: it is shipped,
+  validated and unrelated to this issue, and changing how a client spawns the
+  server is not a change to make on a hunch in a fix round.
+- **N2** — new test: the `--manifest-path` argument and the launcher path must
+  name one checkout (`launcher.parent.parent == manifest.parent`).
+- **N4** — a dangling symlink is now reported as "is a broken symlink"
+  (`exists()` follows links; `is_symlink()` does not), with a test.
+- **N5** — `written_repository_root` now always creates `src/`, so the test
+  exercises "empty `src/`" as its name claims; renamed to
+  `test_a_root_with_an_empty_source_tree_refuses_to_launch`. The "directory
+  with no manifest" case was already covered (`papers/`).
+- **N6** — the control test now spawns `python` from `PATH` with no `cwd=` pin,
+  exactly as the launcher's child is spawned, so it cannot drift away from what
+  it controls.
+- **N7** — the stub interpreter prints one argument per line
+  (`printf '%s\n' "$@"`) and the forwarding test passes `--world-state
+  '/tmp/a world.json'`, so a lost quote is now visible.
+- **N8** — `run-feature.md` step 7 gained: "**The scoped pass is part of that
+  round, not another one.**"
+- **N9** — D24 corrected in both places: the `src/` enumeration now says what
+  actually changed in `test_openclaw_config.py` (four edits, two tests, not
+  "the test"), and a fourth bullet records the **accepted gaps** in D23's style
+  — the `ssh` hop, the two absolute paths and the `pixi run` prefix are not
+  executed by any test; what is asserted instead is their *shape*.
+- **N3** — left as-is per the manager's ruling (R7 stands). Not documented in
+  the guard's docstring either, since the manager kept it as a deliberate
+  consequence rather than an accepted gap; say the word if you want it written
+  down.
+- **N10** — triage agreed; the `command -v python || die` suggestion was **not**
+  taken (it changes launcher runtime behavior and was not asked for; `python:
+  command not found` on stderr with rc 127 is already legible).
+
+## Test result after the fix round (honest)
+
+`pixi run test` → **EXIT=0**, **694 tests, 0 errors, 0 failures, 0 skipped**,
+`AUDIT PASSED`, `All stages passed.` Per-package after the re-cut:
+`_workspace_tooling` 126 (+0), `robot_brain` 50 (+0), everything else +0.
+
+Nothing is red and nothing is skipped. What remains **unverified by anyone**,
+and is now written down in D24 rather than assumed: the `ssh` hop itself and
+the remote login shell's `PATH` — only the Pi can exercise those, and the
+README's step 4 probe is the way to do it.

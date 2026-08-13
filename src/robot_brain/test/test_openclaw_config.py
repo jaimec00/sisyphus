@@ -29,7 +29,9 @@ secret.
 """
 
 import json
+from pathlib import PurePosixPath
 import re
+import shlex
 
 from brain_fixtures import WITHHELD_TOOLS
 from robot_brain import AGENT_ID, config_fragment, MCP_SERVER_NAME
@@ -76,6 +78,30 @@ def agent() -> dict:
 def launch_command() -> str:
     """Return the whole launch command line, arguments joined."""
     return ' '.join([server()['command'], *server()['args']])
+
+
+def remote_command() -> str:
+    """Return the single string ``ssh`` hands the *remote* shell.
+
+    ``ssh`` does not re-quote.  ``ssh(1)``: "If supplied, the arguments will be
+    appended to the command, separated by spaces, before it is sent to the
+    server to be executed."  An MCP client spawns ``command`` + ``args`` as a
+    real argv with no shell in between, so everything after the destination is
+    flattened into one string that the remote login shell then parses -- and
+    every quote that re-parse needs has to be inside these arguments already.
+
+    The destination is the first argument that is not an option; ``-T`` takes
+    no value, so this is unambiguous for the flags this fragment uses.
+    """
+    args = server()['args']
+    destination = next(index for index, argument in enumerate(args)
+                       if not argument.startswith('-'))
+    return ' '.join(args[destination + 1:])
+
+
+def remote_argv() -> list[str]:
+    """Return the argv the remote shell builds from :func:`remote_command`."""
+    return shlex.split(remote_command())
 
 
 def walk(value):
@@ -336,10 +362,57 @@ def test_the_launch_command_leaves_the_package_list_to_the_launcher():
     boot-smoke in ``scripts/tests/test_boot_smoke.py`` proves by booting the
     real thing with one package removed.
     """
-    command = launch_command()
-    assert 'PYTHONPATH' not in command, 'the launcher sets it, from discovery'
-    assert '/src/' not in command, (
+    entry = json.dumps(server())
+    assert 'PYTHONPATH' not in entry, 'the launcher sets it, from discovery'
+    assert '/src/' not in entry, (
         'a hand-maintained package list on the deploy path is the #55 bug')
+
+
+def test_the_flattened_remote_command_is_one_the_remote_shell_can_run():
+    """``ssh`` flattens its arguments; the quoting must survive that.
+
+    The fragment shipped ``["bash", "-lc", "exec pixi run ... launcher"]`` as
+    three separate array elements.  A client spawns argv directly, ``ssh``
+    joins the tail with spaces and does **not** re-quote, so the remote shell
+    received ``bash -lc exec pixi run ...`` -- and ``bash -c`` takes only the
+    *next word* as its command string, assigning the rest to ``$0``, ``$1``,
+    ....  The remote therefore ran a bare ``exec``, which is a documented
+    no-op, and **exited 0 having started nothing**: a launch path that reports
+    success and serves no tools.  Verified by simulating the flatten::
+
+        bash -c "bash -lc exec pixi --version"    # no output, rc=0
+        bash -c "bash -lc 'exec pixi --version'"  # pixi 0.76.1, rc=0
+
+    So the assertion is on the flattened string, split the way a shell splits
+    it, and it deliberately pins the login shell: ``-lc`` is what puts ``pixi``
+    on ``PATH`` for a non-interactive ``ssh`` command, and dropping it is a
+    change that must be made on purpose (and re-probed), not by accident.
+    """
+    words = remote_argv()
+
+    assert words[:2] == ['bash', '-lc'], words
+    assert len(words) == 3, (
+        f'a login shell runs only its next word; {words[3:]} would become '
+        f'$0, $1, ... and never execute')
+    inner = shlex.split(words[2])
+    assert inner[0] == 'exec', 'exec, so no shell lingers around the server'
+    assert inner[-1].endswith(LAUNCHER_RELATIVE_PATH), inner
+
+
+def test_the_two_absolute_paths_in_the_command_name_one_checkout():
+    """The environment and the launcher must come from the same checkout.
+
+    ``README.md`` step 3 tells a human to hand-edit both; edit one and the
+    deploy runs checkout B's launcher inside checkout A's environment, which
+    is this issue's drift class with a new hat on.  Cheap to pin, because both
+    paths are right here in the same string.
+    """
+    inner = shlex.split(remote_argv()[2])
+    manifest = PurePosixPath(inner[inner.index('--manifest-path') + 1])
+    launcher = PurePosixPath(inner[-1])
+
+    assert manifest.name == 'pixi.toml', manifest
+    assert launcher.parent.parent == manifest.parent, (manifest, launcher)
 
 
 def test_the_exposed_tools_are_the_tools_this_agent_should_have():

@@ -57,9 +57,10 @@ the run is resumable.
    round-1 review never saw, and it is written under time pressure by the agent
    that got it wrong the first time. Hand that pass the heuristic that keeps
    paying: *a fix that corrects a claim in N places is a strong prior the same
-   claim is wrong in an N+1th* — its job is to find the N+1th. Max **2**
-   red-team↔fix rounds; surviving NOTES → a **follow-up comment on the issue**
-   (Sisyphus files the issues; do not create them yourself).
+   claim is wrong in an N+1th* — its job is to find the N+1th. **The scoped
+   pass is part of that round, not another one.** Max **2** red-team↔fix
+   rounds; surviving NOTES → a **follow-up comment on the issue** (Sisyphus
+   files the issues; do not create them yourself).
 8. Dispatch **test-runner**. If FAIL: resume implementer (may read the logs) →
    back to steps 6/8 as needed until green.
 9. When green against **current** main: **re-read the durable decision against
