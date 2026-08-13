@@ -12,7 +12,7 @@ Worktree: `/home/sisyphus/worktrees/i56-ops-hardening-close-the-ci-green-but-dep
 | 4. Manager rulings | done — R1–R11 below |
 | 5. implementer | done — 6 commits, `implementation.md` |
 | 6. red-team round 1 | done — `red_team.md`: 2 BLOCK, 10 NOTE |
-| 7. fix round 1 | in progress — both BLOCKs manager-verified, implementer resumed |
+| 7. fix round 1 | done — both BLOCKs fixed; **scoped pass on the fix commit: 0 BLOCK, 3 NOTE** (`red_team_fix_round1.md`); 2 NOTEs applied |
 | 8. test-runner | pending |
 | 9. PR / ready | pending |
 
@@ -141,8 +141,18 @@ first. Keeping pixi *out* of the launcher keeps two separable jobs separate —
 deployed command becomes
 
 ```
-ssh -T laptop bash -lc 'exec pixi run --frozen --manifest-path <repo>/pixi.toml <repo>/scripts/robot-mcp-launch.sh'
+ssh -T laptop "bash -lc 'exec pixi run --frozen --manifest-path <repo>/pixi.toml <repo>/scripts/robot-mcp-launch.sh'"
 ```
+
+> **Corrected after red-team round 1 (B1).** As first written, this ruling
+> spelled the command `ssh -T laptop bash -lc 'exec pixi …'` — without the outer
+> quotes. That form is broken: `ssh` appends its arguments "separated by spaces,
+> before it is sent to the server" (`ssh(1)`) and never re-quotes, so the remote
+> `bash -c` takes only `exec` as its command string and runs a no-op that
+> **exits 0 having started nothing**. The whole remote command must be **one**
+> argument carrying its own quoting. The implementer flagged that this file was
+> the 11th place the bad shape appeared and that anyone copying from it would
+> reintroduce B1 — correct, and fixed here.
 
 and the boot-smoke (already inside the pixi env under `pixi run test`) exercises
 *the identical launcher code path*. Baking `pixi run` into the launcher would

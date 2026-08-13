@@ -41,6 +41,11 @@ from test_openclaw_validates import repository_root
 
 FRAGMENT = config_fragment()
 
+#: The ``ssh`` options this fragment may carry *before* its destination.  Only
+#: flags that take no value belong here: one that takes a value would swallow
+#: the destination and silently shift what :func:`remote_command` returns.
+VALUELESS_SSH_OPTIONS = frozenset({'-T', '-t', '-q', '-n', '-4', '-6'})
+
 #: The launcher the command must go through, relative to the repository root.
 #: It discovers the workspace packages itself; see
 #: ``test_the_launch_command_leaves_the_package_list_to_the_launcher``.
@@ -90,12 +95,19 @@ def remote_command() -> str:
     flattened into one string that the remote login shell then parses -- and
     every quote that re-parse needs has to be inside these arguments already.
 
-    The destination is the first argument that is not an option; ``-T`` takes
-    no value, so this is unambiguous for the flags this fragment uses.
+    The destination is the first argument that is not an option, which is only
+    unambiguous while every option before it takes no value -- see
+    :data:`VALUELESS_SSH_OPTIONS`.
     """
     args = server()['args']
     destination = next(index for index, argument in enumerate(args)
                        if not argument.startswith('-'))
+    assert set(args[:destination]) <= VALUELESS_SSH_OPTIONS, (
+        f'{args[:destination]}: an ssh option that takes a value (`-o '
+        f'BatchMode=yes`, `-p 22`, `-i key`, `-J jump`) makes "the first '
+        f'non-option argument" the wrong destination, so this helper slices '
+        f'the command in the wrong place -- teach it the new option rather '
+        f'than reading the failure below as a broken launch command')
     return ' '.join(args[destination + 1:])
 
 
@@ -406,6 +418,12 @@ def test_the_two_absolute_paths_in_the_command_name_one_checkout():
     deploy runs checkout B's launcher inside checkout A's environment, which
     is this issue's drift class with a new hat on.  Cheap to pin, because both
     paths are right here in the same string.
+
+    **Absolute, too.**  A relative pair would agree with each other and pass
+    every other assertion in this file while being unrunnable: the remote
+    shell starts in ``$HOME``, not in the checkout, so ``scripts/robot-mcp-
+    launch.sh`` resolves to nothing there.  The one-checkout rule is only
+    worth having if the checkout is named from the root.
     """
     inner = shlex.split(remote_argv()[2])
     manifest = PurePosixPath(inner[inner.index('--manifest-path') + 1])
@@ -413,6 +431,9 @@ def test_the_two_absolute_paths_in_the_command_name_one_checkout():
 
     assert manifest.name == 'pixi.toml', manifest
     assert launcher.parent.parent == manifest.parent, (manifest, launcher)
+    assert manifest.is_absolute() and launcher.is_absolute(), (
+        f'the remote shell runs in $HOME, not in the checkout: '
+        f'{manifest}, {launcher}')
 
 
 def test_the_exposed_tools_are_the_tools_this_agent_should_have():

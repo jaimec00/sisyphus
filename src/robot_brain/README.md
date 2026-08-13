@@ -145,10 +145,13 @@ env.
    by joining the arguments after the destination and running the result the
    way `sshd` does, `bash -c "<flattened string>"` — puts a single JSON-RPC
    frame on stdout and nothing else, with `pixi`'s manifest warning on stderr
-   and no output at all from this account's profile files. What is **not**
-   checked is the `ssh` hop itself: the `laptop` alias does not resolve from
-   the laptop, so only the Pi can run this step, and the login shell's `PATH`
-   on your machines is likewise unverified from here. If a login shell on your
+   and no output at all from this account's profile files. The `-l` is checked
+   too, on this laptop: with a stripped environment (`env -i HOME=… USER=…`),
+   `bash -c 'command -v pixi'` finds nothing and `bash -lc 'command -v pixi'`
+   resolves it — so the login shell is what makes `pixi` reachable over a
+   non-interactive `ssh` command. What is **not** checked is the `ssh` hop
+   itself, or the *Pi's* login shell: the `laptop` alias does not resolve from
+   the laptop, so only the Pi can run this step. If a login shell on your
    machines does turn out to print something, drop the `-l` (use `bash -c`
    with an absolute `pixi` path) rather than trying to document around it.
 5. **Add the Telegram account on the Pi, with the `openclaw` CLI** — the bot

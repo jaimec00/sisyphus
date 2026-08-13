@@ -369,3 +369,49 @@ Nothing is red and nothing is skipped. What remains **unverified by anyone**,
 and is now written down in D24 rather than assumed: the `ssh` hop itself and
 the remote login shell's `PATH` — only the Pi can exercise those, and the
 README's step 4 probe is the way to do it.
+
+---
+
+# Fix round 1b (scoped red-team pass on the fix commit)
+
+Two one-liners, both taken; NOTE 3 declined per the manager.
+
+- **Absolute paths (the real hole).** `test_the_two_absolute_paths_in_the_command_name_one_checkout`
+  compared the two paths to each other but never to `/`. A **fully relative**
+  fragment is internally consistent and passes every other launch-command
+  assertion while being unrunnable — the remote shell starts in `$HOME`, not in
+  the checkout. Added `assert manifest.is_absolute() and launcher.is_absolute()`
+  with the reason in the docstring. Proved the hole was real: with the fragment
+  rewritten to `--manifest-path pixi.toml scripts/robot-mcp-launch.sh`, the run
+  is **1 failed, 16 passed** — the new assertion is the only thing that catches
+  it.
+- **`remote_command()`'s destination detection.** Guarded rather than
+  generalised: `VALUELESS_SSH_OPTIONS` (`-T -t -q -n -4 -6`) plus one assert
+  that says *the helper needs teaching*, so a future `-o BatchMode=yes` blames
+  the right thing instead of the launch command. Verified: adding
+  `-o BatchMode=yes` fails with `['-T', '-o']: an ssh option that takes a
+  value … teach it the new option rather than reading the failure below as a
+  broken launch command`. No ssh argument parser was built.
+- **NOTE 3 declined** (a *directory* at the CLI path reports "is not
+  executable"): implausible state, and the message still points at the one
+  command that fixes it.
+
+**The `-lc` gap is now closed on the laptop side**, and I re-checked it myself
+with a sharper simulation than the report's: `env -i` alone has **no `HOME`**,
+so `~/.profile` is never sourced and even the login shell finds nothing — which
+would have been a misleading verification. With the variables `sshd` actually
+sets:
+
+```
+env -i HOME=$HOME USER=$USER SHELL=/bin/bash bash -c  'command -v pixi'  → (not found)
+env -i HOME=$HOME USER=$USER SHELL=/bin/bash bash -lc 'command -v pixi'  → /home/sisyphus/.pixi/bin/pixi
+```
+
+So `-lc` is load-bearing and checked, not assumed. D24's accepted-gaps bullet
+and `src/robot_brain/README.md` now say exactly that, and narrow the remaining
+gap to the `ssh` hop itself and the **Pi's** login shell.
+
+**Suite after 1b:** `pixi run test` → EXIT=0, **694 tests, 0 errors, 0
+failures, 0 skipped**, `AUDIT PASSED`, `All stages passed`; every package `+0`
+against the re-cut baseline (no test was added or removed in this round, only
+assertions strengthened).
