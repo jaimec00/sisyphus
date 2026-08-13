@@ -368,12 +368,10 @@ class FileWorldStore(WorldStore):
 
         The re-read is the D23 mechanism, not an optimization to be removed:
         the seed is a *file*, so replacing that file must change what
-        ``reset()`` restores -- which is what lets an operator re-seed a
-        running robot.  The inherited ``_seed`` is kept honest anyway (the
-        constructor is handed the seed separately from the live document), so
-        collapsing this override into ``return self._seed`` would no longer
-        restore a *live* scene as if it were the seed; it would just quietly
-        stop following the file.
+        ``reset()`` restores -- which is how an operator re-seeds a running
+        robot, and what ``test_reset_restores_from_the_seed_file_not_from_memory``
+        pins.  It is also how ``__init__`` obtains the seed, before ``_seed``
+        exists, so this is not an attribute read waiting to happen.
         """
         return read_seed_document(self._seed_path)
 

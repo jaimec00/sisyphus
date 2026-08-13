@@ -184,10 +184,12 @@ def test_one_object_per_gripper_is_all_the_rule_forbids(document):
     assert WorldDocument.from_dict(both_hands.to_dict()) == both_hands
     assert duplicate_hold_sides(document.objects) == []
     assert duplicate_hold_sides(()) == []
+    # Reported in Side declaration order, whatever order the scene lists them
+    # in -- so the message a two-sided violation prints does not flap.
     assert duplicate_hold_sides(
-        (WorldObject('a', 'cube', Pose(), held_by=Side.LEFT),
+        (WorldObject('a', 'cube', Pose(), held_by=Side.RIGHT),
          WorldObject('b', 'cube', Pose(), held_by=Side.RIGHT),
-         WorldObject('c', 'cube', Pose(), held_by=Side.RIGHT),
+         WorldObject('c', 'cube', Pose(), held_by=Side.LEFT),
          WorldObject('d', 'cube', Pose(), held_by=Side.LEFT))
     ) == [Side.LEFT, Side.RIGHT]
 

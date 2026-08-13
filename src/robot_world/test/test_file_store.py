@@ -105,6 +105,7 @@ def test_a_reopened_store_resets_to_the_seed_not_to_the_scene_it_opened(
 
     assert second.seed_document() == document
     assert WorldStore.seed_document(second) == document
+    assert WorldStore.seed_document(second) != drifted
 
     second.reset()
 
@@ -128,6 +129,14 @@ def test_mutating_the_working_scene_never_changes_what_reset_restores(
     assert store.seed_document() == document
     assert WorldStore.seed_document(store) == document
     assert read_document(seed_file) == document
+
+    # ...and a store opened on the drifted live file is seeded from the seed
+    # too, not from what it happened to load (pinned here as well as in
+    # ``test_a_reopened_store_resets_to_the_seed_not_to_the_scene_it_opened``,
+    # so losing that guarantee takes editing two tests, not deleting one line).
+    reopened = FileWorldStore(live, seed_path=seed_file)
+    assert reopened.document() != document
+    assert WorldStore.seed_document(reopened) == document
 
     store.reset()
     assert store.document() == document
