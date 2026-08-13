@@ -21,25 +21,35 @@ tool at all (``openclaw doctor``: "allowlist contains unknown entries").  A
 config can validate and still hand the brain nothing to drive.
 
 So: it parses, it declares the server the prompt assumes, the agent it binds is
-the agent it configures, the launch command actually starts *our* server with
-the packages it now needs (``robot_safety`` is a runtime dependency since the
-safety gate landed), the tools it exposes are the tools that exist under the
-name OpenClaw will give them, its sandbox settings do not contradict each
-other -- and it carries no secret.
+the agent it configures, the launch command actually starts *our* server -- by
+handing the package list to the launcher rather than repeating it (#56) -- the
+tools it exposes are the tools that exist under the name OpenClaw will give
+them, its sandbox settings do not contradict each other -- and it carries no
+secret.
 """
 
 import json
+from pathlib import PurePosixPath
 import re
+import shlex
 
 from brain_fixtures import WITHHELD_TOOLS
 from robot_brain import AGENT_ID, config_fragment, MCP_SERVER_NAME
 from robot_brain.agent import CONFIG_RESOURCE, PROMPT_RESOURCE
 from robot_mcp.tools import TOOL_NAMES
+from test_openclaw_validates import repository_root
 
 FRAGMENT = config_fragment()
 
-#: The workspace packages the launch command must put on ``PYTHONPATH``.
-REQUIRED_PACKAGES = ('robot_skills', 'robot_backends', 'robot_safety', 'robot_mcp')
+#: The ``ssh`` options this fragment may carry *before* its destination.  Only
+#: flags that take no value belong here: one that takes a value would swallow
+#: the destination and silently shift what :func:`remote_command` returns.
+VALUELESS_SSH_OPTIONS = frozenset({'-T', '-t', '-q', '-n', '-4', '-6'})
+
+#: The launcher the command must go through, relative to the repository root.
+#: It discovers the workspace packages itself; see
+#: ``test_the_launch_command_leaves_the_package_list_to_the_launcher``.
+LAUNCHER_RELATIVE_PATH = 'scripts/robot-mcp-launch.sh'
 
 #: A Telegram bot token: digits, a colon, then a long opaque string.  The
 #: shape, not a specific token -- a committed credential must fail the suite
@@ -73,6 +83,37 @@ def agent() -> dict:
 def launch_command() -> str:
     """Return the whole launch command line, arguments joined."""
     return ' '.join([server()['command'], *server()['args']])
+
+
+def remote_command() -> str:
+    """Return the single string ``ssh`` hands the *remote* shell.
+
+    ``ssh`` does not re-quote.  ``ssh(1)``: "If supplied, the arguments will be
+    appended to the command, separated by spaces, before it is sent to the
+    server to be executed."  An MCP client spawns ``command`` + ``args`` as a
+    real argv with no shell in between, so everything after the destination is
+    flattened into one string that the remote login shell then parses -- and
+    every quote that re-parse needs has to be inside these arguments already.
+
+    The destination is the first argument that is not an option, which is only
+    unambiguous while every option before it takes no value -- see
+    :data:`VALUELESS_SSH_OPTIONS`.
+    """
+    args = server()['args']
+    destination = next(index for index, argument in enumerate(args)
+                       if not argument.startswith('-'))
+    assert set(args[:destination]) <= VALUELESS_SSH_OPTIONS, (
+        f'{args[:destination]}: an ssh option that takes a value (`-o '
+        f'BatchMode=yes`, `-p 22`, `-i key`, `-J jump`) makes "the first '
+        f'non-option argument" the wrong destination, so this helper slices '
+        f'the command in the wrong place -- teach it the new option rather '
+        f'than reading the failure below as a broken launch command')
+    return ' '.join(args[destination + 1:])
+
+
+def remote_argv() -> list[str]:
+    """Return the argv the remote shell builds from :func:`remote_command`."""
+    return shlex.split(remote_command())
 
 
 def walk(value):
@@ -293,11 +334,18 @@ def test_the_fragment_contains_no_secret():
 
 
 def test_the_launch_command_starts_this_repos_server_over_stdio():
-    """The transport OpenClaw is told to use is the one the server speaks."""
+    """The transport OpenClaw is told to use is the one the server speaks.
+
+    ``python -m robot_mcp`` is no longer named here: the launcher owns the
+    interpreter invocation, and this asserts on the launcher -- which must be
+    a file that exists in this checkout, so renaming or moving it fails here
+    rather than on the Pi.
+    """
     assert server()['transport'] == 'stdio'
     assert server()['enabled'] is True
     command = launch_command()
-    assert 'python -m robot_mcp' in command
+    assert LAUNCHER_RELATIVE_PATH in command
+    assert (repository_root() / LAUNCHER_RELATIVE_PATH).is_file()
 
 
 def test_the_launch_command_reaches_the_laptop_without_a_pty():
@@ -310,15 +358,82 @@ def test_the_launch_command_reaches_the_laptop_without_a_pty():
     assert '-T' in server()['args']
 
 
-def test_the_launch_command_carries_every_package_the_server_needs():
-    """Including ``robot_safety`` -- the gate is a runtime dependency now.
+def test_the_launch_command_leaves_the_package_list_to_the_launcher():
+    """The assertion is inverted on purpose: there must be **no** list here.
 
-    A missing entry here is not a subtle degradation: the server fails to
-    import and the agent has no tools at all.
+    This test used to hold a ``REQUIRED_PACKAGES`` tuple and check each name
+    appeared in the command.  It could only ever assert the list it had been
+    told about, and that is exactly how it failed: #54 added ``robot_world``,
+    which ``robot_mcp/server.py`` imports unconditionally, and neither the
+    command nor this tuple gained it.  Both stayed green, and the deployed
+    server died with ``ModuleNotFoundError``.
+
+    So the shape of the check changed rather than its contents.  A command
+    that names packages at all is the bug; the launcher discovers them from
+    ``src/*/package.xml`` (``scripts/robot-mcp-launch.sh``), which the
+    boot-smoke in ``scripts/tests/test_boot_smoke.py`` proves by booting the
+    real thing with one package removed.
     """
-    command = launch_command()
-    for package in REQUIRED_PACKAGES:
-        assert f'/src/{package}' in command, package
+    entry = json.dumps(server())
+    assert 'PYTHONPATH' not in entry, 'the launcher sets it, from discovery'
+    assert '/src/' not in entry, (
+        'a hand-maintained package list on the deploy path is the #55 bug')
+
+
+def test_the_flattened_remote_command_is_one_the_remote_shell_can_run():
+    """``ssh`` flattens its arguments; the quoting must survive that.
+
+    The fragment shipped ``["bash", "-lc", "exec pixi run ... launcher"]`` as
+    three separate array elements.  A client spawns argv directly, ``ssh``
+    joins the tail with spaces and does **not** re-quote, so the remote shell
+    received ``bash -lc exec pixi run ...`` -- and ``bash -c`` takes only the
+    *next word* as its command string, assigning the rest to ``$0``, ``$1``,
+    ....  The remote therefore ran a bare ``exec``, which is a documented
+    no-op, and **exited 0 having started nothing**: a launch path that reports
+    success and serves no tools.  Verified by simulating the flatten::
+
+        bash -c "bash -lc exec pixi --version"    # no output, rc=0
+        bash -c "bash -lc 'exec pixi --version'"  # pixi 0.76.1, rc=0
+
+    So the assertion is on the flattened string, split the way a shell splits
+    it, and it deliberately pins the login shell: ``-lc`` is what puts ``pixi``
+    on ``PATH`` for a non-interactive ``ssh`` command, and dropping it is a
+    change that must be made on purpose (and re-probed), not by accident.
+    """
+    words = remote_argv()
+
+    assert words[:2] == ['bash', '-lc'], words
+    assert len(words) == 3, (
+        f'a login shell runs only its next word; {words[3:]} would become '
+        f'$0, $1, ... and never execute')
+    inner = shlex.split(words[2])
+    assert inner[0] == 'exec', 'exec, so no shell lingers around the server'
+    assert inner[-1].endswith(LAUNCHER_RELATIVE_PATH), inner
+
+
+def test_the_two_absolute_paths_in_the_command_name_one_checkout():
+    """The environment and the launcher must come from the same checkout.
+
+    ``README.md`` step 3 tells a human to hand-edit both; edit one and the
+    deploy runs checkout B's launcher inside checkout A's environment, which
+    is this issue's drift class with a new hat on.  Cheap to pin, because both
+    paths are right here in the same string.
+
+    **Absolute, too.**  A relative pair would agree with each other and pass
+    every other assertion in this file while being unrunnable: the remote
+    shell starts in ``$HOME``, not in the checkout, so ``scripts/robot-mcp-
+    launch.sh`` resolves to nothing there.  The one-checkout rule is only
+    worth having if the checkout is named from the root.
+    """
+    inner = shlex.split(remote_argv()[2])
+    manifest = PurePosixPath(inner[inner.index('--manifest-path') + 1])
+    launcher = PurePosixPath(inner[-1])
+
+    assert manifest.name == 'pixi.toml', manifest
+    assert launcher.parent.parent == manifest.parent, (manifest, launcher)
+    assert manifest.is_absolute() and launcher.is_absolute(), (
+        f'the remote shell runs in $HOME, not in the checkout: '
+        f'{manifest}, {launcher}')
 
 
 def test_the_exposed_tools_are_the_tools_this_agent_should_have():

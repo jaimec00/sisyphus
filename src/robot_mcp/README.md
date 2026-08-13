@@ -106,16 +106,24 @@ side of.)
 From a clean checkout, with no colcon build:
 
 ```bash
-cd <repo> && PYTHONPATH=<repo>/src/robot_skills:<repo>/src/robot_backends:<repo>/src/robot_safety:<repo>/src/robot_mcp \
-  pixi run --frozen python -m robot_mcp
+pixi run --frozen --manifest-path <repo>/pixi.toml <repo>/scripts/robot-mcp-launch.sh
 ```
 
 Concretely, for a checkout at `/home/sisyphus/worktrees/main`:
 
 ```bash
-cd /home/sisyphus/worktrees/main && PYTHONPATH=/home/sisyphus/worktrees/main/src/robot_skills:/home/sisyphus/worktrees/main/src/robot_backends:/home/sisyphus/worktrees/main/src/robot_safety:/home/sisyphus/worktrees/main/src/robot_mcp \
-  pixi run --frozen python -m robot_mcp
+pixi run --frozen --manifest-path /home/sisyphus/worktrees/main/pixi.toml \
+  /home/sisyphus/worktrees/main/scripts/robot-mcp-launch.sh
 ```
+
+`scripts/robot-mcp-launch.sh` puts every `src/<pkg>` holding a `package.xml` on
+`PYTHONPATH` and then execs `python -m robot_mcp`, forwarding whatever
+arguments you gave it. **There is deliberately no package list to keep in
+sync**: this command used to carry one, `robot_world` never got added to it,
+and the deployed server died with `ModuleNotFoundError` while the test suite
+stayed green (#55, #56). `pixi run` supplies the environment, the launcher
+supplies the path, and `pixi run test` boots the server through this same
+script (`scripts/tests/test_boot_smoke.py`) so a broken launch fails the gate.
 
 It speaks MCP on stdin/stdout and logs nothing there, so point a client at it:
 
@@ -127,11 +135,8 @@ It speaks MCP on stdin/stdout and logs nothing there, so point a client at it:
       "args": [
         "run", "--frozen",
         "--manifest-path", "/home/sisyphus/worktrees/main/pixi.toml",
-        "python", "-m", "robot_mcp"
-      ],
-      "env": {
-        "PYTHONPATH": "/home/sisyphus/worktrees/main/src/robot_skills:/home/sisyphus/worktrees/main/src/robot_backends:/home/sisyphus/worktrees/main/src/robot_safety:/home/sisyphus/worktrees/main/src/robot_mcp"
-      }
+        "/home/sisyphus/worktrees/main/scripts/robot-mcp-launch.sh"
+      ]
     }
   }
 }
@@ -139,9 +144,7 @@ It speaks MCP on stdin/stdout and logs nothing there, so point a client at it:
 
 `--manifest-path` is what makes the config independent of the client's working
 directory; drop it if your client launches the command from the repo root.
-
-Add `robot_world` to the `PYTHONPATH` list above (`<repo>/src/robot_world`) —
-the server imports it for the world store.
+No `env` block: the path is discovered, not configured.
 
 ### Where the world lives
 
@@ -158,7 +161,7 @@ A flag beats its environment variable. `--world-seed` alone is refused (there
 would be nothing to seed).
 
 ```bash
-python -m robot_mcp --world-state ~/.local/state/robot/world.json
+scripts/robot-mcp-launch.sh --world-state ~/.local/state/robot/world.json
 ```
 
 With that, object poses and the object registry survive a restart. The robot
@@ -171,8 +174,8 @@ pointed at the same file concurrently are not supported (last writer wins).
 `robot_mcp_server` console script into `install/robot_mcp/lib/robot_mcp/`, which
 ament_python does not put on `PATH` — so a client config would name it by
 absolute path (`<repo>/install/robot_mcp/lib/robot_mcp/robot_mcp_server`) after
-sourcing `install/setup.bash`. The `python -m` command above needs neither, and
-is the one to prefer.
+sourcing `install/setup.bash`. The launcher above needs neither — and it is the
+one the gate boots — so it is the one to prefer.
 
 ## Drive one in-process
 

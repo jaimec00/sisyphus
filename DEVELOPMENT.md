@@ -86,7 +86,10 @@ pixi run openclaw doctor               # what the schema cannot catch: globs,
    follow-up **comment on the issue**; Sisyphus files them).
 8. **Test** — `test-runner` runs the suite, reporting pass/fail + log path only.
    Loop 5–8 until green.
-9. **PR** — the manager opens a **squash-merge** PR (full local suite passes;
+9. **PR** — before signalling ready, the manager **re-reads the feature's
+   `docs/design/decisions.md` entry against the final diff** (the durable log is
+   the least-reviewed artifact here and outlives every ephemeral doc), then
+   opens a **squash-merge** PR (full local suite passes;
    light GitHub CI runs guards). The `docs/features/<slug>/` docs stay for review;
    the manager posts a **retro comment on the PR**.
 10. **Merge** — when green, Sisyphus **deletes the ephemeral `docs/features/<slug>/`

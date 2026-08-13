@@ -45,16 +45,32 @@ the run is resumable.
    **design fork** still escalates to Sisyphus per the escalation rule below.
 5. Dispatch **implementer** → code + tests + `implementation.md`.
 6. Dispatch **red-team** → `red_team.md`. Prompt it with **where to look
-   hardest**: name your own rulings and judgment calls as explicit targets
-   ("attack R5 — does that merge order let a caller override the tool name?")
-   with concrete failure hypotheses, not a generic "review this."
-7. If BLOCK items exist: resume **implementer** to fix. Max **2** red-team↔fix
-   rounds; surviving NOTES → a **follow-up comment on the issue** (Sisyphus files
-   the issues; do not create them yourself).
+   hardest**: restate each of your own rulings and judgment calls as a
+   **falsifiable claim** and tell it to **disprove that claim empirically — run
+   the code, don't reason about it** ("R5 claims the boot-smoke fails when a
+   package is dropped from discovery: sabotage discovery and show me the run";
+   "attack R5 — does that merge order let a caller override the tool name?").
+   A ruling nobody tried to break is still an assumption, and a generic "review
+   this" buys a generic review.
+7. If BLOCK items exist: resume **implementer** to fix — then **red-team the fix
+   itself**, a second pass scoped to just the fix diff. A fix is new logic the
+   round-1 review never saw, and it is written under time pressure by the agent
+   that got it wrong the first time. Hand that pass the heuristic that keeps
+   paying: *a fix that corrects a claim in N places is a strong prior the same
+   claim is wrong in an N+1th* — its job is to find the N+1th. **The scoped
+   pass is part of that round, not another one.** Max **2** red-team↔fix
+   rounds; surviving NOTES → a **follow-up comment on the issue** (Sisyphus
+   files the issues; do not create them yourself).
 8. Dispatch **test-runner**. If FAIL: resume implementer (may read the logs) →
    back to steps 6/8 as needed until green.
-9. When green against **current** main: open a **squash-merge** PR, ensure the
-   full local suite passes, and report "ready" to Sisyphus with the PR link.
+9. When green against **current** main: **re-read the durable decision against
+   the final diff** — if the feature adds or amends a `docs/design/decisions.md`
+   entry, read that entry once more against the diff as it actually landed, not
+   as it was planned. The decision log is the least-reviewed, longest-half-life
+   artifact in the repo: in #55 a correction was made in the ephemeral
+   `docs/features/<slug>/` copy and D23 kept the sentence it corrected. Then
+   open a **squash-merge** PR, ensure the full local suite passes, and report
+   "ready" to Sisyphus with the PR link.
    **Do NOT merge, and do NOT delete the `docs/features/<slug>/` docs** — they
    stay for review; Sisyphus deletes them at merge (the CI "docs clean" check
    reads as failing until then — expected).

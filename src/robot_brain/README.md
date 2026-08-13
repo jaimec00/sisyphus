@@ -106,33 +106,54 @@ env.
    - one entry appended to the top-level `bindings` array.
 3. **Point the launch command at your checkout — you almost certainly have to
    edit this.** The fragment hard-codes `/home/sisyphus/worktrees/main` in
-   **three** places inside `mcp.servers.robot.args`: the four `PYTHONPATH`
-   entries, the `--manifest-path`, and the `ssh` destination alias `laptop`
-   (which must resolve on the *Pi's* `~/.ssh/config`, not on the laptop's).
-   None of those three was verified against a real Pi from this repo. Change
-   every one that does not match your machines; a stale path here fails as
-   "the agent has no tools", not as a readable error. All four packages
-   (`robot_skills`, `robot_backends`, `robot_safety`, `robot_mcp`) must be on
-   `PYTHONPATH` — `robot_safety` is a runtime dependency since the safety gate
-   landed, and without it the server does not import at all.
-4. **Check the SSH leg by hand first**, before involving OpenClaw:
+   **two** places inside `mcp.servers.robot.args` — the `--manifest-path` and
+   the path to `scripts/robot-mcp-launch.sh` — plus the `ssh` destination alias
+   `laptop` (which must resolve on the *Pi's* `~/.ssh/config`, not on the
+   laptop's). None of the three was verified against a real Pi from this repo.
+   Change every one that does not match your machines; a stale path here fails
+   as "the agent has no tools", not as a readable error.
+
+   There is **no package list to edit**: the launcher discovers every
+   `src/<pkg>` with a `package.xml` and puts it on `PYTHONPATH` itself. That
+   list used to be a third thing to hand-edit here, and it is what broke the
+   deployment in #55 — `robot_world` was added to the workspace, the list was
+   not, and the server stopped importing.
+4. **Check the SSH leg by hand first**, before involving OpenClaw — with the
+   command spelled exactly as the fragment spells it:
    ```bash
-   ssh -T laptop 'PYTHONPATH=… pixi run --frozen --manifest-path …/pixi.toml python -m robot_mcp' \
+   ssh -T laptop "bash -lc 'exec pixi run --frozen --manifest-path …/pixi.toml …/scripts/robot-mcp-launch.sh'" \
      <<< '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"probe","version":"0"}}}'
    ```
+   **The outer quotes are load-bearing.** `ssh` appends its arguments
+   "separated by spaces, before it is sent to the server to be executed"
+   (`ssh(1)`) and does not re-quote them, so the entire remote command has to
+   be *one* argument carrying its own quoting. Written as separate words
+   (`ssh -T laptop bash -lc 'exec …'`), the remote shell sees
+   `bash -lc exec pixi …`, `bash -c` takes only the next word as its command
+   string, and the remote runs a bare `exec` — a no-op that **exits 0 having
+   started nothing**, which surfaces as "the agent has no tools" with no error
+   anywhere. That is what the fragment used to ship;
+   `test_openclaw_config.py::test_the_flattened_remote_command_is_one_the_remote_shell_can_run`
+   now asserts the flattened, re-split form for exactly this reason.
+
    One JSON-RPC frame must come back on stdout and **nothing else** — no
    banner, no motd, no warning. If the shell prints anything of its own, fix
    that first: it will corrupt the MCP stream.
 
    What *has* been checked, on the laptop, is the half that does not need the
-   Pi: the exact command the fragment ships, run through `bash -lc` (login
-   shell and all), puts a single JSON-RPC frame on stdout and nothing else —
-   `pixi`'s manifest warning goes to stderr, and this account's profile files
-   print nothing at all. What is **not** checked is the `ssh` hop itself: the
-   `laptop` alias does not resolve from the laptop, so only the Pi can run
-   this step. If a login shell on your machines does turn out to print
-   something, drop the `-l` (use `bash -c` with an absolute `pixi` path)
-   rather than trying to document around it.
+   Pi: the remote command the fragment produces — `ssh`'s flattening simulated
+   by joining the arguments after the destination and running the result the
+   way `sshd` does, `bash -c "<flattened string>"` — puts a single JSON-RPC
+   frame on stdout and nothing else, with `pixi`'s manifest warning on stderr
+   and no output at all from this account's profile files. The `-l` is checked
+   too, on this laptop: with a stripped environment (`env -i HOME=… USER=…`),
+   `bash -c 'command -v pixi'` finds nothing and `bash -lc 'command -v pixi'`
+   resolves it — so the login shell is what makes `pixi` reachable over a
+   non-interactive `ssh` command. What is **not** checked is the `ssh` hop
+   itself, or the *Pi's* login shell: the `laptop` alias does not resolve from
+   the laptop, so only the Pi can run this step. If a login shell on your
+   machines does turn out to print something, drop the `-l` (use `bash -c`
+   with an absolute `pixi` path) rather than trying to document around it.
 5. **Add the Telegram account on the Pi, with the `openclaw` CLI** — the bot
    token is a secret and is never committed to this repo. Then set the
    binding's `match.accountId` to that account's id (the fragment ships
