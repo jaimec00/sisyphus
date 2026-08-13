@@ -17,37 +17,53 @@ success. Either way a "green" merge can be hollow.
 A bar of "more than zero tests" is also too low on its own: a package can
 drop from 59 tests to 3 (a stray ``testpaths`` edit, an ``--ignore`` in
 ``addopts``, a deleted module) and still clear it. So the guard additionally
-**ratchets**: ``scripts/test_baseline.json`` records the non-linter test
-count of every package, and a package that collects fewer than its baseline
-fails. A package that grows implementation code must have non-linter tests at
-all -- three ament linter tests are an honest suite for an empty skeleton
-package, and a dishonest one the moment the package holds real code.
+**ratchets**: ``scripts/test_baseline.json`` records, per package, how many
+non-skipped non-linter tests ran, and a package that produces fewer than its
+baseline fails. Skipping a test therefore trips the ratchet exactly as
+deleting it does -- ``@pytest.mark.skip`` on ten tests removes ten tests'
+worth of evidence whether or not they are still collected. A package that
+grows implementation code must have non-linter tests at all -- three ament
+linter tests are an honest suite for an empty skeleton package, and a
+dishonest one the moment the package holds real code.
 
-Update the baseline (and commit it) whenever tests are legitimately added or
-removed::
-
-    python scripts/check_test_integrity.py --update-baseline
+The floor **maintains itself in one direction**. A full run rewrites the
+baseline UP to whatever a package now produces (and creates the entry for a
+package that has none), so adding tests carries its own floor bump and no one
+has to remember ``--update-baseline``; a run that stays level rewrites
+nothing. Going DOWN is the gate, and stays manual: a package below its floor
+fails unless the run was explicitly told to allow it (``--allow-decrease``, or
+``ALLOW_TEST_DECREASE=1`` in the environment), which re-cuts that floor down
+and passes. Neither direction is written from a run that is not otherwise
+green -- a floor cut from a broken run would pin the brokenness in place.
 
 This module is both:
 
 * a **guard** -- :func:`audit` reads the JUnit XML that ``colcon test``
   already produced and fails when an expected package has no result file, a
   result reporting zero collected tests, a result in which every collected
-  test was skipped, fewer non-linter tests than the baseline records, or no
-  non-linter tests at all for a package holding implementation code. It never
-  runs tests itself, so it can only ever report what colcon actually did; and
+  test was skipped, fewer non-skipped non-linter tests than the baseline
+  records, or no non-linter tests at all for a package holding implementation
+  code. It never runs tests itself, so it can only ever report what colcon
+  actually did; and
 * the **driver** ``pixi run test`` invokes, which deletes stale results, runs
   ``colcon test``, runs the workspace-tooling suite (the tests for this very
-  file), surfaces every result via ``colcon test-result --all``, and then
-  audits. Every stage runs even if an earlier one failed, so the per-package
-  summary is always printed; the exit code is non-zero if any stage failed.
+  file), surfaces every result via ``colcon test-result --all``, audits, and
+  then ratchets the baseline. Every stage runs even if an earlier one failed,
+  so the per-package summary is always printed; the exit code is non-zero if
+  any stage failed.
+
+``--audit-only`` stays **read-only**: it re-reads XML that some earlier run
+produced, which is evidence about the past, not about the tree as it now
+stands, so it never auto-bumps a floor. Only the full driver -- the run that
+produced the results it is judging -- moves the baseline on its own.
 
 Usage::
 
     python scripts/check_test_integrity.py                  # full honest run
     python scripts/check_test_integrity.py --audit-only     # just re-read XML
     python scripts/check_test_integrity.py --packages-select robot_skills
-    python scripts/check_test_integrity.py --update-baseline  # re-cut floor
+    python scripts/check_test_integrity.py --allow-decrease   # re-cut down
+    python scripts/check_test_integrity.py --update-baseline  # + prune
 """
 
 import argparse
@@ -78,6 +94,14 @@ MTIME_TOLERANCE = 2.0
 #: guard discounts exactly the tests colcon considers skipped.
 SKIPPED_ATTRIBUTES = ('skip', 'skipped', 'disabled')
 
+#: Child elements a JUnit ``<testcase>`` carries when its body never ran.
+#: pytest writes ``<skipped type="pytest.skip">`` for ``@pytest.mark.skip``,
+#: ``pytest.importorskip`` and ``pytest.skip()``, and the same tag with
+#: ``type="pytest.xfail"`` for an expected failure -- neither executed, so
+#: neither is evidence. The other two spellings mirror
+#: :data:`SKIPPED_ATTRIBUTES`, for result writers that use them.
+SKIPPED_CASE_TAGS = frozenset({'skipped', 'skip', 'disabled'})
+
 #: Test names (equivalently, test module names) that belong to a linter rather
 #: than to the package's own behaviour. Every ament linter test is a single
 #: function whose name matches its module's, so matching either is enough --
@@ -99,21 +123,36 @@ NON_IMPLEMENTATION_FILES = frozenset({
 #: Checked-in per-package non-linter test counts -- the ratchet's floor.
 BASELINE_FILENAME = 'test_baseline.json'
 
-#: What to tell someone whose run just tripped (or could not read) the ratchet.
-BASELINE_HELP = ('if this is intended, re-cut the floor with '
-                 '`python scripts/check_test_integrity.py --update-baseline` '
-                 'and commit the result')
+#: Environment variable that permits this run to re-cut a floor downwards.
+ALLOW_DECREASE_ENV = 'ALLOW_TEST_DECREASE'
+
+#: What to tell someone whose run just tripped the ratchet. The floor rises by
+#: itself, so the only thing left to explain is how to lower one on purpose.
+BASELINE_HELP = (
+    f'the floor rises by itself as tests are added, so lowering it has to be '
+    f'deliberate: if the loss is intended, re-run with {ALLOW_DECREASE_ENV}=1 '
+    f'(or --allow-decrease) to re-cut the floor down, and commit the result')
+
+#: What to tell someone whose baseline file is missing or unreadable. That is
+#: a broken artifact rather than a tripped ratchet, so it wants other advice.
+BASELINE_REPAIR_HELP = (
+    'restore it from git, or re-create it with `python '
+    'scripts/check_test_integrity.py --update-baseline`')
 
 #: Header written into the baseline file so it explains itself in a diff.
 BASELINE_COMMENT = (
-    'Per-package non-linter test counts: the floor scripts/'
-    'check_test_integrity.py ratchets against. Regenerate with '
-    '`python scripts/check_test_integrity.py --update-baseline`; a drop below '
-    'these numbers fails `pixi run test`.')
+    'Per-package counts of the tests that actually ran and are not ament '
+    'linters: the floor scripts/check_test_integrity.py ratchets against. '
+    'This file is maintained by `pixi run test`, which raises a floor '
+    'whenever a package produces more -- commit it with the change that grew '
+    'the suite. Producing FEWER than these numbers (tests deleted, skipped, '
+    'or no longer collected) fails `pixi run test` unless the run is told to '
+    f'allow it with {ALLOW_DECREASE_ENV}=1 or --allow-decrease.')
 
 #: Counts read from one JUnit XML file. ``sentinel_only`` is True when every
 #: test case in the file is colcon's placeholder (see above);
-#: ``non_linter`` counts the test cases that are not linter tests.
+#: ``non_linter`` counts the test cases that are neither linter tests nor
+#: skipped.
 XUnitCounts = collections.namedtuple(
     'XUnitCounts', 'tests errors failures skipped sentinel_only non_linter')
 
@@ -315,9 +354,13 @@ def parse_xunit(path):
         case.get('name') == MISSING_RESULT_TESTCASE for case in cases)
     # A result that reports counts without listing its cases (colcon's own
     # placeholder, a hand-written summary) says nothing about *which* tests
-    # ran, so credit them all as real rather than invent a shortfall.
-    non_linter = (sum(1 for case in cases if not is_linter_case(case))
-                  if cases else tests)
+    # ran, so credit every test it does claim to have run rather than invent
+    # a shortfall -- but its skipped count is still a count of tests that did
+    # not run, so it is subtracted here exactly as the per-case skips are.
+    non_linter = (
+        sum(1 for case in cases
+            if not is_linter_case(case) and not is_skipped_case(case))
+        if cases else max(tests - skipped, 0))
     return XUnitCounts(
         tests, errors, failures, skipped, sentinel_only, non_linter)
 
@@ -334,6 +377,19 @@ def is_linter_case(case):
     name = (case.get('name') or '').split('[')[0]
     module = (case.get('classname') or '').split('.')[-1]
     return name in LINTER_TEST_NAMES or module in LINTER_TEST_NAMES
+
+
+def is_skipped_case(case):
+    """Return True when a JUnit ``<testcase>`` records a test that never ran.
+
+    A skipped test is not evidence about the code, so the ratchet must not
+    accept one in place of the test it used to be: ``@pytest.mark.skip`` on
+    ten tests removes exactly as much coverage as deleting them, and leaves
+    the *collected* count untouched, so counting collections would let a suite
+    be hollowed out without tripping anything. Discounting them here means a
+    skip and a deletion trip the same floor.
+    """
+    return any(child.tag in SKIPPED_CASE_TAGS for child in case)
 
 
 def find_implementation_modules(package_dir):
@@ -418,14 +474,14 @@ def audit_package(name, build_base, *, min_mtime=None, baseline=None,
     ``pytest.missing_result`` placeholder counts as no result at all -- it is
     the record of a run that never happened.
 
-    Two further rules act on the *non-linter* count (see
-    :func:`is_linter_case`). A package listing ``implementation`` modules
-    (:func:`find_implementation_modules`) must have at least one non-linter
-    test, so code cannot land behind a suite of nothing but linters. And when
-    ``baseline`` is given, collecting fewer non-linter tests than it records
-    fails: the ratchet that catches a suite quietly shrinking. The count is
-    of tests *collected*, not executed, so a legitimately skipped test does
-    not trip the ratchet -- skips are the all-skipped rule's business.
+    Two further rules act on the *non-linter, non-skipped* count (see
+    :func:`is_linter_case` and :func:`is_skipped_case`). A package listing
+    ``implementation`` modules (:func:`find_implementation_modules`) must have
+    at least one such test, so code cannot land behind a suite of nothing but
+    linters and skips. And when ``baseline`` is given, producing fewer of them
+    than it records fails: the ratchet that catches a suite quietly shrinking,
+    whether the tests were deleted, stopped being collected, or were skipped
+    where they used to run.
     """
     directory = Path(build_base) / name
     files = find_result_files(directory) if directory.is_dir() else []
@@ -482,14 +538,14 @@ def audit_package(name, build_base, *, min_mtime=None, baseline=None,
         verdict.status = _STATUS_NO_REAL_TESTS
         verdict.detail = (
             f'holds implementation code ({_join_names(verdict.implementation)})'
-            f' but all {tests} collected tests are linter tests: nothing '
-            f'tests what this package does')
+            f' but every one of its {tests} collected tests is a linter test '
+            f'or was skipped: nothing tests what this package does')
     elif baseline is not None and non_linter < baseline:
         verdict.status = _STATUS_BELOW_BASELINE
         verdict.detail = (
-            f'{non_linter} non-linter tests, {baseline - non_linter} below '
-            f'the baseline of {baseline}: tests were removed or stopped being '
-            f'collected -- {BASELINE_HELP}')
+            f'{non_linter} non-linter tests ran, {baseline - non_linter} '
+            f'below the baseline of {baseline}: tests were removed, skipped, '
+            f'or stopped being collected -- {BASELINE_HELP}')
     return verdict
 
 
@@ -529,13 +585,14 @@ def load_baseline(path):
     except OSError as error:
         raise ValueError(
             f'{path}: baseline file cannot be read ({error.strerror}); '
-            f'{BASELINE_HELP}')
+            f'{BASELINE_REPAIR_HELP}')
     except json.JSONDecodeError as error:
         raise ValueError(f'{path}: baseline file is not valid JSON ({error})')
     packages = data.get('packages') if isinstance(data, dict) else None
     if not isinstance(packages, dict):
         raise ValueError(
-            f'{path}: baseline file has no "packages" object; {BASELINE_HELP}')
+            f'{path}: baseline file has no "packages" object; '
+            f'{BASELINE_REPAIR_HELP}')
     counts = {}
     for name, value in packages.items():
         if isinstance(value, bool) or not isinstance(value, int) or value < 0:
@@ -556,14 +613,45 @@ def write_baseline(path, counts):
                           encoding='utf-8')
 
 
-def baseline_changes(baseline, audits):
-    """Return ``(name, old, new)`` for every count an update would change."""
-    changed = []
+def baseline_updates(baseline, audits, *, allow_decrease=False):
+    """Return ``{package: new floor}`` for the entries a run should rewrite.
+
+    The ratchet only turns one way on its own. A package that produced *more*
+    non-linter tests than its floor records raises it, and a package with no
+    entry gets one, so growing a suite records its own new floor and there is
+    no manual step to forget. A package that produced *fewer* is the failure
+    the floor exists to catch, and is rewritten only when ``allow_decrease``
+    says the loss was deliberate; blindly re-cutting to the current count
+    would turn the guard into a rubber stamp -- a package collapsing from 61
+    tests to 3 would simply record 3 and pass.
+    """
+    updates = {}
     for verdict in sorted(audits, key=lambda a: a.name):
         old = baseline.get(verdict.name)
-        if old != verdict.non_linter:
-            changed.append((verdict.name, old, verdict.non_linter))
-    return changed
+        if old is None or verdict.non_linter > old:
+            updates[verdict.name] = verdict.non_linter
+        elif allow_decrease and verdict.non_linter < old:
+            updates[verdict.name] = verdict.non_linter
+    return updates
+
+
+def baseline_blockers(audits, *, allow_decrease=False):
+    """Return the verdicts that make a run unfit to re-cut a floor from.
+
+    A floor is a claim about how much testing this workspace really does, so
+    it may only be cut from a run that actually did it. Anything short of a
+    usable result -- no result file, zero tests, an all-skipped suite, stale
+    evidence, implementation code with no real test -- would pin the wrong
+    number, and so would a run whose tests errored or failed: an error during
+    collection silently costs a module's worth of tests, and a red suite is
+    not a measurement of anything. Being *below* the floor is the one
+    exception, and only when ``allow_decrease`` makes it the point of the run.
+    """
+    usable = {_STATUS_OK}
+    if allow_decrease:
+        usable.add(_STATUS_BELOW_BASELINE)
+    return [a for a in sorted(audits, key=lambda a: a.name)
+            if a.status not in usable or a.errors or a.failures]
 
 
 def unexpected_result_dirs(packages, build_base):
@@ -602,8 +690,8 @@ def format_baseline_delta(verdict):
 def format_report(audits, *, notes=(), show_age=False, tolerated=()):
     """Render the per-package summary printed on both success and failure.
 
-    ``tolerated`` names statuses that must not be reported as failures --
-    ``--update-baseline`` uses it so the counts it is about to re-cut are
+    ``tolerated`` names statuses that must not be reported as failures -- a
+    run allowed to lower a floor uses it so the count it is about to re-cut is
     shown as movement rather than as a verdict.
     """
     width = max([len(a.name) for a in audits] + [len('package')])
@@ -736,9 +824,9 @@ def _baseline_notes(baseline, packages, narrowed, error, updating=False):
 
     A package with no baseline entry, or an entry for a package that is no
     longer here, is reported but never fatal: adding a package must not fail
-    the run before its first ``--update-baseline``, and the "implementation
-    code needs real tests" rule already covers the case that matters. An
-    updating run is about to fix both, so it says nothing.
+    the run before it has a floor, and the "implementation code needs real
+    tests" rule already covers the case that matters. A run that is about to
+    write the file fixes both, so it says nothing.
     """
     if error is not None:
         return [f'error: {error}']
@@ -746,14 +834,28 @@ def _baseline_notes(baseline, packages, narrowed, error, updating=False):
         return []
     notes = [
         f'note: {name} has no entry in the test-count baseline (new '
-        f'package?), so nothing ratchets it yet; {BASELINE_HELP}'
+        f'package?), so nothing ratchets it yet; a full `pixi run test` '
+        f'records one automatically'
         for name in packages if name not in baseline]
     if narrowed:
         return notes
     return notes + [
         f'note: the test-count baseline still lists {name}, which is not in '
-        f'this workspace (renamed or removed?); {BASELINE_HELP}'
+        f'this workspace (renamed or removed?); prune it with `python '
+        f'scripts/check_test_integrity.py --update-baseline`'
         for name in sorted(set(baseline) - set(packages))]
+
+
+def _env_flag(name, environ=None):
+    """Return True when environment variable ``name`` is set to a yes.
+
+    Read permissively (``1``/``true``/``yes``/``on``, any case) because this
+    is a human typing a prefix on a command line, but *not* so permissively
+    that ``ALLOW_TEST_DECREASE=0`` -- the obvious way to write "no" -- quietly
+    lowers a floor.
+    """
+    value = (environ if environ is not None else os.environ).get(name, '')
+    return value.strip().lower() in ('1', 'true', 'yes', 'on')
 
 
 def _is_own_workspace(source_dir, repo_root):
@@ -764,39 +866,64 @@ def _is_own_workspace(source_dir, repo_root):
         return False
 
 
-def _update_baseline(path, baseline, audits, prune=False):
-    """Rewrite the baseline from ``audits``; return 0 on success, 1 if not.
+def _maintain_baseline(path, baseline, audits, *, allow_decrease=False,
+                       prune=False, explicit=False):
+    """Ratchet the baseline from ``audits``; return 0 on success, 1 if not.
 
-    Refuses to write from a run in which some package produced no usable
-    result at all -- a baseline cut from a broken run would bake that
-    brokenness in as the new floor. A package below its old floor is the
-    normal reason to be here, so that alone does not block the update; a
-    package holding implementation code with no real test never becomes
-    acceptable, so it does.
+    This is what makes the floor self-maintaining: every full run rewrites it
+    upwards to what the run just produced, so a PR that adds tests carries the
+    matching floor bump in its own diff instead of relying on someone
+    remembering ``--update-baseline`` (nobody did, and ``robot_world`` drifted
+    eleven tests above its recorded floor). Only :func:`baseline_updates`
+    decides what moves; this function decides *whether* anything may move,
+    prints the movement, and writes the file.
+
+    A run with :func:`baseline_blockers` writes nothing. When the caller asked
+    for the update in so many words that refusal is an error; when the ratchet
+    was merely doing its automatic housekeeping it is not, because the thing
+    that blocked it has already failed the run on its own and a second
+    complaint would only bury the first. Either way the file is left alone, so
+    a red run never leaves a rewritten baseline behind in the tree.
 
     ``prune`` drops entries for packages the run did not cover, which is
-    right for a whole-workspace run (the package is gone) and wrong for a
-    narrowed one (the package was merely not selected).
+    right for a whole-workspace ``--update-baseline`` (the package is gone)
+    and wrong for a narrowed one (the package was merely not selected) -- and
+    wrong for the automatic path, where an entry with no result is a package
+    that failed the audit, not a package that left.
     """
-    blockers = [a for a in audits
-                if a.status not in (_STATUS_OK, _STATUS_BELOW_BASELINE)]
+    updates = baseline_updates(baseline, audits, allow_decrease=allow_decrease)
+    blockers = baseline_blockers(audits, allow_decrease=allow_decrease)
     if blockers:
-        print('refusing to update the test-count baseline from a run that is '
-              'not otherwise green: ' +
-              ', '.join(f'{a.name} ({a.status})'
-                        for a in sorted(blockers, key=lambda a: a.name)))
+        if explicit or updates:
+            print('not updating the test-count baseline: this run is not '
+                  'otherwise green (' +
+                  ', '.join(f'{a.name} ({a.status})' for a in blockers) + ')')
+        return 1 if explicit else 0
+
+    counts = dict(baseline)
+    counts.update(updates)
+    if prune:
+        covered = {a.name for a in audits}
+        counts = {name: count for name, count in counts.items()
+                  if name in covered}
+    if counts == baseline:
+        return 0
+    try:
+        write_baseline(path, counts)
+    except OSError as error:
+        print(f'error: cannot write the test-count baseline {path} '
+              f'({error.strerror})')
         return 1
-    counts = {} if prune else dict(baseline)
-    counts.update({a.name: a.non_linter for a in audits})
-    changed = baseline_changes(baseline, audits)
-    dropped = sorted(set(baseline) - set(counts))
-    write_baseline(path, counts)
-    for name, old, new in changed:
-        print(f'baseline {name}: {"-" if old is None else old} -> {new}')
-    for name in dropped:
+    for name, new in sorted(updates.items()):
+        old = baseline.get(name)
+        movement = 'new' if old is None else (
+            'raised' if new > old else 'LOWERED')
+        print(f'baseline {name}: {"-" if old is None else old} -> {new} '
+              f'({movement})')
+    for name in sorted(set(baseline) - set(counts)):
         print(f'baseline {name}: {baseline[name]} -> dropped (no such '
               f'package in this workspace)')
-    print(f'wrote {path} ({len(changed)} package(s) changed); commit it')
+    print(f'wrote {path}; commit it with this change')
     return 0
 
 
@@ -829,12 +956,22 @@ def main(argv=None):
              f"is this repository's src/; point a run at another source tree "
              f'and the ratchet is inert unless you name its own baseline')
     parser.add_argument(
+        '--allow-decrease', action='store_true',
+        default=_env_flag(ALLOW_DECREASE_ENV),
+        help=f'permit this run to re-cut a floor DOWNWARDS: a package below '
+             f'its baseline stops being a failure and its entry is rewritten '
+             f'to the lower count. The deliberate act of recording tests that '
+             f'were legitimately removed; raising a floor needs no flag. Also '
+             f'settable as {ALLOW_DECREASE_ENV}=1 in the environment')
+    parser.add_argument(
         '--update-baseline', action='store_true',
-        help='re-cut the baseline from this run instead of ratcheting '
-             'against it, and commit the result: the supported way to record '
-             'legitimately added or removed tests. Refuses to write from a '
-             'run whose packages did not all produce a usable result')
+        help='--allow-decrease, plus drop entries for packages this run did '
+             'not cover: the way to re-cut the whole file after a package is '
+             'renamed or removed, and the only mode that writes the baseline '
+             'in --audit-only. Refuses to write from a run whose packages did '
+             'not all produce a usable result')
     args = parser.parse_args(argv)
+    allow_decrease = args.allow_decrease or args.update_baseline
 
     if not Path(args.source_dir).is_dir():
         parser.error(f'--source-dir is not a directory: {args.source_dir}')
@@ -891,10 +1028,19 @@ def main(argv=None):
     if baseline_path is not None:
         notes += _baseline_notes(baseline, packages, narrowed, baseline_error,
                                  updating=args.update_baseline)
-    # The counts --update-baseline is about to rewrite must not read as a
-    # verdict, so a shortfall is reported as movement instead of failure.
+    # The automatic ratchet only ever runs in the full driver: --audit-only
+    # re-reads whatever XML happens to be lying in the build tree, which is
+    # evidence about some earlier run rather than about this tree, and a floor
+    # is too load-bearing to cut from that. Asking for it in so many words
+    # (--update-baseline) still works there, for repairing the file by hand.
+    maintaining = baseline_path is not None and not baseline_error and (
+        args.update_baseline or not args.audit_only)
+    # A shortfall this run is about to record is movement, not a verdict, so
+    # it must not also be reported as a failure. A run that is *not* going to
+    # record it keeps the failure, so `--audit-only` cannot be made to swallow
+    # a shortfall it has no way of writing down.
     tolerated = frozenset(
-        [_STATUS_BELOW_BASELINE] if args.update_baseline else [])
+        [_STATUS_BELOW_BASELINE] if allow_decrease and maintaining else [])
 
     if args.audit_only:
         audits = audit(packages, args.build_base, baseline=baseline,
@@ -904,9 +1050,10 @@ def main(argv=None):
         print(format_report(audits, notes=notes, show_age=True,
                             tolerated=tolerated))
         rc = 0 if all(a.ok or a.status in tolerated for a in audits) else 1
-        if args.update_baseline:
-            rc |= _update_baseline(baseline_path, baseline, audits,
-                                   prune=not narrowed)
+        if maintaining:
+            rc |= _maintain_baseline(
+                baseline_path, baseline, audits, allow_decrease=allow_decrease,
+                prune=not narrowed, explicit=True)
         return 1 if (rc or baseline_error) else 0
 
     if narrowed:
@@ -946,9 +1093,11 @@ def main(argv=None):
     rc_baseline = 1 if baseline_error else 0
     if baseline_error:
         print(f'error: {baseline_error}')
-    if args.update_baseline:
-        rc_baseline |= _update_baseline(baseline_path, baseline, audits,
-                                        prune=not narrowed)
+    if maintaining:
+        rc_baseline |= _maintain_baseline(
+            baseline_path, baseline, audits, allow_decrease=allow_decrease,
+            prune=args.update_baseline and not narrowed,
+            explicit=args.update_baseline)
 
     stages = {
         'colcon test': rc_test,
