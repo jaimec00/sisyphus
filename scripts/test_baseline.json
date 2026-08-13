@@ -5,7 +5,7 @@
     "robot_backends": 74,
     "robot_brain": 50,
     "robot_bringup": 0,
-    "robot_description": 0,
+    "robot_description": 5,
     "robot_mcp": 82,
     "robot_perception": 0,
     "robot_safety": 176,
