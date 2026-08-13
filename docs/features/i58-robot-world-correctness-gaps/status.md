@@ -206,7 +206,25 @@ conversion as inferred-but-not-traced; trace it.
 - Also established: `deepcopy(WorldDocument)` raises `TypeError: cannot pickle
   'mappingproxy' object` — the issue's proposed deep copy is not merely
   unnecessary (R7), it is impossible without unwrapping the proxy.
-- Surviving NOTEs for the manager to route outward: **N4** (string `side`
+- Round 2 review (scoped to `f34e998`): no BLOCKs, all three fixes confirmed
+  landed. Five further NOTEs; the manager scoped in three, fixed in
+  `ROUND2SHA` — **N7** (the sentence N1 deleted from `store.py` survived in a
+  test docstring, and mis-attributed which test catches what), **N8** (the
+  module docstring still described the pre-`seed=` API: "`reset()` returns to
+  the document it was built from"), **N9** (my `!= drifted` assertion is a
+  tautology given dataclass equality — dropped). Docstrings, a comment and one
+  deleted assertion; no behaviour change.
+- Round-2 probes run: **Q1** `f34e998`'s `store.py` hunk was docstring-only
+  (executable line untouched); **Q3** reverting `seed=` still fails **exactly
+  two** tests after N9's deletion; **Q4** a first-appearance
+  `duplicate_hold_sides` now fails the ordering test (N3 discriminates by
+  construction); **Q5** no custom `__eq__` in `document.py`, confirming N9.
+  Per the red team's explicit recommendation, **no** test was added pinning
+  "the collapse cannot be written" — it would pin a non-behaviour.
+- Surviving NOTEs for the manager to route outward: **N10** (`document.py`'s
+  docstring cross-references `robot_world.store` for behaviour that lives in
+  `MockBackend._release_persisted_holds`), **N11** (test-*function* name in
+  shipped source — red team recommends no action), **N4** (string `side`
   bypasses the no-op short circuit → redundant write; pre-existing), **N5** (D23
   amendment, `decisions.md` not an owned path), **N6** (`MockBackend.store`
   docstring) and the `_grasp` mutate-then-raise ordering (both `robot_backends`,

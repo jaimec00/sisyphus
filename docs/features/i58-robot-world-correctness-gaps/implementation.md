@@ -10,6 +10,7 @@ Owned paths: `src/robot_world/` only (R10). Nothing outside it was edited.
 | `a777eef` | criterion 2 — `_seed` genuinely holds the seed, with tests |
 | `6a11e15` | follow-up hardening of the store-layer check (see "Surprises") |
 | `f34e998` | round-1 review fixes N1–N3 (see "Round 1 review fixes") |
+| `ROUND2SHA` | round-2 review fixes N7–N9 (see "Round 2 review fixes") |
 
 Each commit is green on its own (`src/robot_world/test` was run from the
 package directory after each).
@@ -246,6 +247,56 @@ cannot pickle 'mappingproxy' object`.** So the deep copy the issue proposed is
 not merely unnecessary (R7) — it is impossible without first unwrapping the
 proxy, which would mean building a *less* immutable document to copy it.
 
+## Round 2 review fixes (`ROUND2SHA`)
+
+No BLOCKs. The round-2 pass ran the "where else is this claim repeated" sweep on
+the N1 fix and found the deleted sentence still living in two other places, plus
+one assertion of mine that carries no weight. Docstrings, one comment and one
+deleted assertion; **no behaviour change**.
+
+**N7 — the sentence N1 removed from `store.py` survived in a test docstring.**
+`test_a_reopened_store_resets_to_the_seed_not_to_the_scene_it_opened`'s
+docstring still presented "someone collapses `seed_document()` into `return
+self._seed`" as the coming refactor *and* implied this test is what catches it.
+Both halves are wrong after `f34e998`: that collapse dies at construction (P1),
+and what this test actually catches is a dropped `seed=`. Reworded to say what
+it pins — `FileWorldStore` hands the true seed to `super().__init__` rather than
+letting `_seed` default to the live document — and to point at
+`test_reset_restores_from_the_seed_file_not_from_memory` for the seed-file
+re-read. The repo no longer contradicts itself about this mechanism.
+
+**N8 — the module docstring described the pre-`seed=` API.** `store.py:18-19`
+said a `WorldStore`'s `reset()` "returns to the document it was built from",
+which `test_a_store_can_be_told_its_seed_separately_from_its_scene` asserts is
+not so. Now: "returns to its seed, which is the document it was built from
+unless one is passed separately" — the wording of `__init__`'s own docstring.
+Round-1 collateral that both earlier passes missed; it is the first thing a
+reader of the module sees.
+
+**N9 — dropped my tautological assertion.** `assert
+WorldStore.seed_document(second) != drifted` cannot fail given the two
+assertions above it (`drifted != document`, `seed_document(second) == document`)
+and dataclass-generated equality — confirmed: `document.py` defines no custom
+`__eq__` (probe Q5). It read as a second guarantee while catching nothing, and
+its real cost is a maintainer deleting the assertion that *does* discriminate
+and keeping this one. The `reopened` block in the other test is the genuine
+strengthening and stays. The red team owns this one — its N2 "alternatively"
+branch proposed it, and I took both halves.
+
+### Round-2 probes, run
+
+| probe | result |
+| --- | --- |
+| Q1 (`f34e998` on `store.py` was docstring-only) | **confirmed** — the only hunk is inside `seed_document`'s docstring; `return read_seed_document(self._seed_path)` untouched |
+| Q2 (lint/pep257/copyright) | green, in every package run below |
+| Q3 (N2's "two tests") | **exactly two** fail on reverting `seed=`, still true after N9's deletion: the reopened-store test and the mutate-then-reset test |
+| Q4 (N3 discriminates) | **confirmed** — a first-appearance `duplicate_hold_sides` now fails `test_one_object_per_gripper_is_all_the_rule_forbids` with `[Side.RIGHT, Side.LEFT] != [Side.LEFT, Side.RIGHT]` |
+| Q5 (N9's tautology) | **confirmed** — no custom `__eq__` in `document.py`, so equality is transitive and the assertion was implied |
+
+I did **not** add a test pinning "the collapse cannot be written", per the red
+team's explicit recommendation: it would pin a non-behaviour and make a
+legitimate future restructuring of `__init__` fail for the wrong reason.
+
 ## Escalations
 
 None. No ruling looked wrong at implementation time; R8's stated rationale was
@@ -278,7 +329,13 @@ corrected after the review (see N1 above and the correction in `status.md`).
   considers that speculative can drop the `__init__` line without touching
   anything else.
 * **Surviving red-team NOTEs** (not fixed here, for the manager to route to the
-  issue): **N4** — `set_held_by(id, 'left')` after `set_held_by(id, Side.LEFT)`
+  issue): **N10** — `document.py`'s module docstring points at
+  `robot_world.store` for the "a backend clears persisted holds at power-on"
+  behaviour, which actually lives in `MockBackend._release_persisted_holds`
+  (pre-existing cross-reference rot). **N11** — `store.py` names a test
+  *function* in shipped source; the red team explicitly recommends **not**
+  acting (the reference earns its keep, and there is module-granularity
+  precedent in `schemas.py`/`serialization.py`). **N4** — `set_held_by(id, 'left')` after `set_held_by(id, Side.LEFT)`
   bypasses the `item.held_by == side` short circuit (`Side` has no `str` mixin)
   and costs a redundant whole-document write; pre-existing, confirmed by probe
   P4. **N5** — D23 gains a semantic startup-failure class the decision log does

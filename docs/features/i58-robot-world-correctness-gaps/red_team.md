@@ -431,3 +431,392 @@ Recorded so the manager knows what was actually checked.
     safety code. Invariant 5 (reuse) — reuses `robot_skills.serialization`,
     `validation`, and the existing `ValueError`/`WorldStoreError` idioms rather
     than inventing an exception type (R2 honoured).
+
+---
+---
+
+## Round 1 — scoped pass on the fix diff (f34e998)
+
+*(Heading kept as the manager named it. Chronologically this is the **second**
+pass: read-only, scoped to the round-1 fix commit `f34e998` only —
+`src/robot_world/robot_world/store.py`, `src/robot_world/test/test_document.py`,
+`src/robot_world/test/test_file_store.py`. The round-1 work `e01d68c`,
+`a777eef`, `6a11e15` was already cleared and is not re-reviewed here.)*
+
+### Verdict
+
+**BLOCK findings: none. The fix is clean.** All three corrections do what they
+claim:
+
+* **N1 fix** (`store.py:366-376`) is factually accurate. The named test exists,
+  is spelled correctly, and pins exactly the behaviour cited. The new sentence
+  about `__init__` obtaining the seed before `_seed` exists is precisely true
+  against the actual line order.
+* **N2 fix** genuinely strengthens the pin. The new `reopened` block builds a
+  genuinely drifted live file, and reverting `seed=` at `store.py:354` now
+  fails assertions in **two** test functions, not one.
+* **N3 fix** is genuinely discriminating *by construction*, not by luck: the new
+  input's first-appearance order is `[RIGHT, LEFT]` and the expectation is
+  `[LEFT, RIGHT]`.
+* No behaviour changed and no existing test was weakened.
+
+Five **NOTE**s follow. The first is the N+1th instance the fix pass was sent to
+find: **the exact claim N1 corrected in shipped source survives verbatim in a
+test docstring the same commit edited**, three lines above the assertion it is
+describing. It is a docstring, so it stays a NOTE for severity parity with N1 —
+but it is the one worth fixing, because after `f34e998` the repo now contradicts
+itself about the same mechanism in two files.
+
+---
+
+### BLOCK findings
+
+*(none)*
+
+---
+
+### NOTE findings (round 2)
+
+#### N7 — the N+1th: the N1 falsehood survives verbatim in `test_file_store.py`'s docstring, in a file this commit edited
+
+`src/robot_world/test/test_file_store.py:90-94`, inside
+`test_a_reopened_store_resets_to_the_seed_not_to_the_scene_it_opened`:
+
+> Its seed is still the seed -- including the inherited ``_seed`` attribute,
+> read here through the un-overridden base method, so **the day someone
+> collapses ``FileWorldStore.seed_document()`` into ``return self._seed`` they
+> do not silently get "whatever the live file said at startup" back.**
+
+That is the same sentence N1 removed from `store.py`, restated from the test
+side. Read literally — and it *is* literal, it names the exact edit — the
+scenario cannot occur: collapsing only the override body makes
+`FileWorldStore.__init__` die at `store.py:348` with
+`AttributeError: 'FileWorldStore' object has no attribute '_seed'`
+(implementation.md records probe P1 confirming this, and that applying the
+collapse for real fails 21 of 64 package tests). Nobody ever reaches the state
+this docstring says the assertion below it protects against.
+
+Worse, after `f34e998` the two artefacts disagree in the reader's face.
+`store.py:373-374` now says:
+
+> It is also how ``__init__`` obtains the seed, before ``_seed`` exists, so this
+> is not an attribute read waiting to happen.
+
+…while `test_file_store.py:92-94` still says the attribute read is exactly the
+refactor coming, and that *this test* is what catches it.
+
+Failure scenario (the discoverability one N1 was about): a maintainer wants the
+re-read gone. They read the test docstring, conclude "fine, `_seed` is honest
+now, the tests have my back", and make the edit. Construction explodes on the
+first `FileWorldStore(...)` — not the outcome the docstring predicted, and a
+maintainer whose mental model just failed loudly is now unsure which of the two
+docstrings to trust. Separately, the test docstring mis-attributes coverage:
+line 107 does **not** catch the collapse (it catches losing `seed=`); the
+pre-existing `test_reset_restores_from_the_seed_file_not_from_memory` is what
+catches the collapse — a point this report's round-1 "verified" item 7 already
+made and the fix pass then failed to propagate into this docstring.
+
+In fairness: the sentence is *defensible* under a looser reading (the
+"plausible refactor" — restructure `__init__` to re-read directly **and** have
+`seed_document()` return `self._seed`). Under that refactor the honest `_seed`
+genuinely does prevent "whatever the live file said at startup", and line 107
+does pass for the right reason. But that is not the refactor the sentence names,
+and the source docstring three files away now explicitly rules out the one it
+does name.
+
+Fix direction: harmonize with `store.py:366-376`. Something like — "Its seed is
+still the seed, including the inherited `_seed` attribute, read here through the
+un-overridden base method: `FileWorldStore` passes the true seed to
+`super().__init__` rather than letting `_seed` default to the live document it
+loaded. (Collapsing the `seed_document()` override itself into `return
+self._seed` is separately impossible — `__init__` consumes it first — and the
+refactor that *is* plausible is caught by
+`test_reset_restores_from_the_seed_file_not_from_memory`.)" Docstring-only; no
+assertion changes.
+
+#### N8 — `store.py`'s module docstring still says a `WorldStore` resets "to the document it was built from", which the new `seed=` argument makes false
+
+`src/robot_world/robot_world/store.py:18-20`:
+
+> * :class:`WorldStore` -- in-memory.  ``reset()`` returns to the document it was
+>   built from.
+
+Since `a777eef` that is exactly the case the API now distinguishes:
+`WorldStore(scene, seed=document)` returns to `seed`, **not** to the document it
+was built from — and `test_a_store_can_be_told_its_seed_separately_from_its_scene`
+(`test_store.py:228-243`) asserts precisely that. The module docstring is the
+first thing a reader of this file sees, and it now describes the pre-`seed=`
+API. Every other docstring in the file was updated (`__init__` at 76-84,
+`seed_document` at 143-145, `reset` at 219-225 are all accurate); this one
+survived both the round-1 commit and the fix sweep.
+
+This is round-1 collateral I did not catch in pass 1 — surfaced by the
+"where else is this claim repeated" sweep the fix pass mandates, which is
+exactly what that sweep is for.
+
+Failure scenario: mild but real — a reader wiring the coming ROS query service
+concludes an in-memory store's seed is definitionally its construction scene,
+and does not discover the `seed=` seam that `FileWorldStore` depends on.
+
+Fix direction: one clause — "``reset()`` returns to its seed, which is the
+document it was built from unless one is passed separately."
+
+#### N9 — the new `!= drifted` assertion is a tautology given the two asserts above it
+
+`src/robot_world/test/test_file_store.py:104-108`:
+
+```python
+assert drifted != document                              # line 104 (pre-existing)
+...
+assert WorldStore.seed_document(second) == document     # line 107 (pre-existing)
+assert WorldStore.seed_document(second) != drifted      # line 108 (new)
+```
+
+`WorldDocument` is a plain `@dataclass(frozen=True)` with generated `__eq__`
+(no custom `__eq__` anywhere in `document.py`), so equality is a proper
+equivalence: `a == document` and `document != drifted` entails `a != drifted`.
+Line 108 therefore cannot fail unless line 107 fails first — and pytest aborts
+the test at 107. It is dead weight: no source mutation exists that it catches
+and 107 does not.
+
+I own part of this: N2's "alternatively" branch suggested exactly this line as a
+*substitute* for the `reopened` block. That suggestion was wrong, and the
+implementer took both. The `reopened` block (lines 137-139) is the one carrying
+the discriminating power; line 108 is decoration.
+
+Mitigating, and why this stays a low NOTE: it is symmetric with the pre-existing
+`assert second.document() != drifted` at line 113, which is tautological in the
+same way (implied by 112 + 104), so it reads as house style rather than
+confusion — and `implementation.md:223-224` describes it as "stating both halves
+of the claim", which is an honest description of intent.
+
+Failure scenario: the cost is a maintainer who deletes line 107 (the assertion
+that matters) and keeps 108 because it "also covers it" — at which point the
+test passes on the broken code that 107 was there to catch. That is a small but
+non-zero trap.
+
+Fix direction: drop line 108, or keep it and add a one-line comment saying it is
+restating intent, not adding coverage. Not worth another round on its own.
+
+#### N10 — `document.py`'s module docstring points a reader at the wrong module for the "clears persisted holds" behaviour
+
+`src/robot_world/robot_world/document.py:27-28`:
+
+> A backend coming up against an existing live file starts with empty grippers
+> and therefore clears it (see :mod:`robot_world.store`).
+
+`robot_world.store` says nothing about clearing persisted holds — it cannot,
+because clearing is a *backend* behaviour: `MockBackend._release_persisted_holds`
+(`mock_backend.py:268-275`), reached from `_power_on`. A reader following the
+cross-reference finds a module whose docstring is about batches and atomic
+writes. This paragraph is adjacent to (and part of) the round-1 `held_by`
+invariant prose, so it is in the blast radius of this feature's edits even
+though the sentence may predate them.
+
+Fix direction: point at `robot_backends.mock_backend` (or drop the parenthetical
+and say "the backend clears it at power-on"). Docstring-only, `robot_world` scope
+— cheap to fold into whichever round fixes N7/N8.
+
+#### N11 — naming a test *function* in shipped source is a rot hazard, but a marginal one
+
+`src/robot_world/robot_world/store.py:372` embeds
+`test_reset_restores_from_the_seed_file_not_from_memory` in a shipped docstring.
+I checked: the name is spelled exactly right (`test_file_store.py:63`), and the
+test does pin what the docstring says it pins — it rewrites the seed **file**
+after construction and asserts `reset()` follows the file, both in memory and on
+disk (lines 76-81). So it is correct today.
+
+The hazard is that nothing binds them: renaming or deleting the test leaves a
+shipped docstring naming a test that no longer exists, and no linter, test or CI
+check would notice.
+
+Precedent exists and cuts both ways: `robot_mcp/schemas.py:21,64`,
+`robot_mcp/server.py:41` and `robot_skills/serialization.py:78` all name test
+*modules* from shipped source. This is the first reference at *function*
+granularity, which is the more rot-prone kind.
+
+My honest read: **not worth acting on.** The reference earns its keep (it is the
+concrete artefact that makes R8's "do not optimize this away" checkable), and
+the alternative — dropping to "the file-store tests pin this" — is vaguer for no
+real gain. Recorded so the manager can decide, not because it needs a round.
+
+---
+
+### The fix-attack questions, answered
+
+Answering the manager's five questions directly, including the ones where I
+found nothing.
+
+**1. The new N1 docstring (`store.py:366-376`) — verified true.**
+* The named test exists at `test_file_store.py:63`, spelled character-for-character
+  as in the docstring (I compared both strings).
+* It pins what the docstring claims: it constructs the store, mutates it,
+  **rewrites the seed file** with different content, calls `reset()`, and asserts
+  both the in-memory scene and the live file follow the *new file* content. That
+  is exactly "replacing that file must change what `reset()` restores".
+* "It is also how `__init__` obtains the seed, before `_seed` exists" is
+  **precisely** true. Actual order in `FileWorldStore.__init__`: `345` sets
+  `_live_path`, `346` sets `_seed_path` (required for the call to work), `347`
+  `_refuse_seeding_from_the_live_file()`, `348` `seed = self.seed_document()`,
+  `354` `super().__init__(document, seed=seed)` → `store.py:93` is the first and
+  only assignment to `_seed`. No earlier assignment anywhere in either class.
+* Rot hazard of the test-name reference: N11, marginal, recorded not blocked.
+
+**2. The N2 strengthening — the "two tests, not one line" claim holds.**
+Reverting `store.py:354` to `super().__init__(document)` now fails **exactly
+two** assertions, in two different test functions:
+* `test_file_store.py:107` — `WorldStore.seed_document(second) == document`
+  (`_seed` would be the drifted live document).
+* `test_file_store.py:139` — `WorldStore.seed_document(reopened) == document`
+  (same reason).
+Nothing else in the package changes: `test_store.py:238`'s `WorldStore(scene,
+seed=document)` still works (the base-class kwarg survives the revert), and
+`test_file_store.py:130` passes either way because that store loaded a
+freshly-created live file where `document is seed`.
+
+The `reopened` block is **genuinely drifted, not vacuous**. Traced: `live` does
+not exist at line 122, so the store is created from the seed and writes it; the
+four mutations at 124-127 are all outside a batch, so each one runs `_touch()` →
+`_flush()` → `_commit()` → `write_document(self._live_path, ...)`; by line 137
+the on-disk live file holds cube_1 at (9,9,9) held RIGHT, tray_1 added, anvil_1
+gone. `reopened` reads that (the file exists, so the `read_document` branch at
+`store.py:350` runs) and line 138's `assert reopened.document() != document`
+is the explicit non-vacuity guard — good instinct by the implementer, without it
+the block could rot into a no-op. `reopened` performs no writes and does not
+disturb the `store.reset()` assertions that follow.
+
+Shared failure mode? Both assertions do fail on the same source edit — but that
+is the point: they are in two separate test *functions*, so removing the pin now
+requires two deliberate edits rather than one line deletion. That is exactly
+what N2 asked for, and it is the achievable bar; a genuinely independent second
+mechanism would mean asserting on `second._seed` directly, which the
+implementation deliberately (and correctly) avoided.
+
+**3. The new `!= drifted` assertion — vacuous.** See N9. Implied by the two
+asserts above it given dataclass equality; cannot fail independently.
+
+**4. The N3 ordering flip — discriminating by construction.** The new input is
+`RIGHT, RIGHT, LEFT, LEFT` (`test_document.py:190-193`), first-appearance order
+`[RIGHT, LEFT]`, expected `[LEFT, RIGHT]`. `Side` declares `LEFT = 'left'` then
+`RIGHT = 'right'` (`robot_skills/skills.py:77-78`), and the implementation is
+`[side for side in Side if sides.count(side) > 1]` (`document.py:188`). A
+first-appearance implementation returns `[RIGHT, LEFT]` and now fails. That is
+structural, not luck. No coverage was lost: the old input interleaved the pairs
+(`L,R,R,L`) and the new one does not, but `sides.count(side)` is
+order-independent, so adjacency was never load-bearing.
+One honest residual: with a two-member enum, "declaration order" and "sorted by
+value" coincide (`'left' < 'right'`), so the test still cannot distinguish those
+two. Unfalsifiable without adding a third `Side`; not worth engineering around.
+
+**5. Nothing weakened, no behaviour changed, no lint risk.**
+* No test lost coverage. The N3 edit replaced one input with a strictly stronger
+  one; the N2 edit is pure addition; `store.py` gained no assertions to lose.
+* `store.py` change is docstring-only as far as I can verify without a diff
+  tool: every line reference from my round-1 pass into that file (`348`, `354`,
+  `93`, `189`, `284`) still lands on the identical statement, and the file is
+  exactly 2 lines shorter after line 366 — consistent with a 13-line docstring
+  becoming an 11-line one and nothing else moving. `seed_document`'s body is
+  still `return read_seed_document(self._seed_path)`. Probe Q1 below closes this
+  the rest of the way.
+* Line length: the longest new line is `store.py:372` at 82 characters. No
+  `max-line-length` is configured anywhere in the repo, so `ament_flake8`'s
+  default of 99 applies, and the package already ships a 90-character line
+  (`test_file_store.py:63`) and a 99-character one (`test_flake8.py:18`). The
+  longest new test line (`test_file_store.py:135`) is 78. Clear.
+* pep257: the reworked `seed_document` docstring keeps its imperative
+  one-line summary, blank line, body and own-line closing quotes. The new block
+  in `test_mutating_the_working_scene_never_changes_what_reset_restores` is
+  comments, not a docstring. No new D-code surface.
+* The new test block adds no I/O beyond one extra `FileWorldStore` open of an
+  existing `tmp_path` file — no cross-test state, no ordering dependence.
+
+**The repo-wide sweep for the N1 claim.** I grepped every occurrence of `_seed`,
+`seed_document`, `seed_path` and `read_seed_document` across the whole repo and
+read every hit in `src/`. Results:
+* **False / misleading:** `test_file_store.py:90-94` (N7), `store.py:18-20`
+  (N8), `document.py:27-28` (N10, adjacent claim).
+* **Verified accurate, no change needed:** `store.py:76-84` (`__init__`'s new
+  `seed` docstring — correct, and correctly motivated by the `FileWorldStore`
+  reopen case), `store.py:143-145` (`WorldStore.seed_document`), `store.py:219-225`
+  (`reset`), `store.py:317-337` (`FileWorldStore` class docstring — the D23
+  startup rules are all still true), `store.py:378-398`
+  (`_refuse_seeding_from_the_live_file`), `storage.py:102-112` and `115-130`
+  (`read_seed_document` / `default_seed_document`), `README.md:41-57` (the
+  seed-vs-live table's "read when: construction and every `reset()`" is right),
+  `__init__.py` (exports only, no lifecycle prose), `document.py:174-188`
+  (`duplicate_hold_sides`' ordering promise, now genuinely tested).
+* **Out-of-scope packages, checked, clean:** `mock_backend.py:152-160`
+  (`MockBackend.world` — "Rebuilt from the store's seed" is true through the
+  polymorphic `seed_document()` and now also true of `_seed`),
+  `mock_backend.py:179-185` (`reset` — "re-reads the **seed file**" is correct),
+  `mock_backend.py:118-125` (the power-cycle class docstring),
+  `robot_mcp/server.py:36-37, 358, 369-386` (the `--world-seed` help and refusal
+  text). None of these repeat the N1 claim. `mock_backend.py:162-175` remains
+  incomplete for the reason already filed as N6; no new defect there.
+* `docs/design/decisions.md` D23 (lines 49-55) says nothing about `_seed` or
+  `seed_document()` internals, so N1 leaves it untouched; N5 already covers the
+  amendment it does need.
+* No test-adequacy gap for the N1 fix itself: it is a docstring, and the claim it
+  makes ("the collapse cannot be written") is a statement about a hypothetical
+  refactor. I explicitly **recommend against** adding a test that monkeypatches
+  the collapse and asserts `AttributeError` — that would pin a non-behaviour and
+  make a legitimate future restructuring of `__init__` fail for the wrong reason.
+
+### Probes I want run (round 2)
+
+No Bash tool. Treat unrun probes as unresolved; none of them gates the verdict,
+Q1 and Q2 are the two I would actually want green before merge.
+
+**Q1 — the `store.py` change is docstring-only.**
+
+```bash
+git show --stat f34e998
+git show f34e998 -- src/robot_world/robot_world/store.py
+```
+
+*Confirms* if the only `store.py` hunk is inside the `seed_document` docstring
+(lines 366-378 → 366-376) and `return read_seed_document(self._seed_path)` is
+untouched. *Refutes* if any executable line changed — that would be an
+undeclared behaviour change in a fix that was supposed to be prose, and I would
+want to re-review it as a BLOCK candidate.
+
+**Q2 — lint and docstring gates still pass.**
+
+```bash
+python -m pytest src/robot_world/test/test_flake8.py \
+                 src/robot_world/test/test_pep257.py \
+                 src/robot_world/test/test_copyright.py -q
+```
+
+*Confirms* the 82-character docstring line and the reworked prose are clean.
+*Refutes* my line-length reading if flake8 reports E501 — in which case the
+docstring needs a re-wrap (the fix would be trivial, but it would be a red CI).
+
+**Q3 — N2's "two tests" claim.** Revert `store.py:354` to
+`super().__init__(document)`, then `python -m pytest src/robot_world/test -q`.
+*Confirms* if **exactly two** tests fail:
+`test_a_reopened_store_resets_to_the_seed_not_to_the_scene_it_opened` and
+`test_mutating_the_working_scene_never_changes_what_reset_restores`.
+*Refutes* if only one fails (the strengthening did not land) or if many fail
+(then something else depends on the wiring and my trace of the blast radius is
+incomplete).
+
+**Q4 — N3 is genuinely discriminating.** Temporarily replace `document.py:188`
+with a first-appearance implementation:
+
+```python
+return [s for s in dict.fromkeys(sides) if sides.count(s) > 1]
+```
+
+then `python -m pytest src/robot_world/test/test_document.py -q`.
+*Confirms N3 is now pinned* if
+`test_one_object_per_gripper_is_all_the_rule_forbids` fails with
+`[Side.RIGHT, Side.LEFT] != [Side.LEFT, Side.RIGHT]` (it would have **passed**
+against the pre-fix input). *Refutes* if it still passes — then the flip did not
+achieve what it claims and this becomes a BLOCK on the N3 fix.
+
+**Q5 — N9's tautology.** `grep -n '__eq__' src/robot_world/robot_world/document.py`
+*Confirms N9* if there is no custom `__eq__` (equality is dataclass-generated and
+therefore transitive, so `test_file_store.py:108` is implied by 104+107).
+*Refutes N9* if a custom `__eq__` exists — then transitivity is not free and the
+assertion may carry real weight.

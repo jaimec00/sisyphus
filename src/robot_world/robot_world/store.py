@@ -15,9 +15,10 @@ survives the Mock -> MuJoCo swap.
 
 Two flavours, one surface:
 
-* :class:`WorldStore` -- in-memory.  ``reset()`` returns to the document it was
-  built from.  Never *writes* a file; constructed with no document it reads the
-  shipped seed once, and after that touches nothing.
+* :class:`WorldStore` -- in-memory.  ``reset()`` returns to its seed, which is
+  the document it was built from unless one is passed separately.  Never
+  *writes* a file; constructed with no document it reads the shipped seed once,
+  and after that touches nothing.
 * :class:`FileWorldStore` -- backed by a live-state JSON file, seeded from a
   read-only seed file (the shipped one by default).  Every mutation is flushed
   to disk atomically, so the world survives the process.

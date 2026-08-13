@@ -89,9 +89,11 @@ def test_a_reopened_store_resets_to_the_seed_not_to_the_scene_it_opened(
     The second store is constructed from the *live* file, which by then differs
     from the seed in every way a chore can change it.  Its seed is still the
     seed -- including the inherited ``_seed`` attribute, read here through the
-    un-overridden base method, so the day someone collapses
-    ``FileWorldStore.seed_document()`` into ``return self._seed`` they do not
-    silently get "whatever the live file said at startup" back.
+    un-overridden base method: ``FileWorldStore`` hands the true seed to
+    ``super().__init__`` rather than letting ``_seed`` default to the live
+    document it just loaded.  Losing that ``seed=`` is what this test catches;
+    the seed file being re-read on every ``reset()`` is pinned separately, by
+    ``test_reset_restores_from_the_seed_file_not_from_memory``.
     """
     live = tmp_path / 'world.json'
     first = FileWorldStore(live, seed_path=seed_file)
@@ -105,7 +107,6 @@ def test_a_reopened_store_resets_to_the_seed_not_to_the_scene_it_opened(
 
     assert second.seed_document() == document
     assert WorldStore.seed_document(second) == document
-    assert WorldStore.seed_document(second) != drifted
 
     second.reset()
 
