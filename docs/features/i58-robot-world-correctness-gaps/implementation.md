@@ -10,7 +10,7 @@ Owned paths: `src/robot_world/` only (R10). Nothing outside it was edited.
 | `a777eef` | criterion 2 — `_seed` genuinely holds the seed, with tests |
 | `6a11e15` | follow-up hardening of the store-layer check (see "Surprises") |
 | `f34e998` | round-1 review fixes N1–N3 (see "Round 1 review fixes") |
-| `ROUND2SHA` | round-2 review fixes N7–N9 (see "Round 2 review fixes") |
+| `a7012b5` | round-2 review fixes N7–N9 (see "Round 2 review fixes") |
 
 Each commit is green on its own (`src/robot_world/test` was run from the
 package directory after each).
@@ -130,11 +130,14 @@ match=...)`). 11 new test functions/cases; package total 53 → 64.
 Two choices worth flagging:
 
 * **The headline seed test reads `_seed` through the base method**, not through
-  the attribute: `assert WorldStore.seed_document(second) == document`. That is
-  precisely the future-maintainer scenario (the override collapsed into
-  `return self._seed`) expressed through public API, and it is the assertion
-  that fails without the fix. Asserting on `second._seed` directly would test
-  the same thing while reaching into a private.
+  the attribute: `assert WorldStore.seed_document(second) == document`. It is
+  the assertion that fails when `seed=` is dropped from
+  `super().__init__`, expressed through public API; asserting on `second._seed`
+  directly would test the same thing while reaching into a private. (An earlier
+  draft of this bullet and of the test's docstring justified it as catching a
+  *collapsed override* — that was the N1/N7 falsehood: the collapse cannot be
+  written, and the refactor that can is caught by the pre-existing
+  `test_reset_restores_from_the_seed_file_not_from_memory`.)
 * **The batch test asserts recovery, not internals**: after the refusal inside
   the batch, the next mutation commits immediately (`commits == [1, 1]`), which
   is the observable proof `_batch_depth` came back to zero; and a batch whose
@@ -247,7 +250,7 @@ cannot pickle 'mappingproxy' object`.** So the deep copy the issue proposed is
 not merely unnecessary (R7) — it is impossible without first unwrapping the
 proxy, which would mean building a *less* immutable document to copy it.
 
-## Round 2 review fixes (`ROUND2SHA`)
+## Round 2 review fixes (`a7012b5`)
 
 No BLOCKs. The round-2 pass ran the "where else is this claim repeated" sweep on
 the N1 fix and found the deleted sentence still living in two other places, plus

@@ -208,7 +208,7 @@ conversion as inferred-but-not-traced; trace it.
   unnecessary (R7), it is impossible without unwrapping the proxy.
 - Round 2 review (scoped to `f34e998`): no BLOCKs, all three fixes confirmed
   landed. Five further NOTEs; the manager scoped in three, fixed in
-  `ROUND2SHA` — **N7** (the sentence N1 deleted from `store.py` survived in a
+  `a7012b5` — **N7** (the sentence N1 deleted from `store.py` survived in a
   test docstring, and mis-attributed which test catches what), **N8** (the
   module docstring still described the pre-`seed=` API: "`reset()` returns to
   the document it was built from"), **N9** (my `!= drifted` assertion is a
