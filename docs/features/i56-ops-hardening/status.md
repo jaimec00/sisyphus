@@ -13,8 +13,22 @@ Worktree: `/home/sisyphus/worktrees/i56-ops-hardening-close-the-ci-green-but-dep
 | 5. implementer | done — 6 commits, `implementation.md` |
 | 6. red-team round 1 | done — `red_team.md`: 2 BLOCK, 10 NOTE |
 | 7. fix round 1 | done — both BLOCKs fixed; **scoped pass on the fix commit: 0 BLOCK, 3 NOTE** (`red_team_fix_round1.md`); 2 NOTEs applied |
-| 8. test-runner | pending |
-| 9. PR / ready | pending |
+| 8. test-runner | done — PASS: 694 tests, 0 errors/failures/skips, AUDIT PASSED, all stages passed; `boot-smoke` and `check-provisioning` also green standalone. Logs: `.dev/runs/i56-ops-hardening/20260812-204246/` |
+| 9. D24 re-read + PR | done — **PR #57**, green against current main (`origin/main` @ `e13c3e6`, no rebase needed) |
+| 10. Comments | done — follow-ups on issue #56, retro on PR #57 |
+
+**READY.** PR: https://github.com/jaimec00/sisyphus/pull/57
+
+## Step 9 — durable-decision re-read (this feature's own task 4, dogfooded)
+
+D24 re-read against the diff **as it landed**, not as planned. Every claim checks
+out: `REQUIRED_PACKAGE = 'robot_world'` at `scripts/tests/test_boot_smoke.py:43`
+backs the "and does" in the boot-smoke bullet; the `src/` enumeration in the
+rationale matches `git diff origin/main --name-only -- src/` exactly (four files,
+no implementation module); no changed line in `src/` mentions a seam symbol.
+The accepted-gaps bullet was amended twice during the run — once by the
+implementer's own re-read (round 1), once after the laptop login-shell check
+became a verified fact rather than an assumption.
 
 Blockers: none.
 
