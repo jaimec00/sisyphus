@@ -6,10 +6,11 @@ file is the source of truth for agent behavior** — `DEVELOPMENT.md` defers to 
 
 ## What this is
 An autonomous household-chore robot: an LLM "brain" driving a mobile manipulator
-(4-wheel base + extendable column + 2 arms), on **ROS 2 Jazzy**, developed
-**sim-first** in MuJoCo. Full architecture + rationale:
-`docs/design/PROJECT.md` and `docs/design/decisions.md` (D1–D16). Read those
-before any non-trivial work.
+(holonomic base + extendable column + 2 arms), on **ROS 2 Jazzy**, developed
+**sim-first** in MuJoCo. **What the robot currently is:** `docs/design/spec.md`
+(the flattened current state). **Why:** `docs/design/decisions.md` (D1–D28, the
+append-only source of truth — where any doc disagrees with it, it wins). Goal +
+open questions: `docs/design/PROJECT.md`. Read those before any non-trivial work.
 
 ## Environment & commands
 - Env manager: **pixi + RoboStack (`robostack-jazzy`)** — `pixi install`, then
