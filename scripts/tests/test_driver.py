@@ -49,6 +49,10 @@ class FakeWorkspace:
         self.rc = {COLCON_TEST: 0, TOOLING: 0, COLCON_TEST_RESULT: 0}
         #: package -> collected tests the fake ``colcon test`` will record
         self.produces = {'robot_a': 5, 'robot_b': 7}
+        #: package -> how many of those tests are recorded as failing, and
+        #: how many as skipped (the rest pass)
+        self.failures = {}
+        self.skips = {}
         self.tooling_produces = 3
         #: ordered log of what the driver did
         self.events = []
@@ -74,7 +78,9 @@ class FakeWorkspace:
             selected = self.selection(cmd)
             for package, tests in self.produces.items():
                 if selected is None or package in selected:
-                    write_result(self.build_base, package, tests=tests)
+                    write_result(self.build_base, package, tests=tests,
+                                 failures=self.failures.get(package, 0),
+                                 skipped=self.skips.get(package, 0))
         return self.rc[stage]
 
     def _fake_tooling(self, repo_root, build_base):
