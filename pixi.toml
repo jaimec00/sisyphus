@@ -28,6 +28,7 @@ git = "*"
 nodejs = ">=24.15,<25"
 ros-jazzy-xacro = ">=2.1.1,<3"
 ros-jazzy-urdfdom-py = ">=1.2.1,<2"
+ros-jazzy-urdfdom = ">=6.0,<7"
 
 # TODO (verify availability on robostack-jazzy; source-build in this env if missing):
 #   ros-jazzy-moveit                (MoveIt 2 — confirmed present on channel)
