@@ -131,3 +131,197 @@ All stages passed.
 - Windows/macOS path handling is irrelevant here but untested; likewise `linux-aarch64` (the Pi) — the description is expanded on the laptop only, and nothing on the Pi consumes it yet.
 - `<exec_depend>xacro</exec_depend>` and friends are **declarative only** in this workspace: pixi provides the packages, and nothing in `pixi run build`/`test` resolves rosdep keys. So a typo'd key would not fail any check here. I used the standard ROS spellings (`xacro`, `urdfdom`, `urdfdom_py`, `ament_index_python`), all of which exist as real ROS package names, but that is by inspection rather than by a passing check.
 - The empty subassembly files contribute nothing to the expansion today, so "the includes resolve" is exercised, while "the includes contribute content" is not — the first PR that puts a link in `base.xacro` is what proves that end of it.
+
+---
+
+# Round 2 — red-team fixes
+
+Round-1 red-team found 3 BLOCKs, all VERIFIED. I reproduced every one before
+fixing it, and re-broke each fix afterwards to confirm it bites. Four commits:
+
+| commit | fixes |
+| --- | --- |
+| `2c975c9` | B3 — `ros-jazzy-urdfdom` pinned in pixi |
+| `688b8e4` | B1 + B2 + N4 + the N1 docstring half |
+| `5bb00f6` | N1 (D27) + N3 (D27 + `setup.py`) |
+| (baseline) | `robot_description: 5 → 7` |
+
+I disagree with none of the findings. All three BLOCKs were real, and B2 in
+particular found a criterion straight out of the issue body that I had shipped
+untested — `test_share_layout_is_installed` checks that `arm.xacro` is *on
+disk*, which I had let stand in for it being *in the robot*. Those are
+different properties and I conflated them.
+
+## B3 — `check_urdf` was not provisioned
+
+The red-team is right about the provenance, and I confirmed it independently
+before changing anything:
+
+```
+$ grep -rl "bin/check_urdf" .pixi/envs/default/conda-meta/*.json
+.pixi/envs/default/conda-meta/urdfdom-6.0.0-h8631160_0.json
+```
+
+So the binary is owned by conda `urdfdom`, and the pinned `ros-jazzy-urdfdom-py`
+does not depend on it. `pixi add ros-jazzy-urdfdom` → `✔ Added
+ros-jazzy-urdfdom >=6.0,<7`, landing in `pixi.toml` and in `pixi.lock` for both
+`linux-64` and `linux-aarch64`. The edge that now carries `check_urdf` is
+explicit and version-pinned:
+
+```
+$ # ros-jazzy-urdfdom-6.0-py312h24bf083_18.json depends:
+['console_bridge', 'python', 'ros-jazzy-console-bridge-vendor',
+ 'ros-jazzy-ros-workspace', 'ros-jazzy-tinyxml2-vendor',
+ 'ros-jazzy-urdfdom-headers', 'ros2-distro-mutex 0.15.* jazzy_*',
+ 'tinyxml2', 'urdfdom >=6.0,<6.1a0', ...]
+```
+
+Note the honest limit: this pins the ROS wrapper, which pins `urdfdom
+>=6.0,<6.1a0`, which owns the binary — one declared hop, not zero. Pinning
+conda-forge `urdfdom` directly would be zero hops but mixes channels for a
+package RoboStack already wraps, and the ROS spelling matches the two lines
+above it and the `<test_depend>urdfdom</test_depend>` rosdep key. I took the
+manager's instruction as written; flagging the hop so nobody later reads this
+as "the binary is pinned directly".
+
+`_require_tool`'s message was also corrected — it claimed the tool was
+"provided by the pixi environment", which was precisely the false part.
+
+## B1 — meshes
+
+`test_every_mesh_reference_resolves` walks every `<mesh>` element in the
+expansion (via `ElementTree`, not `urdf_parser_py`, so it sees references
+anywhere in the document rather than only those the URDF model object exposes),
+resolves `package://<pkg>/<rel>` through `get_package_share_directory(pkg)`,
+plus `file://`, absolute, and share-relative forms, and asserts each is a file.
+
+Verified both directions — a test that can only fail is not a test:
+
+```
+### E3: exact red-team repro (missing meshes on base_link, nothing else changed)
+   before: 5 passed
+   after:  10 tests, 1 failure -- test_every_mesh_reference_resolves only
+   AssertionError: 2 of 2 mesh reference(s) do not resolve to a file in the
+   installed share tree (...): ['package://robot_description/meshes/
+   i_do_not_exist.stl -> .../install/robot_description/share/robot_description/
+   meshes/i_do_not_exist.stl', ...]
+
+### E2 (positive control): base_link referencing meshes/README.md, which IS installed
+   10 tests, 0 failures
+```
+
+## B2 — subassembly includes
+
+`test_top_level_includes_every_subassembly` parses the **unexpanded**
+`robot.urdf.xacro` (expansion is what erases the includes) and asserts the set
+of `{xacro}include` `filename`s equals `set(SUBASSEMBLIES)` — the same tuple
+`test_share_layout_is_installed` uses, so the two cannot drift.
+
+```
+### I: all three <xacro:include> lines deleted
+   before: 5 passed
+   after:  10 tests, 1 failure -- test_top_level_includes_every_subassembly only
+```
+
+Equality, not membership: an *unexpected* include is as much a drift signal as
+a missing one, and it makes the tuple a wiring contract in both directions.
+
+## N1 — the false claim, fixed in both permanent places
+
+The module docstring and D27 now say what the perturbation actually shows: the
+exact-link-set assert's unique catch is a **renamed or silently dropped** link
+(`base_link` → `base` is valid URDF that `check_urdf` passes), *not* a
+degenerate expansion — `check_urdf` rejects a zero-link model too. I re-ran the
+red-team's perturbation C to confirm before rewriting. D27's clause is now
+scoped as "four tools plus two wiring asserts" and records the mesh/include
+blind spots and the provisioning gap, so the permanent record describes the
+gate that shipped rather than the one I first wrote.
+
+## N3 — flat globs
+
+No code change, per the ruling. `setup.py` and D27 now state that the globs are
+flat, that `data_files` cannot copy a directory, that the first
+`meshes/<subdir>/x.stl` therefore fails the **build** with `can't copy …:
+doesn't exist or not a regular file`, and that PR2 is where the `os.walk`
+version gets written against real files. I agree with not pre-solving it: the
+directory layout of an imported LeRobot mesh set is exactly the thing I would
+have guessed wrong.
+
+## N4 — cascade legibility
+
+All parse-based tests now route through `_require_expansion()`, which asserts
+`rc == 0` and points at the root cause. Before/after on the malformed-XML
+perturbation:
+
+```
+before: FAILED test_link_set_... -   File "<string>", line 1
+        lxml.etree.XMLSyntaxError: Document is empty, line 1, column 1
+after:  AssertionError: xacro expansion failed (rc 2), so this assertion never
+        ran -- see test_xacro_expands_without_error for the root cause.
+          XML parsing error: mismatched tag: line 11, column 2
+```
+
+Kept as assertion failures rather than a fixture error, deliberately: a fixture
+that raises turns five failures into five *errors*, and the audit table reports
+those in a different column.
+
+## Round-2 commands, real output
+
+```
+$ pixi add ros-jazzy-urdfdom
+✔ Added ros-jazzy-urdfdom >=6.0,<7
+
+$ pixi run --frozen build
+Summary: 9 packages finished [9.99s]
+
+$ pixi run --frozen python scripts/check_test_integrity.py \
+      --packages-select robot_description --update-baseline
+package            tests  skipped  errors  failures  non-lint  vs-base  status
+robot_description     10        0       0         0         7       +2  ok
+baseline robot_description: 5 -> 7
+wrote .../scripts/test_baseline.json (1 package(s) changed); commit it
+
+$ git diff --numstat scripts/test_baseline.json
+1	1	scripts/test_baseline.json          # still exactly one line
+
+$ pixi run test
+Summary: 712 tests, 0 errors, 0 failures, 0 skipped
+package             tests  skipped  errors  failures  non-lint  vs-base  status
+_workspace_tooling    129        0       0         0       126       +0  ok
+robot_backends         77        0       0         0        74       +0  ok
+robot_brain            53        0       0         0        50       +0  ok
+robot_bringup           3        0       0         0         0       +0  ok
+robot_description      10        0       0         0         7       +0  ok
+robot_mcp              85        0       0         0        82       +0  ok
+robot_perception        3        0       0         0         0       +0  ok
+robot_safety          179        0       0         0       176       +0  ok
+robot_skills          109        0       0         0       106       +0  ok
+robot_world            64        0       0         0        61      +11  ok
+10 packages, 712 tests collected, 682 of them non-linter
+AUDIT PASSED: every expected package collected tests
+All stages passed.
+```
+
+Every perturbation ran on a committed file and was reverted with `git checkout
+--`; `git status --short src/robot_description` was checked clean after each
+batch.
+
+## Disagreements and surviving caveats
+
+- **None with the findings.** The one thing I would flag is the B3 hop above
+  (ROS wrapper → conda `urdfdom` → binary), which is a pin on the wrapper
+  rather than on the package that owns the file.
+- **Left alone as instructed**, and still true: N2 (`@pytest.mark.skip` does not
+  trip the ratchet — `scripts/check_test_integrity.py`, outside owned paths),
+  N5 (xacro's stderr ignored at rc 0 — a description that expands only via
+  deprecated syntax still passes), N6 (joint/limit asserts, PR2+), and
+  `robot_world`'s floor sitting 11 below its live count on `main`.
+- **The mesh test has never seen a real mesh.** Its negative and positive
+  controls were synthetic (a fake `.stl` path, and `meshes/README.md` used as a
+  stand-in for an installed file). The `package://` and share-relative branches
+  are exercised; `file://` and the absolute-path branch are **not** — no test
+  input produces them, and I did not invent one, since URDFs in this repo will
+  use `package://`.
+- **The include test reads the top level only.** A subassembly that includes a
+  fourth file is not covered; that is deliberate (PR1 owns the top-level wiring
+  contract) but worth knowing before PR4 nests macros.
