@@ -3,7 +3,39 @@
 - **Slug:** `i67-brain-prompt-holonomic-base`
 - **Branch:** `feat/i67-robot-brain-system-prompt-still-claims-a`
 - **Issue:** #67
-- **Phase:** round 4 fixed (4 BLOCKs, 3 of them in D30) → awaiting clean-follows-clean
+- **Phase:** round 5 fixed → one confirming pass owed, then PR
+
+### Round 5 — I committed the exact error I spent the run policing
+
+Pass D: **0 BLOCKs**, 6 NOTES — the first clean pass, and it correctly flagged
+the N+1 caveat about itself. I fixed four of its NOTES as prose corrections in
+`d7f0f9a`, **authored by me rather than the implementer**, and one of them was a
+new false claim in the permanent decision entry. Pass E found it.
+
+**BLOCK (pass E) — D30's "PR6 dissolves that" clause.** I wrote that pointing
+`RobotModel` at the URDF would give the drivetrain an owner and retire the
+ledger row. I took that from pass D's NOTE 2, which was marked VERIFIED — but
+only its premise ("PR6 points `RobotModel` at the URDF") had been verified; the
+drivetrain half was inference. I transcribed inference into an append-only
+artifact without executing against it, which is precisely the instruction I gave
+the implementer in round 3 and the defect D30's own rationale is about. **Ninth
+instance on this branch, and the second time a fix for the defect introduced a
+fresh one.**
+
+Verified myself before rewriting: `urdf-mjcf-pr-breakdown.md:129-137` scopes PR6
+to *seven kinematic constants* (shoulder offsets, reach, column travel, home
+offset) and `mock_world.py:82-87` shows `RobotModel` carries **no drivetrain
+field**. The failure this would have caused is concrete: PR6's author reads D30
+in `main`, deletes `SUPERSEDED_BODY_CLAIMS` as "retired", and #67 recurs.
+Corrected to claim only what the roadmap says, with the useful half kept (PR6
+lowers the *price* of reversal; it does not perform it).
+
+The lesson I would keep from this whole run, stated against myself: **a finding
+labelled VERIFIED is verified for its own claim, not for the inference you draw
+from it.** I enforced that on two agents and then failed it myself, in the one
+artifact that is permanent.
+
+- **Phase (superseded):** round 4 fixed (4 BLOCKs, 3 of them in D30)
 
 ### Round 4 — the decision log was the least-reviewed artifact, exactly as warned
 
@@ -318,6 +350,10 @@ To the **issue** (Sisyphus files them; I do not open issues):
 6bis. **The best-shaped fix anyone found this run, and it belongs to follow-up 4/5, not here.** Pass B verified that the failure reasons quoted in the prompt's worked examples are **byte-identical** to what `MockBackend` + `default_safety_layer()` actually emit. So one replay test asserting the emitted reason string is `in PROMPT` would pin the reach, the `3.25 m` distance, the message format *and* the column travel quoted inside a fence — five of the eight unguarded rows — with no new dependency and no hand-typed ledger. Whoever takes the unchecked-prose issue should start here rather than extending the ledger. Path: `src/robot_brain/test/test_prompt_drift.py`.
 7. **A second ledger row would ship without controls.** `test_the_matcher_catches_the_spellings_a_literal_list_did_not` hardcodes the one key, so adding a row gets no positive control and deleting it raises `KeyError` instead of a clean signal. Only bites when a second body fact is superseded — but that is exactly when nobody will be looking. Fix shape: a sibling mapping keyed the same way, parametrized over the ledger's keys, so a row without controls fails at collection. Path: `src/robot_brain/test/test_prompt_drift.py`.
 8. **`scripts/check_test_integrity.py:765` crashes when two `pixi run test` runs share the `build/` tree** — `path.unlink()` needs `missing_ok=True`. One line. The laptop suite is the repo's only real merge gate, so a gate that can fail spuriously on a clean tree is worth hardening. Path: `scripts/check_test_integrity.py`.
+
+10. **A fence inserted mid-sentence in the introduction still hides the descriptor.** `introduction()` drops fences *then* collapses whitespace, so the two halves of a split sentence rejoin and the presence check stays green even though the prompt no longer introduces the robot as anything. Narrow, but it is the third variant of the same scoping bug. Path: `src/robot_brain/test/test_prompt_drift.py`.
+11. **`docs/design/spec.md:15` says "Flattened through **D28**"** while the file already carries D29 facts and now a D30 row. Pre-existing from #66, made one worse by this PR. Deliberately **not** bumped here: that line asserts something about the whole file, and this run verified only the base/body sections — asserting it on a spot check is the exact move that produced nine defects. Belongs with **`CLAUDE.md`'s "D1–D28"**, stale since #66 and now two behind, in the file every agent auto-loads. Both are ops-scope (root/`docs/`), so they want an ops PR, not a feature one. Paths: `docs/design/spec.md`, `CLAUDE.md`.
+12. **The ledger pattern's false-*positive* surface is unexplored.** `\b(?:four|4)[\s-]+wheel` would fire on a legitimate future world object — "a four-wheel cart" as a thing the robot navigates around — failing the suite on a correct prompt. Follow-up 9 covers the false-negative side only. Path: `src/robot_brain/test/test_prompt_drift.py`.
 
 9. **The stale-claim regex and the fence helper have known blind spots**, all follow-up-sized: `\b(?:four|4)[\s-]+wheel` misses Unicode dashes (and the prompt does use `—` in prose), `4wheel`, and `four large wheels`; `_FENCE` knows only backticks, so the presence check still passes with a `~~~` fence, an indented block, or an HTML comment. Path: `src/robot_brain/test/{test_prompt_drift.py,brain_fixtures.py}`.
 

@@ -69,8 +69,9 @@ longer exists. `test/test_prompt_drift.py` is what narrows that: wherever a
 claim has a live source, the test reads the expected value from there instead
 of restating it — `robot_mcp.tools.TOOL_NAMES`, each tool's own `inputSchema`,
 `robot_safety.SafetyLimits.defaults()`, `robot_backends.default_world()` and
-its `RobotModel` (the arm's reach, the column's travel), and
-`robot_skills.Side` (the arm count) — and a word in backticks that names nothing
+its `RobotModel` (the arm's reach, the column's travel), and `robot_skills`'
+enums (`Side` for the arm count, `FailureCode` for the failure table, the rest
+feeding the vocabulary check) — and a word in backticks that names nothing
 real fails the suite.
 
 That is the aim, not a guarantee. The prompt's description of the **body** is

@@ -14,7 +14,8 @@ Nothing else in the workspace would notice.
 So the prompt's claims are compared here against the **live** source that owns
 each -- ``robot_mcp``'s tool catalogue, each tool's own JSON Schema,
 ``robot_safety``'s shipped limits, ``robot_backends``' seed world and
-``RobotModel``, and ``robot_skills``' ``Side`` for the arm count.
+``RobotModel``, and ``robot_skills``' own enums -- ``Side`` for the arm count,
+``FailureCode`` for the failure table, and the rest feeding the vocabulary check.
 Reading each expected value from the source that owns it, rather than typing it
 here, is what this module aims at -- it is what makes the suite worth more than
 the prompt it checks.  It is an aim, not an invariant: some assertions still
