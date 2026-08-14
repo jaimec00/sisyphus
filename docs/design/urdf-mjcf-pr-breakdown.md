@@ -1,8 +1,8 @@
 # Roadmap #5 — URDF/MJCF robot body: PR breakdown
 
 **Status:** in progress. **PR1 is DONE** — merged as PR #62 (closes #61), ratified
-as **D27**. **PR2 is DONE** — closes #65, ratified as **D29**. PR3–PR7 are not
-yet filed as issues.
+as **D27**. **PR2 is DONE** — closes #65, ratified as **D29**. **PR3 is DONE** —
+closes #73, ratified as **D31**. PR3.5–PR7 are not yet filed as issues.
 **Decided:** URDF-as-source (Jaime, 2026-08-12). URDF/Xacro is canonical for
 kinematics/geometry; MJCF carries a thin sim-only physics layer on top;
 `RobotModel`'s constants are *read from* the URDF, not hardcoded.
@@ -80,11 +80,30 @@ numbers the URDF must eventually *own* (current literal defaults):
   moves to the first PR that actually lands meshes — see PR4.
 - Depends on PR1.
 
-### PR3 — Extendable column  *(linear-rail STS3215 lift, Nori-style crib (D26))*
+### PR3 — Extendable column  *(linear-rail STS3215 lift, Nori-style crib (D26))* — **DONE (closes #73, D31)**
 - Prismatic joint `column_lift` from `base_link` to a `column_top` mount frame;
   limits `lower=min_column_height`, `upper=max_column_height` (0.00–1.20).
 - **Test:** `column_lift` is prismatic; limit lower/upper equal the column
   bounds. First place the URDF *owns* a `RobotModel` number.
+- **Amended by D31 in two places, both mechanical.** The column is **two** solid
+  links, not one: a static `column_rail_link` mast (a lift with 1.2 m of travel
+  has a rail that is there at every joint value; modelling only the carriage
+  leaves a block floating over nothing, invisible to Nav2/MoveIt and absent from
+  PR7's MJCF), plus `column_top` as the carriage itself — whose **link frame
+  origin is the arm/head mount datum**, with the body offset below it, so PR3.5
+  and PR4 mount against a surface rather than into a solid. And `column_lift`'s
+  parent is **`column_rail_link`, not `base_link`**: kinematically identical
+  while the rail joint is fixed, but as siblings the carriage and the mast are
+  two permanently-touching solids whose contact nothing filters — D29's
+  chassis-vs-wheels bug one subassembly up. The mast's mount height is
+  *computed* from `base.xacro`'s `chassis_z_offset`/`chassis_height`, which
+  makes `column.xacro` include-order dependent (loudly, at expansion).
+- **Recorded contradiction:** D26 paraphrases the crib as a "~600 mm linear
+  rail" while `RobotModel` demands 1.20 m of *travel*; a single-stage carriage
+  cannot do both, so the travel bound wins and the mast is authored longer than
+  the travel. The mechanism is left to the (unread) Nori paper and to PR6. So is
+  the question of whether `RobotModel.column_height` means travel or an absolute
+  height — the URDF now commits to **travel** (D31).
 - Depends on PR2 (mounts on base).
 
 ### PR3.5 — Head camera link + optical frame  *(decided D26)*
@@ -153,7 +172,7 @@ numbers the URDF must eventually *own* (current literal defaults):
 ## Merge order & dependency graph
 ```
 PR1 ─► PR2 ─► PR3 ─► PR4 ─► PR5 ─► PR7
-      (done)   │       └─► PR6 (after PR4; optional column-only slice after PR3)
+      (done) (done)   │       └─► PR6 (after PR4; optional column-only slice after PR3)
                └─► PR3.5 head camera link (after PR3; arm-independent)
 ```
 Strictly sequential; no safe intra-package parallel pair. One dispatch slot.
