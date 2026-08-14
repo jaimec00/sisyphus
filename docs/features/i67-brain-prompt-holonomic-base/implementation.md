@@ -461,3 +461,117 @@ explicit direction, appended only.
   live source in `Side` and is ungated); N5/N2; and `CLAUDE.md`'s "D1–D28",
   which is stale at D29 and now at D30 — the same defect class as this issue, in
   the file every agent auto-loads.
+
+---
+
+# Round 5 — pass C
+
+Four BLOCKs, two commits (`e89b187` code, `7518968` prose), in that order —
+the code first, deliberately, because four sentences in this run described a
+guard that did not exist. `pixi run test` green: 763 tests, 0 skipped, audit
+passed; `robot_brain` 58 → 60, baseline 55 → 57 (committed).
+
+## H2 (code) — the rest of the body sentence now has the gate D30 claimed
+
+Pass C is right and pass A's earlier decline no longer applied: N-A6 declined to
+escalate the arm-count gap *because the class docstring disclosed it*, and D30
+then denied it in the permanent log.
+
+Three live sources were in scope the whole time, one of them already imported:
+
+| claim in `AGENTS.md:3-4` | live source now read | mutation before → after |
+|---|---|---|
+| "two arms" | `Side` (2 members), spelled via `COUNT_WORDS` | `seven arms`: 31 green → **fails** |
+| "with grippers" | `MockBackend().get_observation().robot.grippers`, one per `Side` | `suction cups`: 31 green → **fails** |
+| "an extendable vertical column" | `RobotModel.min/max_column_height` | `a fixed vertical column`: 31 green → **fails** |
+
+All three verified by me, prompt-only mutations through `colcon test`, each
+failing exactly one test with no collateral.
+
+Two deliberate design choices, both stated in the docstrings rather than left
+implicit:
+
+- **Matched loosely on purpose.** `f'{COUNT_WORDS[len(Side)]} arms'` and the
+  singular `'gripper'`, not the literal phrase "two arms with grippers" — so
+  PR4 rewording to "each arm's gripper" stays green while "seven arms" and
+  "suction cups" go red. H3 is the lesson: a guard that cries wolf on a correct
+  edit gets deleted, and PR3–PR7 will each edit this sentence.
+- **The column check is honestly weaker than the reach check**, and says so:
+  the reach compares the *same number* on both sides, while the column compares
+  the word "extendable" against the model merely *having* travel. The step from
+  "has travel" to that English word is the test's own. It is there because the
+  alternative was leaving the clause unread.
+
+`COUNT_WORDS` stops at three: a count it cannot spell is a `KeyError`, which is
+the right kind of loud for a robot that grew an arm.
+
+## H3 (code) — the presence check no longer breaks on a re-wrap
+
+`introduction()` now drops fences *and* collapses whitespace. Verified both of
+pass C's cases: on the wrap-moved-one-word-left prompt and the double-space
+prompt, `'3-omniwheel holonomic' in raw_intro` is **False** while
+`in normalised` is **True**, and the full suite stays green on both — i.e. the
+guard used to fail a byte-correct prompt and now does not.
+
+Recorded the asymmetry that hid this from three passes, in the test's own
+docstring: the *absence* pattern separates the words with a whitespace-or-hyphen
+class that eats a newline, so it was always wrap-tolerant; the *presence* check
+was a plain substring and never was. `red_team_fix.md`'s "the ~80-column wrap is
+not a hole" was true of the half that was measured.
+
+## H1 / H2 (prose) — D30 corrected
+
+Written after the code, against what the code now does.
+
+- The categorical "compares every prompt claim that has an owner" is gone; it
+  now says many, names the ones it does compare, and names `known_locations`,
+  `schema_version` and the examples' column travel as owned-but-unguarded with
+  their follow-up routing. That mattered because `status.md`'s accurate list
+  dies at merge and D30 is append-only — the false version was the one that
+  would have survived.
+- "Where a live source did exist, it is used" is now true *because the code
+  changed*, not because the sentence was softened, and the rule is restated in
+  order of preference: find the owner, ledger as fallback. The residue is named
+  (the column's thinner coupling; the head camera, which the prompt does not
+  mention at all today).
+- The PR3–PR7 bullet no longer claims the column/arms/gripper are ungated, and
+  states the two mechanical consequences that actually bind: a fact owned by
+  `robot_description` cannot be read without reversing this decision, and a
+  decision that supersedes a body fact must add a ledger row because nothing
+  detects the need.
+- The headline and section heading changed too — "gated by a ledger" was itself
+  the overclaim, since three of the four body claims are now live-checked.
+- Pass C's NOTE 2 (grammar attaching both assertions to the pattern) fixed in
+  passing, one clause, since I was rewriting that sentence for accuracy anyway.
+
+**On editing D30 rather than appending a correction:** the log is append-only,
+but D30 was authored in this same unmerged PR and will reach `main` as one
+squashed commit, so `main` only ever sees the corrected entry. That is strictly
+better than shipping a false categorical plus a corrective sub-bullet. No
+existing entry (D1–D29) was touched.
+
+## H4 — spec.md row
+
+One bullet under `## Ops & gates`, beside D25 and D28, which are equally
+non-body decisions. Carries the two things that bind a future author: no
+`robot_description` dependency, and the ledger needs a row per superseded body
+fact because nothing detects the need.
+
+## Observations, not acted on
+
+- **`spec.md:15` says "Flattened through D28" while the file already carries
+  three D29 facts** (`:110`, `:120`, `:137`) — stale before this PR touched it
+  (#66 landed D29's rows without bumping the line), and my D30 row makes the
+  line one further behind. I did **not** bump it to D30: that line asserts the
+  whole file is flattened through a decision, and I verified only that D29's
+  base facts are present, not that every clause of D29 is. Asserting it on a
+  spot check is exactly the move this run has punished five times. Worth a
+  follow-up (with `CLAUDE.md`'s "D1–D28", same class, same cause).
+- README `NOTE 1` was not a separate fix: the sentence had to change anyway,
+  because pinning the arms and column made "the gap is exactly where the prompt
+  describes the body" false. It now says where the aim runs out and names
+  `known_locations` as the one unguarded owned claim worth knowing about.
+- Pass C's NOTE 3 (the pattern's false-**positive** surface — "a four-wheel
+  cart" as a world object would fire it) is not recorded anywhere and is not
+  fixed here; it belongs with follow-up 9, which currently lists only the
+  false-negative blind spots.
