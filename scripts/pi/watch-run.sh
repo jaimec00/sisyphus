@@ -82,3 +82,13 @@ if openclaw agent --agent sisyphus --session-id "$SESSION_ID" \
 else
   log "wake FAILED (nonzero) — backstop cron will still catch this PR"
 fi
+
+# 4) Tear down the now-CONSUMED tmux session. The `exec bash` tail keeps a finished
+#    run's session alive so step 1 can read its EXIT marker — but once the wake has
+#    been fired nothing else needs it, and left alone those idle shells pile up and
+#    get misread as still-running managers. Reap regardless of wake success: the
+#    backstop cron queries gh directly and never looks at the session. On the
+#    hard-kill branch the session is already gone, so this is a harmless no-op.
+log "tearing down consumed tmux session: $TMUX"
+ssh -o ConnectTimeout=20 "$LAPTOP" "tmux kill-session -t '$TMUX' 2>/dev/null || true" >>"$SELF_LOG" 2>&1 \
+  || log "teardown ssh failed — session may linger until the next dispatch of this slug reaps it"

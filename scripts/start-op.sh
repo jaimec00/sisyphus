@@ -57,10 +57,47 @@ ts="$(date +%Y%m%d-%H%M%S)"
 logdir="$wt/.dev/runs/$slug/$ts"
 log="$logdir/agent.log"
 
+# --- reap a COMPLETED run's leftover tmux session (mirrors start-feature.sh) ---
+# A finished run's session lingers on purpose (the inner command ends with
+# `exec bash` so scripts/pi/watch-run.sh can read the `EXIT=<code>` marker before
+# the session dies); watch-run.sh kills it once consumed. When that teardown never
+# happens (no watcher, SSH down) the idle shell used to block re-dispatch of the
+# slug forever. Reap it here instead — only a genuinely LIVE run is refused.
+run_finished() {  # $1 = tmux session name; reads $wt / $slug
+  local f pane sid busy
+  f="$(ls -1t "$wt"/.dev/runs/"$slug"/*/*.log 2>/dev/null | head -1 || true)"
+  if [ -n "$f" ]; then
+    # definitive: the launcher echoes `EXIT=<code>` as the run's last log line
+    grep -qE 'EXIT=[0-9]+' "$f"
+    return
+  fi
+  # no run log (worktree already cleaned up): a finished session is just the idle
+  # shell, while a live one still has the agent (claude/node/pixi/...) under it
+  for pane in $(tmux list-panes -t "$1" -F '#{pane_pid}' 2>/dev/null || true); do
+    sid="$(ps -o sid= -p "$pane" 2>/dev/null | tr -d ' ')"
+    [ -n "$sid" ] || continue
+    busy="$(ps -s "$sid" -o comm= 2>/dev/null | grep -vxE 'bash|sh|ps|grep' || true)"
+    if [ -n "$busy" ]; then return 1; fi
+  done
+  return 0
+}
+
+if tmux has-session -t "$tmux_name" 2>/dev/null; then
+  if run_finished "$tmux_name"; then
+    if [ "$DRY_RUN" = "1" ]; then
+      echo "[dry-run] would reap completed run's stale tmux session: $tmux_name"
+    else
+      echo "reaping completed run's stale tmux session: $tmux_name"
+      tmux kill-session -t "$tmux_name" 2>/dev/null || true
+    fi
+  else
+    die "tmux session already running: $tmux_name"
+  fi
+fi
+
 # --- refuse to clobber existing work ---
 [ -e "$wt" ] && die "worktree path already exists: $wt"
 git show-ref --verify --quiet "refs/heads/$branch" && die "branch already exists: $branch"
-tmux has-session -t "$tmux_name" 2>/dev/null && die "tmux session already running: $tmux_name"
 
 # the command the detached agent will run
 inner="export PATH=\"\$HOME/.local/bin:\$HOME/.pixi/bin:\$PATH\"; \

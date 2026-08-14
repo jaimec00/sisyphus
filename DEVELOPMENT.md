@@ -181,6 +181,12 @@ How a run actually starts and how Sisyphus learns it finished.
   **one** wake to Sisyphus on the local Gateway, delivered via the `sisyphus` Telegram
   account. Latency ~15s. Hard kills (OOM, `kill -9`, reboot) never write the marker, so
   the watcher falls back to session-gone and wakes anyway.
+- **Session teardown.** Once the wake has been fired the session has been consumed, so
+  the watcher kills it (otherwise idle shells pile up and read as still-running
+  managers). If that teardown never happens — no watcher, SSH down — the launchers
+  self-heal: a same-name session is reaped when its run is *finished* (its run log
+  carries the `EXIT=` marker, or the session holds nothing but the idle shell) and only
+  refuses dispatch when the run is genuinely still live.
 - **Backstop cron.** `sisyphus-pr-check-backstop` sweeps every 15 min. It is a pure
   safety net for anything the push missed (Pi reboot, dead watcher, dropped SSH) — not
   the primary path.
