@@ -456,6 +456,23 @@ def _joint_rpy(joint):
     return tuple(float(value) for value in joint.origin.rpy)
 
 
+def _lift_limit(model):
+    """Return ``column_lift``'s ``<limit>``, failing legibly if it has none.
+
+    Same job as ``_require_expansion`` one level down: a prismatic joint with
+    no limit is rejected by ``check_urdf`` *and* by ``robot_state_publisher``,
+    so the three assertions that read one would otherwise report that single
+    root cause as three ``AttributeError``s on ``None``.
+    """
+    limit = model.joint_map['column_lift'].limit
+    assert limit is not None, (
+        'column_lift has no <limit>, so this assertion never ran -- see '
+        'test_check_urdf_parses_the_expansion for the root cause. A prismatic '
+        'joint without limits is unbounded travel and neither parser accepts '
+        'it.')
+    return limit
+
+
 def _axis_in_base_link(model, joint):
     """Express a joint's axis in ``base_link`` coordinates, composing every rpy above it.
 
@@ -465,6 +482,10 @@ def _axis_in_base_link(model, joint):
     a later PR is free to add another link in between. Reuses
     ``_rotation_from_rpy``/``_rotate`` rather than re-deriving them.
     """
+    assert joint.axis is not None, (
+        '%s declares no <axis>, which URDF silently defaults to (1, 0, 0) -- a '
+        'joint that travels forward rather than wherever it was meant to' % (
+            joint.name,))
     vector = _rotate(_rotation_from_rpy(_joint_rpy(joint)), tuple(joint.axis))
     link = joint.parent
     while link != 'base_link':
@@ -906,13 +927,9 @@ def test_column_lift_limits_are_the_robot_model_column_bounds(parsed_model):
     against a live import (see ROBOT_MODEL_*_COLUMN_HEIGHT_M for why the copy
     and what retires it).
     """
-    lift = parsed_model.joint_map['column_lift']
-    assert lift.limit is not None, (
-        'column_lift has no <limit>; a prismatic joint without one is '
-        'unbounded travel, and both parsers reject it, so this should have '
-        'failed at test_check_urdf_parses_the_expansion.')
-    bounds = ((lift.limit.lower, ROBOT_MODEL_MIN_COLUMN_HEIGHT_M, 'lower'),
-              (lift.limit.upper, ROBOT_MODEL_MAX_COLUMN_HEIGHT_M, 'upper'))
+    limit = _lift_limit(parsed_model)
+    bounds = ((limit.lower, ROBOT_MODEL_MIN_COLUMN_HEIGHT_M, 'lower'),
+              (limit.upper, ROBOT_MODEL_MAX_COLUMN_HEIGHT_M, 'upper'))
     wrong = ['%s is %r, RobotModel says %r' % (which, got, want)
              for got, want, which in bounds
              if got is None or abs(got - want) > PLACEMENT_TOL_M]
@@ -942,7 +959,7 @@ def test_column_lift_declares_positive_effort_and_velocity_limits(parsed_model):
     ESTIMATED in the xacro (no STS3215 torque figure or lead-screw ratio is
     recorded anywhere in this repo), so pinning either would assert a guess.
     """
-    limit = parsed_model.joint_map['column_lift'].limit
+    limit = _lift_limit(parsed_model)
     faults = ['%s is %r' % (name, getattr(limit, name, None))
               for name in ('effort', 'velocity')
               if not getattr(limit, name, None) or getattr(limit, name) <= 0]
@@ -1037,13 +1054,13 @@ def test_column_rail_spans_the_carriage_travel(parsed_model):
     long cantilevered plate) should relax this to the containment its own
     mechanism needs rather than delete it.
     """
-    lift = parsed_model.joint_map['column_lift']
-    travel = lift.limit.upper - lift.limit.lower
+    limit = _lift_limit(parsed_model)
+    travel = limit.upper - limit.lower
     (_x, _y, rail_length), rail_offset = _collision_box(parsed_model, 'column_rail_link')
     assert rail_length >= travel - PLACEMENT_TOL_M, (
         'the mast is %.4f m long but the carriage is allowed %.4f m of travel '
         '(%.4f to %.4f), so it leaves the rail entirely' % (
-            rail_length, travel, lift.limit.lower, lift.limit.upper))
+            rail_length, travel, limit.lower, limit.upper))
 
     rail_joint = _axis_aligned_joint(parsed_model, parsed_model.parent_map['column_rail_link'][0])
     rail_centre = _joint_z(rail_joint) + rail_offset[2]
@@ -1051,10 +1068,10 @@ def test_column_rail_spans_the_carriage_travel(parsed_model):
     (_cx, _cy, carriage_height), carriage_offset = _collision_box(parsed_model, 'column_top')
     # The datum's height above base_link at the top of the travel, plus the
     # carriage body hanging off it.
-    datum_top = _joint_z(rail_joint) + _joint_z(lift_joint) + lift.limit.upper
+    datum_top = _joint_z(rail_joint) + _joint_z(lift_joint) + limit.upper
     carriage_top = datum_top + carriage_offset[2] + carriage_height / 2.0
     carriage_bottom_at_rest = (_joint_z(rail_joint) + _joint_z(lift_joint)
-                               + lift.limit.lower + carriage_offset[2]
+                               + limit.lower + carriage_offset[2]
                                - carriage_height / 2.0)
     assert carriage_top <= rail_centre + rail_length / 2.0 + PLACEMENT_TOL_M, (
         'at its upper limit the carriage reaches z = %.4f while the mast ends '
