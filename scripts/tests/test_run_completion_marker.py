@@ -45,11 +45,14 @@ import pytest
 #: This file is ``<repo>/scripts/tests/test_run_completion_marker.py``.
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 
+#: The Pi-side watcher: the one that wakes Sisyphus and reaps the session.
+WATCHER = Path('scripts') / 'pi' / 'watch-run.sh'
+
 #: The scripts that decide "this run finished" from the run log. Every one of
 #: them acts on that verdict by killing a tmux session, so a false positive in
 #: any of them destroys a live run.
 COMPLETION_SCRIPTS = (
-    Path('scripts') / 'pi' / 'watch-run.sh',
+    WATCHER,
     Path('scripts') / 'start-feature.sh',
     Path('scripts') / 'start-op.sh',
 )
@@ -193,7 +196,7 @@ def test_the_exit_info_read_returns_the_runs_own_code(real_marker_log):
     candidate, the run's own, before any ``tail`` runs.
     """
     patterns = [pattern
-                for flags, pattern in exit_grep_patterns(COMPLETION_SCRIPTS[0])
+                for flags, pattern in exit_grep_patterns(WATCHER)
                 if 'o' in flags]
     assert patterns, 'watch-run.sh no longer reads the exit code with grep -o'
     for pattern in patterns:
@@ -216,8 +219,7 @@ def test_the_wrapper_emits_what_the_watcher_matches(script, tmp_path):
     assert emits, f'{script}: the run wrapper no longer echoes an EXIT marker'
 
     watcher_patterns = [pattern
-                        for flags, pattern in exit_grep_patterns(
-                            COMPLETION_SCRIPTS[0])
+                        for flags, pattern in exit_grep_patterns(WATCHER)
                         if 'q' in flags]
     assert watcher_patterns, 'watch-run.sh no longer tests for completion'
 
