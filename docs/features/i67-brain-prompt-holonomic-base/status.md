@@ -3,9 +3,9 @@
 - **Slug:** `i67-brain-prompt-holonomic-base`
 - **Branch:** `feat/i67-robot-brain-system-prompt-still-claims-a`
 - **Issue:** #67
-- **Phase:** manager rulings recorded → dispatching implementer
-- **Round:** 0 (no red-team pass yet)
-- **Blockers:** none
+- **Phase:** round 2 (final) — two false-docstring sentences → then test-runner → PR
+- **Round:** 2 of a maximum 2
+- **Blockers:** none (no escalation; nothing needs Sisyphus)
 
 ## Phase log
 
@@ -16,6 +16,12 @@
 | start | new deps | **none** — this feature adds no third-party dependency, so step 2's provision-and-probe is a no-op |
 | start | context-explorer | `context.md` written; 3 open questions raised |
 | start | manager rulings | R1–R4 below, recorded before implementer dispatch |
+| r1 | implementer | 3 commits: prose fix, `SUPERSEDED_BODY_CLAIMS` ledger + `TestBodyDescription`, `implementation.md`. `pixi run test` green (760). No escalation. |
+| r1 | red-team | `red_team.md`: **3 BLOCK** (B1 ledger spelling gap, B2 module docstring now false, B3 `RobotModel` *is* a live body source and `AGENTS.md:201`'s 0.85 m reach is unchecked) + 5 NOTES. Verified my rulings A–H empirically. |
+| r1 | manager | Accepted all 3 BLOCKs; **promoted N1** (fence-blind presence test) to must-fix — cheap, same weakness class as B1. Corrected my own R1/R2 rationales (below). Resumed implementer. |
+| r1 | implementer (fix) | 3 commits. B1 ledger → regex + positive/negative controls; B2/B3 docstrings; N1 fence-scoped. **Corrected my N1 one-liner**: `PROMPT.split('\n## ',1)[0]` alone still passed the scenario, because the first `##` is "How to work" — a fenced note in the intro is *inside* the intro. Found by running it. `pixi run test` green (761). |
+| r1 | red-team (scoped fix pass) | `red_team_fix.md`: **no BLOCKs.** All 3 BLOCKs + N1 confirmed closed **by mutation**, both halves of the N1 correction independently verified, no coverage lost in the 3-params→1 collapse. 6 NOTES. |
+| r2 | manager | Promoted **two** NOTES to must-fix (F1, F2 below) — both are the *same class* as B2, and F1 means B2's replacement is still false. Everything else routed to follow-ups. Resumed implementer. |
 
 ## Manager verification (done before ruling — not taken on the explorer's word)
 
@@ -130,3 +136,84 @@ file. Keep the diff minimal so the review is about the claim, not the prose.
 | 1 | just the fact, or extra affordance framing? | **R1** — just the fact, no affordance framing |
 | 2 | regression test here or follow-up? | **R2** — test here (ledger form); the general no-live-source problem is a follow-up |
 | 3 | deploy staleness to the Pi | **R3'** — out of code scope; goes in the **PR description** as a deploy note. `AGENTS.md` reaches the Pi by a manual `scp` (`src/robot_brain/README.md:91-99`) that this repo never executes, so any already-deployed copy stays stale until someone re-runs it. Not a blocker, not a code change — but it must not go unsaid. |
+
+## Ruling corrections (round 1) — recorded because a ruling nobody corrected is still an assumption
+
+The red-team was asked to attack my rulings empirically and did. Two of them
+were **right in conclusion and wrong in reasoning**. Recording the correction
+here rather than quietly keeping the conclusion, because the reasoning is what
+the next person will reuse:
+
+- **R2's cost argument was inflated.** I claimed deriving the wheel count from
+  the URDF would cost this suite "a colcon install tree and the xacro
+  toolchain". Measured: the install tree is *already* required (`colcon test`
+  runs after `colcon build`), xacro is already installed and already exercised
+  in the same run (~0.07 s), and the wheel count is **structural** (three
+  `*_wheel_link` names), not a number to be parsed out of English as I asserted.
+  **The conclusion survives on a different cost I failed to name:** it needs a
+  new dependency edge that drags `ament_index_python` into the one package
+  whose identity is "no ROS" (D21, asserted at `test_no_ros_runtime.py:31-35`).
+  Don't add the edge — but for that reason, not mine.
+- **R1's rationale was imprecise.** The premise held under attack (no
+  direction, heading, velocity, twist or base-pose parameter exists in any
+  *served* MCP schema; the only orientation quaternion is a gripper pose; the
+  base speed cap is one scalar with no angular term). But my line — "holonomic"
+  is inert while "it can strafe" is an invitation — does not survive as stated:
+  an LLM unpacks the one into the other, and *both* are equally un-encodable at
+  the seam. What actually bounds the damage is that the belief's only outlet is
+  the prose report to Jaime, which a body noun triggers far less than a
+  capability sentence does. **The wording ruling is unchanged**; the rule is
+  better stated as *describe the body, not the manoeuvre*.
+
+R3 and R4 survived attack unamended (no new backticks; the reflow collapses to
+a single-token word-diff with every prose line ≤80 cols).
+
+## Round 1 dispositions
+
+| item | severity | disposition |
+|---|---|---|
+| B1 — ledger misses `4 wheels`/`4 wheel`, the spelling `decisions.md:78` itself prints, while the docstring claims "every spelling" | BLOCK | **fix** — prefer a regex over one more literal; a literal list is the thing that just failed |
+| B2 — `test_prompt_drift.py:17` "No expected value in this module is typed by hand" is now false | BLOCK | **fix** — a newly-false claim in a statement of purpose, in the PR whose subject is a stale claim |
+| B3 — `RobotModel` *is* a live body source (already imported, already a test_depend) and `AGENTS.md:201`'s "0.85 m reach" is unchecked (mutation to 0.40 left 27 passing) | BLOCK | **fix** — add the assertion, narrow the docstring to "the *drivetrain* has no live source". **0.85 itself is not to be changed** (see follow-ups) |
+| N1 — presence test matches raw `PROMPT`, so it passes on the descriptor hiding in a fenced comment | NOTE | **promoted to fix** — one line, and the same weakness class as B1 |
+| N2, N3 | NOTE | absorbed into the ruling corrections above |
+| N4 — `'4-wheel'` fragment is safe | NOTE | no action |
+| N5 — `AGENTS.md:81`'s example observation omits the `orientation` the real one always sends | NOTE | **survives → follow-up comment on the issue** (pre-existing, out of this brief) |
+
+## Round 2 dispositions (final round)
+
+The scoped fix pass returned **no BLOCKs**. I promoted two NOTES anyway, because
+the heuristic the pass was handed — *a fix that corrects a claim in N places is
+a strong prior the same claim is wrong in an N+1th* — found the N+1th **inside
+the fix itself**:
+
+| item | disposition |
+|---|---|
+| **F1** — B2's *replacement* docstring (`test_prompt_drift.py:17-20`) claims `SUPERSEDED_BODY_CLAIMS` is the "single deliberate exception" to values being read live. **False, and I verified it myself:** `:383-384` hand-type `'out_of_reach'` and `'clamped'`, and `FailureCode` is derived live at `:346` — so the first is a hand-typed copy of a value the module already has live. Also the seven headings and `count('call place(') >= 3`. | **fix** — and note the root cause this exposes: B2 was never "the ledger made the docstring false", it is that this docstring *has always overclaimed*. The pre-existing sentence was false for the same reason. Fixed with a framing that stays true as tests are added, rather than an exception count nobody will maintain. |
+| **F2** — `:176` claims "a later edit to the pattern cannot quietly narrow it". Disproved: `r'\b(?:four\|4)[\s-]+wheel(?:s\|ed\|\s\|-)'` passes all eight controls while going blind to `The base is four-wheel.` — no control ends the phrase at punctuation. | **fix** — honest sentence, or the one control that makes it true. |
+| all six other NOTES | **follow-up** — routed below. Deliberately not widened into this PR; the brief is the four-wheel claim. |
+
+Worth recording plainly: **F1 is the third time in this run that a claim about
+the code was wrong in a docstring rather than in the code.** That is the actual
+recurring defect this feature surfaced, and it is what the retro should carry —
+the prompt is not the only prose in this repo with no gate.
+
+## Follow-ups to route outward (manager-only, per CLAUDE.md feedback routing)
+
+To the **issue** (Sisyphus files them; I do not open issues):
+1. **The prompt's body prose has no live source, and PR3–PR7 are about to add four more body facts** (column, arms, gripper, camera). B3 shows a live source exists for *reach*; there is none for the drivetrain. Paths: `src/robot_brain/test/test_prompt_drift.py`, `src/robot_description/`.
+2. **`RobotModel.reach_radius` is 0.85 m while D26 pins SO-101 at ~0.4 m.** Surfaced by B3's mutation test. The prompt agrees with the mock world today, so it is not this PR's bug — but one of the two numbers is wrong about the arm we chose. Paths: `src/robot_backends/robot_backends/mock_world.py`, `docs/design/decisions.md` (D26).
+3. **N5** — the prompt's example observation omits `orientation`, which the real `get_observation()` always sends. Path: `src/robot_brain/robot_brain/openclaw/AGENTS.md`.
+4. **`known_locations` is unguarded, and it is the behaviourally worst of the gaps.** The prompt enumerates the world's locations twice and states *"There are no others"* (`AGENTS.md:89,97,168`), but adding `hallway` to the seed world leaves **28 prompt tests green** (VERIFIED by mutation in the scoped pass). An agent told a location does not exist will not navigate to it. Paths: `src/robot_brain/test/test_prompt_drift.py`, `src/robot_backends/robot_backends/mock_world.py`.
+5. **Three more prompt numbers quoted outside their section-scoped check**, each VERIFIED green under mutation: `schema_version: 1` (bumped to 2 → green), `counter_1.z` (moved → green), and the column travel in the worked examples (`AGENTS.md:219,223` — retuned to 1.5 with only the safety section fixed → green). **Correction to `implementation.md`:** the column travel was deferred there as belonging to "a different owning package", but `mock_world.py:86` gives that number the *same* live source the new reach test already calls, so it is cheaper to close than stated.
+6. **The stale-claim regex and the fence helper have known blind spots**, all follow-up-sized: `\b(?:four|4)[\s-]+wheel` misses Unicode dashes (and the prompt does use `—` in prose), `4wheel`, and `four large wheels`; `_FENCE` knows only backticks, so the presence check still passes with a `~~~` fence, an indented block, or an HTML comment. Path: `src/robot_brain/test/{test_prompt_drift.py,brain_fixtures.py}`.
+
+To the **PR** (retro):
+- the deploy note (R3');
+- this issue existed *because* prose claims have no gate — and the run then hit
+  the same defect **three more times in docstrings** (B2, B3, F1), including
+  once inside the fix for it. The ledger is a patch, not a fix;
+- a process note from the implementer worth generalising: it lost a set of
+  uncommitted edits to `git checkout -- src/` while reverting a mutation.
+  Mutation testing should commit first or mutate a copy — both red-team agents
+  used `cp -r` to `/tmp` and neither lost anything.
