@@ -20,8 +20,8 @@ Reading each expected value from the source that owns it, rather than typing it
 here, is what this module aims at -- it is what makes the suite worth more than
 the prompt it checks.  It is an aim, not an invariant: some assertions still
 name a heading, a phrase or a code by hand, and ``SUPERSEDED_BODY_CLAIMS`` is
-hand-typed because the drivetrain it describes has no live source in this
-package at all -- see ``TestBodyDescription`` for why, and for what that costs.
+hand-typed because the drivetrain it describes has no owner on this side of the
+skill API -- see ``TestBodyDescription`` for why, and for what that costs.
 """
 
 import re

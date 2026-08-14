@@ -177,7 +177,7 @@ end-effector decision); wrist cameras; microphone (D26).
   owner** — nothing detects the need. Find the owner first; a ledger row is the
   fallback, not the rule. The same applies to a body fact the prompt gains for
   the first time — the head camera, which the prompt does not mention today — as
-  it lands **ungated** unless its author reads it from an owner or pins it. `robot_brain` takes **no
-  dependency on `robot_description`** (D30).
+  it lands **ungated** unless its author reads it from an owner or pins it.
+  `robot_brain` takes **no dependency on `robot_description`** (D30).
 - **Sisyphus is the sole merger;** managers and operational agents stop at an
   open, green PR (D20).
