@@ -175,18 +175,23 @@ How a run actually starts and how Sisyphus learns it finished.
   laptop launcher (`scripts/start-feature.sh` / `scripts/start-op.sh`), which starts the
   manager or operational agent detached in tmux, and additionally spawns the Pi-side
   push watcher for that run. `DRY_RUN=1` prints the plan and starts nothing (no watcher).
-- **Push notifier.** `scripts/pi/watch-run.sh` waits for the run's `EXIT=<code>` marker
-  in the run log — **not** tmux-session death, because the launcher leaves an idle
+- **Push notifier.** `scripts/pi/watch-run.sh` waits for the run's `EXIT=<code> (<date>)`
+  marker in the run log — **not** tmux-session death, because the launcher leaves an idle
   `exec bash` shell behind, so the session outlives the run. On the marker it fires
   **one** wake to Sisyphus on the local Gateway, delivered via the `sisyphus` Telegram
   account. Latency ~15s. Hard kills (OOM, `kill -9`, reboot) never write the marker, so
   the watcher falls back to session-gone and wakes anyway.
+  The match is **anchored at column 0** (`^EXIT=[0-9]+ \(`) and must stay that way: the
+  run log is the agent's own stream-json transcript, and an agent's bash steps routinely
+  `echo "EXIT=$?"` — that text lands in the log inside a JSON string, never at line
+  start. A loose match reads a *running* agent's echo as completion and (with teardown
+  below) kills the live run. `scripts/tests/test_run_completion_marker.py` enforces it.
 - **Session teardown.** Once the wake has been fired the session has been consumed, so
   the watcher kills it (otherwise idle shells pile up and read as still-running
   managers). If that teardown never happens — no watcher, SSH down — the launchers
   self-heal: a same-name session is reaped when its run is *finished* (its run log
-  carries the `EXIT=` marker, or the session holds nothing but the idle shell) and only
-  refuses dispatch when the run is genuinely still live.
+  carries the anchored `EXIT=` marker, or the session holds nothing but the idle shell)
+  and only refuses dispatch when the run is genuinely still live.
 - **Backstop cron.** `sisyphus-pr-check-backstop` sweeps every 15 min. It is a pure
   safety net for anything the push missed (Pi reboot, dead watcher, dropped SSH) — not
   the primary path.
