@@ -3,9 +3,12 @@
 - **Slug:** `i67-brain-prompt-holonomic-base`
 - **Branch:** `feat/i67-robot-brain-system-prompt-still-claims-a`
 - **Issue:** #67
-- **Phase:** round 2 (final) — two false-docstring sentences → then test-runner → PR
-- **Round:** 2 of a maximum 2
-- **Blockers:** none (no escalation; nothing needs Sisyphus)
+- **Phase:** round 3 — two full N+1 passes found 3 BLOCKs → fixing → then PR
+- **Round:** 3. **Deliberately past `run-feature.md`'s "max 2 rounds"** — see the
+  rule conflict recorded under *Ops findings* below. CLAUDE.md makes a BLOCK a
+  must-fix-before-merge, and `.claude/agents/red-team.md` (as of #69) requires
+  full passes until a clean one follows a clean one. Both outrank a round count.
+- **Blockers:** none needing Sisyphus (no escalation; all three BLOCKs are in-scope fixes)
 
 ## Phase log
 
@@ -22,6 +25,10 @@
 | r1 | implementer (fix) | 3 commits. B1 ledger → regex + positive/negative controls; B2/B3 docstrings; N1 fence-scoped. **Corrected my N1 one-liner**: `PROMPT.split('\n## ',1)[0]` alone still passed the scenario, because the first `##` is "How to work" — a fenced note in the intro is *inside* the intro. Found by running it. `pixi run test` green (761). |
 | r1 | red-team (scoped fix pass) | `red_team_fix.md`: **no BLOCKs.** All 3 BLOCKs + N1 confirmed closed **by mutation**, both halves of the N1 correction independently verified, no coverage lost in the 3-params→1 collapse. 6 NOTES. |
 | r2 | manager | Promoted **two** NOTES to must-fix (F1, F2 below) — both are the *same class* as B2, and F1 means B2's replacement is still false. Everything else routed to follow-ups. Resumed implementer. |
+| r2 | implementer (fix) | 2 commits. F1 docstring reframed as an aim, not an exception count; F2 both halves (honest sentence *and* the punctuation control), verified against my exact narrowing pattern. Count unchanged at 58. |
+| r3 | manager | Rebased onto `1a8472b` — **ops PR #69 landed the N+1 rule mid-run**, requiring full passes until clean-follows-clean. My last pass was fix-diff-scoped and was itself followed by fixes, so I owed full passes. Dispatched two, split by lens (rulings / does-it-work), each told to form findings *before* reading prior reports. |
+| r3 | test-runner | **PASS** — 761 tests, 0 failures, 0 skipped, audit passed, ratchet `+0` (`robot_brain` 55 non-lint). One transient `no-result` on the first run; cause later identified (see Ops findings). |
+| r3 | red-team ×2 (full) | **3 BLOCKs between them**, two of which are *my* rulings. Both passes independently re-verified the shipped fix and all five tests as correct by mutation. AC2 independently audited and **upheld**. |
 
 ## Manager verification (done before ruling — not taken on the explorer's word)
 
@@ -198,6 +205,83 @@ the code was wrong in a docstring rather than in the code.** That is the actual
 recurring defect this feature surfaced, and it is what the retro should carry —
 the prompt is not the only prose in this repo with no gate.
 
+## Round 3 dispositions — the N+1 rule paid for itself immediately
+
+Both full passes found BLOCKs, right after a scoped pass had returned none.
+That is exactly the failure mode #69 was written to catch, in the same run the
+rule landed.
+
+| item | disposition |
+|---|---|
+| **G1** — `src/robot_brain/README.md:71-73` still says *"No expected value there is typed by hand"*: the **last surviving copy** of the sentence this PR spent two rounds fixing in `test_prompt_drift.py:17`, made false by this PR. Two files in one package now assert opposite things about the same property. | **fix** — B2 and F1 were both must-fix on this exact ground. Three passes missed it because everyone scoped their README check to *body* claims and cleared it correctly on that basis. |
+| **G2** — the `ament_index_python` rationale is **false**, verified by mutation in both passes independently (adding the import leaves the suite green: the probe inspects only `import robot_brain` in a bare subprocess, and `FORBIDDEN_ROOTS` is `('rclpy',)` over the runtime package, not `test/`). | **fix** — and see below: this is the **third** wrong reason for the same ruling, and I authored the second and third. |
+| **G3** — my ruling that this needs no `decisions.md` entry was **wrong**. | **fix — write D30.** |
+| NOTE 8 (a second ledger row would ship without controls), pass B's replay-test idea, the `U+2011` escape | **follow-up** — routed below. |
+
+### G2 — I have now been wrong about the same sentence three times
+
+Worth recording as the run's sharpest lesson, because the pattern is mine:
+
+1. **Original R2**: rejected the URDF check because it would cost "a colcon
+   install tree and the xacro toolchain". Measured by round 1: false — both
+   were already present, and the wheel count is structural, not English.
+2. **My "correction"**: adopted round 1's proposed replacement — that it would
+   drag `ament_index_python` into the one package defined by having no ROS —
+   and told the implementer it was the version that "survives measurement".
+   **Nobody measured it.** Both round-3 passes did, and it is false.
+3. **Pass A's proposed replacement** (that D21's no-ROS property is about
+   *deployed assets*, which a `<test_depend>` cannot touch) may itself be
+   mis-scoped.
+
+Every time, a plausible reason was accepted because it sounded like the kind of
+thing that would be true. So the instruction to the implementer for round 3 was
+**verify the new reason by executing against it before writing it**, and write
+the honest minimum ("a design choice, not one the suite enforces") rather than a
+fourth confident wrong reason. The *conclusion* — don't add the test-depend —
+has been upheld by every pass; only the reasoning kept failing.
+
+### G3 — why the "no decision entry" ruling was wrong
+
+I ruled this feature decides nothing new. The argument that changed my mind is
+mechanical rather than aesthetic: **`docs/features/` is deleted at merge**
+(CLAUDE.md; `.github/workflows/guards.yml` enforces `git ls-files
+'docs/features/*'` empty). So every ruling in this file, both ruling
+corrections and all three disposition tables **cease to exist on `main`**.
+Follow-ups survive because they are routed to the issue; the retro survives
+because it is routed to the PR; the *reasoning* is routed nowhere. And feature
+PRs land D-entries here as a matter of course — D27 in #62, D29 in #66, whose
+register is precisely "what filling this in turned out to require".
+
+### AC2 — my `known_locations` deferral was upheld, with a better reason than I gave
+
+Pass A reproduced the gap (adding `hallway` to the seed world leaves 28 prompt
+tests green) and still ruled the deferral legitimate: `known_locations` is a
+**world**-description claim, not a body-description one, so it falls outside
+acceptance criterion 2 — and reading "body-description" as "any factual claim"
+makes the required sweep unbounded. The sweep AC2 actually asks for is complete:
+base fixed and gated, reach gated against `RobotModel`, the column/shoulder
+claim verified true against `mock_world.py:114-122`, "two arms" matching D26.
+
+## Ops findings for the retro (not code, not this PR to fix)
+
+1. **`run-feature.md`'s "max 2 red-team↔fix rounds" now conflicts with
+   `.claude/agents/red-team.md`'s N+1 rule** (#69), which requires passes until
+   a clean one follows a clean one. This run hit the conflict directly: round 3
+   was past the cap and found three BLOCKs, two of them wrong manager rulings.
+   The documents should be reconciled — and on this evidence the cap is the one
+   that should give.
+2. **Two concurrent `pixi run test` runs race in the shared `build/` tree** and
+   crash at `scripts/check_test_integrity.py:765`, where `path.unlink()` wants
+   `missing_ok=True`. This produced the transient `no-result` the test-runner
+   reported. **My fault operationally** — I had three agents running at once —
+   but the one-line fix is real, and a gate that can flake on a clean tree is
+   worth hardening given the whole merge decision rests on it.
+3. **I routed follow-ups from an agent's summary message instead of its report
+   file, and dropped two NOTES.** The scoped pass wrote 8 NOTES and surfaced 6
+   in its summary; its report explicitly listed NOTE 7 among its top picks, and
+   NOTE 7 is what became BLOCK G2 a round later. Route from the artifact, not
+   the abstract.
+
 ## Follow-ups to route outward (manager-only, per CLAUDE.md feedback routing)
 
 To the **issue** (Sisyphus files them; I do not open issues):
@@ -206,7 +290,11 @@ To the **issue** (Sisyphus files them; I do not open issues):
 3. **N5** — the prompt's example observation omits `orientation`, which the real `get_observation()` always sends. Path: `src/robot_brain/robot_brain/openclaw/AGENTS.md`.
 4. **`known_locations` is unguarded, and it is the behaviourally worst of the gaps.** The prompt enumerates the world's locations twice and states *"There are no others"* (`AGENTS.md:89,97,168`), but adding `hallway` to the seed world leaves **28 prompt tests green** (VERIFIED by mutation in the scoped pass). An agent told a location does not exist will not navigate to it. Paths: `src/robot_brain/test/test_prompt_drift.py`, `src/robot_backends/robot_backends/mock_world.py`.
 5. **Three more prompt numbers quoted outside their section-scoped check**, each VERIFIED green under mutation: `schema_version: 1` (bumped to 2 → green), `counter_1.z` (moved → green), and the column travel in the worked examples (`AGENTS.md:219,223` — retuned to 1.5 with only the safety section fixed → green). **Correction to `implementation.md`:** the column travel was deferred there as belonging to "a different owning package", but `mock_world.py:86` gives that number the *same* live source the new reach test already calls, so it is cheaper to close than stated.
-6. **The stale-claim regex and the fence helper have known blind spots**, all follow-up-sized: `\b(?:four|4)[\s-]+wheel` misses Unicode dashes (and the prompt does use `—` in prose), `4wheel`, and `four large wheels`; `_FENCE` knows only backticks, so the presence check still passes with a `~~~` fence, an indented block, or an HTML comment. Path: `src/robot_brain/test/{test_prompt_drift.py,brain_fixtures.py}`.
+6bis. **The best-shaped fix anyone found this run, and it belongs to follow-up 4/5, not here.** Pass B verified that the failure reasons quoted in the prompt's worked examples are **byte-identical** to what `MockBackend` + `default_safety_layer()` actually emit. So one replay test asserting the emitted reason string is `in PROMPT` would pin the reach, the `3.25 m` distance, the message format *and* the column travel quoted inside a fence — five of the eight unguarded rows — with no new dependency and no hand-typed ledger. Whoever takes the unchecked-prose issue should start here rather than extending the ledger. Path: `src/robot_brain/test/test_prompt_drift.py`.
+7. **A second ledger row would ship without controls.** `test_the_matcher_catches_the_spellings_a_literal_list_did_not` hardcodes the one key, so adding a row gets no positive control and deleting it raises `KeyError` instead of a clean signal. Only bites when a second body fact is superseded — but that is exactly when nobody will be looking. Fix shape: a sibling mapping keyed the same way, parametrized over the ledger's keys, so a row without controls fails at collection. Path: `src/robot_brain/test/test_prompt_drift.py`.
+8. **`scripts/check_test_integrity.py:765` crashes when two `pixi run test` runs share the `build/` tree** — `path.unlink()` needs `missing_ok=True`. One line. The laptop suite is the repo's only real merge gate, so a gate that can fail spuriously on a clean tree is worth hardening. Path: `scripts/check_test_integrity.py`.
+
+9. **The stale-claim regex and the fence helper have known blind spots**, all follow-up-sized: `\b(?:four|4)[\s-]+wheel` misses Unicode dashes (and the prompt does use `—` in prose), `4wheel`, and `four large wheels`; `_FENCE` knows only backticks, so the presence check still passes with a `~~~` fence, an indented block, or an HTML comment. Path: `src/robot_brain/test/{test_prompt_drift.py,brain_fixtures.py}`.
 
 To the **PR** (retro):
 - the deploy note (R3');
