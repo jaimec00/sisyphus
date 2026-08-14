@@ -86,8 +86,10 @@ pixi run openclaw doctor               # what the schema cannot catch: globs,
    it runs the code to confirm or refute its own claims (findings are labeled
    VERIFIED / UNVERIFIED) but never edits source or tests, and perturbation
    experiments happen on a copy outside the worktree.
-7. **Fix** — `implementer` addresses BLOCK items (≤2 rounds; surviving NOTES →
-   follow-up **comment on the issue**; Sisyphus files them).
+7. **Fix** — `implementer` addresses BLOCK items. The red-team↔fix loop has **no
+   fixed round cap**: it repeats until a **clean pass follows a clean pass** (the
+   N+1 rule in `.claude/agents/red-team.md`, which owns this criterion).
+   Surviving NOTES → follow-up **comment on the issue**; Sisyphus files them.
 8. **Test** — `test-runner` runs the suite, reporting pass/fail + log path only.
    Loop 5–8 until green.
 9. **PR** — before signalling ready, the manager **re-reads the feature's

@@ -45,8 +45,11 @@ open questions: `docs/design/PROJECT.md`. Read those before any non-trivial work
 
 ## Development loop (per feature, per worktree)
 context (sonnet) → manager rules on open questions → implement + tests (opus) →
-red-team (opus, read-only) → fix (≤2 rounds) → test-runner (sonnet) →
+red-team (opus, read-only) → fix → test-runner (sonnet) →
 repeat until green → PR.
+The red-team↔fix loop is **not capped at a fixed number of rounds**: it runs
+until a **clean pass follows a clean pass** (the N+1 rule, owned by
+`.claude/agents/red-team.md`).
 The red-team is **read-only to the worktree, not shell-less**: it has `Bash` to
 *verify* (run tests, reproduce a scenario) and labels each finding VERIFIED or
 UNVERIFIED, but never edits source or tests and never leaves the tree dirty.
