@@ -74,6 +74,11 @@ SUPERSEDED_BODY_CLAIMS: Mapping[str, str] = MappingProxyType({
 #: How the prompt states the arm's reach: ``0.85 m reach``.
 _STATED_REACH = re.compile(r'(\d+(?:\.\d+)?) m reach')
 
+#: How the prompt spells a small count in prose: "two arms with grippers".
+#: Only the counts a body plausibly has -- a robot that grows a third arm
+#: should fail here loudly rather than skip the check it can no longer spell.
+COUNT_WORDS: Mapping[int, str] = MappingProxyType({1: 'one', 2: 'two', 3: 'three'})
+
 #: Each tool's argument names and its required ones, from the shipped schemas.
 SCHEMAS = {
     tool.name: (
@@ -95,6 +100,21 @@ def wire_keys(value) -> set[str]:
         for item in value:
             keys |= wire_keys(item)
     return keys
+
+
+def introduction() -> str:
+    """Return the prompt's opening paragraphs -- where it describes the body.
+
+    Everything above the first ``## `` heading, with fences dropped and
+    whitespace collapsed.  Fences, because a phrase surviving in a fenced note
+    is not the prompt introducing the robot.  Whitespace, because the prompt is
+    hard-wrapped at ~80 columns and a claim that straddles a newline is still
+    the claim: correcting the base re-wrapped this very sentence once already,
+    and the column, arms, gripper and camera PRs each re-wrap it again.  A
+    guard that goes red on a re-wrap of a correct sentence gets deleted, not
+    fixed.
+    """
+    return ' '.join(without_fences(PROMPT).split('\n## ', 1)[0].split())
 
 
 def live_vocabulary() -> set[str]:
@@ -129,9 +149,10 @@ def live_vocabulary() -> set[str]:
 class TestBodyDescription:
     """The body the prompt opens by describing is the body this workspace has.
 
-    Most of the body *does* have a live source here: ``RobotModel`` is what the
-    Mock reasons about, so the reach below is checked against it like every
-    other number in this module.  The **drivetrain** is the part with none on
+    Most of that opening sentence has a live source on this side of the skill
+    API, and each part is read from its own: the arm count from ``Side`` and
+    the Mock's one gripper per arm, the column's travel and the arm's reach
+    from ``RobotModel``.  The **drivetrain** is the part with none on
     this side of the skill API -- it is described in ``robot_description``'s
     URDF, and this package does not depend on that.  Reading it means adding
     the edge, which is measured rather than assumed:
@@ -145,10 +166,13 @@ class TestBodyDescription:
     the words "omniwheel" and "holonomic" only in a comment.  A design call,
     recorded as D30; the drivetrain gets a hand-typed ledger instead.
 
-    Be clear about what that pin buys: it catches the claim we *already know*
-    went stale.  It cannot notice the next one.  When the column, the arms or
-    the camera change shape, this file stays green while the prompt lies,
-    until somebody adds the row.
+    Be clear about what that ledger pin buys, since it is the weakest thing
+    here: it catches the claim we *already know* went stale, and it cannot
+    notice the next one.  Named residue, so nobody has to rediscover it: the
+    column check reads the word "extendable" rather than a number; the prompt
+    does not mention the head camera at all today, so that fact will land
+    ungated when it arrives; and nothing here notices a body claim this file
+    has never heard of.
     """
 
     @pytest.mark.parametrize('current', sorted(SUPERSEDED_BODY_CLAIMS))
@@ -166,15 +190,18 @@ class TestBodyDescription:
     def test_the_descriptor_that_replaced_it_is_taught(self, current):
         """Deleting the stale claim is half the fix; the agent still needs the body.
 
-        Scoped to the opening paragraphs *outside fences*, where the body is
-        introduced, so the phrase has to be doing the describing.  Against the
-        raw prompt this passes on a leftover mention in a fenced note sitting
-        beside a sentence calling the robot anything at all -- and a fence is
-        allowed in the introduction, so dropping the fences is the half that
-        does the work.
+        Scoped to the introduction, where the body is introduced, so the
+        phrase has to be doing the describing: against the raw prompt this
+        passes on a leftover mention in a fenced note sitting beside a
+        sentence calling the robot anything at all.
+
+        Note the asymmetry with the absence check above, which needs no such
+        care: its pattern separates "four" from "wheel" with a whitespace-or-
+        hyphen class, which eats a newline, so the wrap cannot hide a retired
+        claim from it.  A plain substring is not wrap-tolerant, which is what
+        ``introduction()`` normalises away.
         """
-        introduction = without_fences(PROMPT).split('\n## ', 1)[0]
-        assert current.lower() in introduction.lower(), (
+        assert current.lower() in introduction().lower(), (
             f'the prompt never introduces the robot as "{current}"')
 
     def test_the_matcher_catches_the_spellings_a_literal_list_did_not(self):
@@ -217,6 +244,41 @@ class TestBodyDescription:
                 'Speed caps: base 0.6 m/s, column 0.15 m/s, arm 0.5 m/s.',
             ):
                 assert not re.search(pattern, innocent, re.IGNORECASE), (pattern, innocent)
+
+    def test_the_arms_and_their_grippers_are_the_ones_the_robot_serves(self):
+        """The arms in the opening sentence are a body claim with a live source.
+
+        The rest of the opening sentence was pinned before this one was: the
+        count was checkable the whole time -- ``Side`` is the seam's own list
+        of arms, imported here already, and the Mock emits exactly one gripper
+        observation per member -- and the ledger above is for the drivetrain
+        precisely because the drivetrain is the part that has *no* such
+        source.  Leaving this unchecked while saying so was the gap.
+
+        ``COUNT_WORDS`` turns the live number into the word the prose uses; a
+        count it cannot spell is a ``KeyError`` here, which is the right kind
+        of loud.  The gripper half is matched in the singular so that
+        rewording "arms with grippers" to "each arm's gripper" stays green --
+        the claim is that the arms have them, not the plural.
+        """
+        grippers = MockBackend().get_observation().robot.grippers
+        assert {gripper.side for gripper in grippers} == set(Side)
+        assert f'{COUNT_WORDS[len(Side)]} arms' in introduction()
+        assert 'gripper' in introduction()
+
+    def test_the_column_is_called_extendable_while_the_model_gives_it_travel(self):
+        """Calling the column extendable is a claim about travel, and travel is live.
+
+        Weaker than the reach check, and deliberately so: there the prompt and
+        the model state the *same number*, while here the test supplies the
+        step from "has travel" to the English word.  It is here because the
+        alternative was leaving the clause entirely unread, and it catches the
+        drift that matters -- a prompt calling the column fixed, or a model
+        that stopped giving it anywhere to go.
+        """
+        model = default_world().robot
+        assert model.max_column_height > model.min_column_height
+        assert 'extendable' in introduction()
 
     def test_the_reach_the_examples_quote_is_the_live_one(self):
         """A worked example quotes the arm's reach, and nothing else checks it.
