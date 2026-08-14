@@ -64,10 +64,15 @@ numbers the URDF must eventually *own* (current literal defaults):
   **3 omniwheel links** at 60°/180°/300° on `continuous` joints named for the
   LeRobot driver's motor keys. Every dimension is an xacro `<property>`, with
   the two sourced ones marked apart from the estimates (D29).
-- **Test:** wheel joint names/types/count (=3); the 120° mount spacing and the
-  outward-radial spin axis *after* rpy composition; `base_footprint` at minus
-  the wheel radius; inertia on every non-frame link; still expands + parses;
-  loadable by `robot_state_publisher`.
+- **Test:** wheel joint names/types/count (=3), each driving its own link; the
+  120° mount spacing and the outward-radial spin axis *after* rpy composition;
+  **the LeRobot driver's body→wheel matrix rebuilt from the model and compared
+  row-for-row to the driver's own constant, plus its `wheel_radius`** — the
+  absolute check, without which a left/right swap or a retuned wheel is green
+  (D29); `base_footprint` at minus the wheel radius; visual + collision
+  geometry on every body link and a chassis that clears the wheels; inertia on
+  every non-frame link; still expands + parses; loadable by
+  `robot_state_publisher`.
 - **Amended by D29: PR2 imports no meshes.** The base is primitives (the
   upstream omniwheel STL is 15 MB × 3, the cheap LeKiwi mesh is the wrong body
   per D26, and convex primitives are the better collision geometry anyway), so

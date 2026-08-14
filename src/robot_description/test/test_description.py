@@ -126,6 +126,22 @@ DRIVER_ROLLING_ANGLES_DEG = {
 #: The driver's `base_radius` default, metres -- the third column of `m`.
 DRIVER_BASE_RADIUS_M = 0.125
 
+#: The driver's `wheel_radius` default, metres. It never appears in `m`, which
+#: is why it is easy to forget, and it is the constant the driver *divides* by
+#: in both directions (`wheel_angular_speeds = wheel_linear_speeds /
+#: wheel_radius` on the way out, `wheel_linear_speeds = wheel_radps *
+#: wheel_radius` on the way back). A model that disagrees with it is not
+#: visibly broken anywhere: it just drives at the wrong speed and reports the
+#: same error back as odometry.
+DRIVER_WHEEL_RADIUS_M = 0.05
+
+#: Tolerance for the driver-matrix comparison. Its own constant rather than
+#: PLACEMENT_TOL_M because two of the three columns are direction cosines, not
+#: metres; 1e-9 is right for both, but a metre-named constant should not be
+#: silently reused as a dimensionless one. Observed error on the shipped model
+#: is ~2e-16, so there are seven orders of headroom.
+DRIVER_MATRIX_TOL = 1e-9
+
 #: Links that are pure frames and so carry no mass: the root and the ground
 #: projection. Every *other* link must have a real inertial (see
 #: test_moving_links_have_inertia).
@@ -267,21 +283,51 @@ def _wheel_placements(model):
     return placements
 
 
+def _require_identity_origin(origin, what):
+    """Assert a URDF ``<origin>`` is absent or the identity transform.
+
+    Every dimension this file reads off a shape -- a wheel's radius, the
+    chassis puck's height -- is then used as if it were expressed in the *link*
+    frame. A ``<origin>`` on the shape, or a rotation on the joint that places
+    the link, silently breaks that: the number is still read correctly and now
+    means something else. So the assertions that measure are paired with an
+    assertion that they *may* measure. This is deliberately narrow -- it is
+    applied only where a dimension is consumed, not to the description at
+    large, because offset geometry is perfectly normal and PR3/PR4 will have
+    plenty of it. A later PR that gives the base offset geometry should
+    compose the transform here rather than delete this.
+    """
+    if origin is None:
+        return
+    xyz = tuple(origin.xyz or (0.0, 0.0, 0.0))
+    rpy = tuple(origin.rpy or (0.0, 0.0, 0.0))
+    assert all(abs(value) < PLACEMENT_TOL_M for value in xyz + rpy), (
+        '%s carries a non-identity <origin> (xyz=%s rpy=%s). The clearance and '
+        'ground-plane assertions read dimensions straight off this shape and '
+        'treat them as link-frame quantities, so an offset or rotated shape '
+        'would make them measure the wrong thing while still passing.' % (
+            what, list(xyz), list(rpy)))
+
+
 def _collision_cylinder(model, link_name):
     """Return the ``(radius, length)`` of a link's first collision cylinder.
 
-    Fails naming the link if it has no collision geometry or if that geometry
-    is not a cylinder, so a shape change reports as itself rather than as an
-    ``AttributeError`` three assertions later.
+    Fails naming the link if it has no collision geometry, if that geometry is
+    not a cylinder, or if it is displaced from the link frame -- so a shape
+    change reports as itself rather than as an ``AttributeError`` three
+    assertions later or, worse, as a number that is quietly about a different
+    place.
     """
     link = model.link_map[link_name]
     assert link.collisions, (
         '%s has no <collision> geometry; see '
         'test_solid_links_have_visual_and_collision_geometry.' % link_name)
-    geometry = link.collisions[0].geometry
+    collision = link.collisions[0]
+    geometry = collision.geometry
     assert hasattr(geometry, 'radius') and hasattr(geometry, 'length'), (
         "%s's collision geometry is not a cylinder, so the dimensions this "
         'assertion needs cannot be read off it: %r' % (link_name, geometry))
+    _require_identity_origin(collision.origin, "%s's <collision>" % link_name)
     return geometry.radius, geometry.length
 
 
@@ -559,10 +605,16 @@ def test_wheel_mounts_match_the_lerobot_driver_matrix(parsed_model):
     body velocity into a speed for each named motor through a fixed 3x3
     matrix; the URDF is only a correct description of that robot if the matrix
     rebuilt from where the wheels actually sit agrees with it. Row *i* is
-    rebuilt as ``(-sin phi_i, cos phi_i, radius_i)`` -- the wheel's rolling
-    direction ``d = z x r`` plus its lever arm -- from the mount angle and
-    radius measured off the expansion, and compared to the driver's own
+    rebuilt as ``(d_x, d_y, radius_i)`` -- the wheel's rolling direction
+    ``d = z x axis`` plus its lever arm -- and compared to the driver's own
     ``(cos a_i, sin a_i, base_radius)``.
+
+    ``d`` is taken from the joint's **actual** spin axis (composed with its
+    rpy, then normalised) rather than inferred from the mount angle, so this
+    test stands on its own: a wheel at the right angle with a tangential or
+    vertical axis would otherwise rebuild a correct-looking row and be caught
+    only by the axis clause next door, leaving this one silently dependent on
+    a neighbour.
 
     Why this and not just the symmetry checks next door: those compare the
     wheels to each other, so they hold under any rotation or permutation of
@@ -571,20 +623,29 @@ def test_wheel_mounts_match_the_lerobot_driver_matrix(parsed_model):
     a "forward" command. The mapping from *motor key* to *body direction* is
     absolute, not relational, and this is the only assertion that pins it.
 
-    It follows that the two sourced numbers are deliberately compared against
-    literals here: ``base_radius`` and the mount angles are not this model's
-    to retune freely -- they are the driver's, and changing one without
-    changing the driver is exactly the regression being gated.
+    It follows that both sourced numbers are deliberately compared against
+    literals here -- ``base_radius`` in every row's third column, and
+    ``wheel_radius`` separately below. Neither is this model's to retune: they
+    are the driver's, and changing one without changing the driver is exactly
+    the regression being gated. ``wheel_radius`` never appears in the matrix,
+    which is why it needs its own clause; the driver divides by it on the way
+    out and multiplies by it on the way back, so a model that disagrees drives
+    at the wrong speed *and* reports the same error back as odometry.
     """
     placements = _wheel_placements(parsed_model)
     mismatched = []
     for name, rolling_angle_deg in sorted(DRIVER_ROLLING_ANGLES_DEG.items()):
-        radius, mount_angle_deg, _joint = placements[name]
-        mount = math.radians(mount_angle_deg)
-        model_row = (-math.sin(mount), math.cos(mount), radius)
+        radius, mount_angle_deg, joint = placements[name]
+        axis = _rotate(_rotation_from_rpy(joint.origin.rpy), joint.axis)
+        norm = math.sqrt(sum(value * value for value in axis))
+        assert norm > DRIVER_MATRIX_TOL, (
+            "%s's spin axis is degenerate: %s" % (name, joint.axis))
+        axis = tuple(value / norm for value in axis)
+        # Rolling direction d = z_hat x axis, in base_link coordinates.
+        model_row = (-axis[1], axis[0], radius)
         rolling = math.radians(rolling_angle_deg)
         driver_row = (math.cos(rolling), math.sin(rolling), DRIVER_BASE_RADIUS_M)
-        if any(abs(model_row[i] - driver_row[i]) > PLACEMENT_TOL_M
+        if any(abs(model_row[i] - driver_row[i]) > DRIVER_MATRIX_TOL
                for i in range(3)):
             mismatched.append(
                 '%s (mounted at %.4f deg, radius %.4f): model row %s != driver '
@@ -598,6 +659,17 @@ def test_wheel_mounts_match_the_lerobot_driver_matrix(parsed_model):
         '`radians([240, 0, 120] - 90)`, which are *rolling directions*: the '
         'corresponding mount angles are 60/180/300 (D29). Mismatches: %s' % (
             mismatched,))
+
+    wheel_radius = _wheel_radius(parsed_model)
+    assert abs(wheel_radius - DRIVER_WHEEL_RADIUS_M) < DRIVER_MATRIX_TOL, (
+        "the model's wheel radius is %.4f m but the LeRobot driver divides by "
+        '%.4f m to turn a commanded body velocity into motor speed, and '
+        'multiplies by it again to turn wheel feedback back into odometry. A '
+        'mismatch is not visible anywhere in the matrix above: the base simply '
+        'moves at %.3fx the commanded speed and reports the error back as its '
+        'own position estimate.' % (
+            wheel_radius, DRIVER_WHEEL_RADIUS_M,
+            wheel_radius / DRIVER_WHEEL_RADIUS_M))
 
 
 def test_base_footprint_is_the_ground_projection(parsed_model):
@@ -657,6 +729,13 @@ def test_solid_links_have_visual_and_collision_geometry(parsed_model):
     a *relationship* between numbers read off the model, not as the literal
     that satisfies it today, so retuning any of the three dimensions keeps the
     constraint enforced (D29).
+
+    That clearance test is deliberately the **strong** form: it requires the
+    puck to sit entirely above the wheels and ignores radial separation, so it
+    would also reject a legitimate narrow chassis hanging *between* the wheels
+    (radius < the wheels' inner band). Conservative is the right direction for
+    a gate, but a PR that wants that design should relax this to a real
+    cylinder-vs-cylinder test rather than delete it.
     """
     missing = []
     for link in parsed_model.links:
@@ -689,7 +768,14 @@ def test_solid_links_have_visual_and_collision_geometry(parsed_model):
         'expected exactly one joint parenting base_chassis_link, found %d: '
         '%s' % (len(chassis_joints),
                 [joint.name for joint in chassis_joints]))
-    chassis_z = chassis_joints[0].origin.xyz[2]
+    chassis_origin = chassis_joints[0].origin
+    assert all(abs(value) < PLACEMENT_TOL_M for value in chassis_origin.rpy), (
+        'base_chassis_joint rotates the chassis (rpy=%s). The clearance below '
+        'measures the puck along its own +z and compares it to a height in '
+        'base_link, which only means anything while the two frames are '
+        'aligned; tip the puck on its side and it can swallow the wheels with '
+        'the arithmetic still passing.' % (chassis_origin.rpy,))
+    chassis_z = chassis_origin.xyz[2]
     wheel_radius = _wheel_radius(parsed_model)
     underside = chassis_z - chassis_height / 2.0
     assert underside >= wheel_radius, (
