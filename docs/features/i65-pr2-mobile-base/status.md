@@ -11,13 +11,32 @@ Worktree base: `origin/main` @ 3d07063
 | 2. Provision + probe deps | done |
 | 3. Context explorer | done — `context.md`, 5 open questions |
 | 4. Manager rulings | done — R1–R14 below |
-| 5. Implementer | done — see `implementation.md`; ratchet 7 -> 12, full suite green |
+| 5. Implementer | done — see `implementation.md` |
 | 6. Red-team | r1 `red_team.md` (3 BLOCK, 7 NOTE); r1-scoped `red_team_fix.md` (3 BLOCK, 5 NOTE) |
-| 7. Fix rounds (max 2) | r1 done (B1–B3 + N2–N6); **r2 running** (BF1–BF3); N1 fixed by the manager |
-| 8. Test-runner | ready to start |
-| 9. PR + ready | pending |
+| 7. Fix rounds (max 2) | done — r1 (B1–B3 + N2–N6), r2 (BF1–BF3 + NF1–NF5); N1 fixed by the manager |
+| 8. Test-runner | done — **756 tests, 0 errors, 0 failures, 0 skipped**, `vs-base +0` on all 10 packages |
+| 9. PR + ready | done — **[PR #66](https://github.com/jaimec00/sisyphus/pull/66)**, green against current main (3d07063) |
 
-Blockers: none.
+Blockers: none. **Ready for Sisyphus.**
+
+## Phase 9 — ready
+
+- **PR:** https://github.com/jaimec00/sisyphus/pull/66 — squash-merge, closes #65.
+- **Test gate:** the laptop `test-runner` ran the full `pixi run test` inside the
+  loop: 756 tests, 0 failures. Ratchet moved `robot_description` 7 → 14, a
+  single-line diff; no other package's floor changed.
+- **Rebase:** `origin/main` had not moved from 3d07063, so "green" is green
+  against current main with no rebase needed.
+- **Durable-decision re-read (step 9):** D29 re-read against the diff as it
+  landed, not as planned. Caught one drift — the lead sentence said "Five
+  clauses" after the fix round added a sixth (`d9b2046`). Every other claim in
+  the lead re-checked and left alone.
+- **Comments posted:** follow-ups on issue #65 (the four-wheel string in the
+  live OpenClaw prompt; nothing validates `package.xml` as XML); retro on
+  PR #66.
+- **`docs/features/i65-pr2-mobile-base/` is deliberately NOT deleted** — it
+  stays for review, and Sisyphus removes it at merge. The docs-clean CI check
+  therefore reads as failing until then, which is expected.
 
 ## Phase 2 — provisioning + execute-verified crib probe
 
