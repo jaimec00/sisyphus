@@ -58,7 +58,7 @@ AGENT_TOOLS = frozenset(TOOL_NAMES) - frozenset(WITHHELD_TOOLS)
 #: replaced each to a pattern matching the claim it replaced.  D1 gave the
 #: robot a four-wheel base; D26 traded it for the LeKiwi 3-omniwheel holonomic
 #: base and D29 built that geometry in ``robot_description``, but the prompt
-#: kept saying "four-wheel" for a day -- prose is retyped, never refactored, so
+#: kept saying "four-wheel" after both -- prose is retyped, never refactored, so
 #: nothing went red.
 #:
 #: A pattern rather than a list of spellings, because the list came first and
@@ -179,7 +179,7 @@ class TestBodyDescription:
 
     @pytest.mark.parametrize('current', sorted(SUPERSEDED_BODY_CLAIMS))
     def test_a_superseded_body_claim_is_not_still_taught(self, current):
-        """The prompt described D1's four-wheel base for a day after D26 (#67).
+        """The prompt still described D1's four-wheel base after D26 retired it (#67).
 
         Matched over the whole prompt, not just the sentence that went wrong:
         a retired body fact has no business anywhere in it.
