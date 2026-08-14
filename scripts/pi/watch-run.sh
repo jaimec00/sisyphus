@@ -31,16 +31,27 @@ log() { echo "[$(date '+%F %T')] $*" >>"$SELF_LOG"; }
 log "watch start: kind=$KIND slug=$SLUG tmux=$TMUX branch=$BRANCH"
 
 # 1) Block until the run finishes. The launcher ends its inner command with
-#    `echo EXIT=<code>` then `exec bash`, so the tmux session LINGERS as an idle
-#    shell after the run finishes — session-death is NOT the completion signal.
-#    The real signal is the `EXIT=<code>` line in the run log. Poll for that;
+#    `echo EXIT=<code> (<date>)` then `exec bash`, so the tmux session LINGERS as
+#    an idle shell after the run finishes — session-death is NOT the completion
+#    signal. The real signal is that marker line in the run log. Poll for it;
 #    fall back to session-death only for hard kills (OOM/kill -9/reboot) that
 #    never write the marker.
+#
+#    The match is ANCHORED (`^EXIT=<digits> (`) and that anchor is load-bearing.
+#    A running agent's own bash steps routinely `echo "EXIT=$?"`, and that text
+#    lands in this same stream-json log embedded in a JSON string
+#    (`"content":"EXIT=0\n..."`) — never at column 0. The old loose
+#    `EXIT=[0-9]+` matched those echoes and declared a still-running op finished,
+#    which since PR #72 also REAPS its live tmux session (that killed
+#    `ops/op-pkgxml-validate` mid-build, losing uncommitted work). Only the
+#    wrapper writes a raw line starting at column 0, so only the wrapper can
+#    satisfy the anchored form. scripts/tests/test_run_completion_marker.py
+#    holds this pattern to that behavior.
 attempt=0
 while true; do
   DONE="$(ssh -o ServerAliveInterval=30 -o ServerAliveCountMax=4 -o ConnectTimeout=20 "$LAPTOP" \
     "f=\$(ls -1t ~/worktrees/'$SLUG'/.dev/runs/'$SLUG'/*/*.log 2>/dev/null | head -1); \
-     [ -n \"\$f\" ] && grep -qE 'EXIT=[0-9]+' \"\$f\" && echo done" 2>>"$SELF_LOG" || true)"
+     [ -n \"\$f\" ] && grep -qE '^EXIT=[0-9]+ \(' \"\$f\" && echo done" 2>>"$SELF_LOG" || true)"
   if [ "$DONE" = "done" ]; then
     break
   fi
@@ -54,9 +65,11 @@ done
 log "run finished (EXIT marker or hard-kill detected)"
 
 # 2) Best-effort: read the run's EXIT code line from its log (context only).
+#    Anchored for the same reason as step 1 — unanchored, this reports the exit
+#    code of whatever the agent last echoed rather than the run's own.
 EXIT_INFO="$(ssh -o ConnectTimeout=20 "$LAPTOP" \
   "f=\$(ls -1t ~/worktrees/'$SLUG'/.dev/runs/'$SLUG'/*/*.log 2>/dev/null | head -1); \
-   [ -n \"\$f\" ] && grep -oE 'EXIT=[0-9]+' \"\$f\" | tail -1" 2>/dev/null || true)"
+   [ -n \"\$f\" ] && grep -oE '^EXIT=[0-9]+' \"\$f\" | tail -1" 2>/dev/null || true)"
 [ -n "$EXIT_INFO" ] || EXIT_INFO="EXIT=unknown"
 log "exit info: $EXIT_INFO"
 

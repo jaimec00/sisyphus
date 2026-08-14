@@ -71,8 +71,13 @@ run_finished() {  # $1 = tmux session name; reads $wt / $slug
   local f pane sid busy
   f="$(ls -1t "$wt"/.dev/runs/"$slug"/*/*.log 2>/dev/null | head -1 || true)"
   if [ -n "$f" ]; then
-    # definitive: the launcher echoes `EXIT=<code>` as the run's last log line
-    grep -qE 'EXIT=[0-9]+' "$f"
+    # definitive: the launcher echoes `EXIT=<code> (<date>)` as the run's last
+    # log line. ANCHORED on purpose — a live agent's own bash steps echo
+    # `EXIT=$?` into this same log (inside JSON, never at column 0), and the
+    # loose form would read a running run as finished and reap it. Same pattern
+    # as scripts/pi/watch-run.sh; both are held to it by
+    # scripts/tests/test_run_completion_marker.py.
+    grep -qE '^EXIT=[0-9]+ \(' "$f"
     return
   fi
   # no run log (worktree already cleaned up): a finished session is just the idle
