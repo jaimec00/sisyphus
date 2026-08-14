@@ -11,9 +11,10 @@ skill, add an argument, retune a safety limit, and the prompt keeps reading
 beautifully while teaching an agent to call something that no longer exists.
 Nothing else in the workspace would notice.
 
-So every checkable claim the prompt makes is compared here against the **live**
-source that owns it -- ``robot_mcp``'s tool catalogue, each tool's own JSON
-Schema, ``robot_safety``'s shipped limits and ``robot_backends``' seed world.
+So the prompt's claims are compared here against the **live** source that owns
+each -- ``robot_mcp``'s tool catalogue, each tool's own JSON Schema,
+``robot_safety``'s shipped limits, ``robot_backends``' seed world and
+``RobotModel``, and ``robot_skills``' ``Side`` for the arm count.
 Reading each expected value from the source that owns it, rather than typing it
 here, is what this module aims at -- it is what makes the suite worth more than
 the prompt it checks.  It is an aim, not an invariant: some assertions still

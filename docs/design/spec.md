@@ -173,7 +173,9 @@ end-effector decision); wrist cameras; microphone (D26).
   API is read from that owner (arm count from `Side`, column travel and arm
   reach from `RobotModel`); the drivetrain has no such owner, so
   `SUPERSEDED_BODY_CLAIMS` in `test/test_prompt_drift.py` pins it and **must
-  gain a row whenever a decision supersedes a body fact** — nothing detects the
-  need. `robot_brain` takes **no dependency on `robot_description`** (D30).
+  gain a row whenever a decision supersedes a body fact that has no live
+  owner** — nothing detects the need. Find the owner first; a ledger row is the
+  fallback, not the rule. `robot_brain` takes **no dependency on
+  `robot_description`** (D30).
 - **Sisyphus is the sole merger;** managers and operational agents stop at an
   open, green PR (D20).
