@@ -33,6 +33,7 @@ from brain_fixtures import (
     tool_rows,
     tool_table,
     WITHHELD_TOOLS,
+    without_fences,
 )
 import pytest
 from robot_backends import default_world, MockBackend
@@ -156,12 +157,14 @@ class TestBodyDescription:
     def test_the_descriptor_that_replaced_it_is_taught(self, current):
         """Deleting the stale claim is half the fix; the agent still needs the body.
 
-        Scoped to the opening paragraphs, where the body is introduced, so the
-        phrase has to be doing the describing: over the whole prompt this would
-        also pass on a leftover mention in a fenced note, beside a sentence
-        calling the robot anything at all.
+        Scoped to the opening paragraphs *outside fences*, where the body is
+        introduced, so the phrase has to be doing the describing.  Against the
+        raw prompt this passes on a leftover mention in a fenced note sitting
+        beside a sentence calling the robot anything at all -- and a fence is
+        allowed in the introduction, so dropping the fences is the half that
+        does the work.
         """
-        introduction = PROMPT.split('\n## ', 1)[0]
+        introduction = without_fences(PROMPT).split('\n## ', 1)[0]
         assert current.lower() in introduction.lower(), (
             f'the prompt never introduces the robot as "{current}"')
 
