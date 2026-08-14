@@ -36,6 +36,15 @@ fails unless the run was explicitly told to allow it (``--allow-decrease``, or
 and passes. Neither direction is written from a run that is not otherwise
 green -- a floor cut from a broken run would pin the brokenness in place.
 
+Before any of that, the run refuses to proceed on a workspace whose
+``package.xml`` files do not parse. colcon does not fail on a malformed
+manifest: it logs the parse error at DEBUG, silently reclassifies the package
+from ``ament_python`` to plain ``python``, and still reports the build as
+successful -- and the package then produces no test result at all, so the
+first visible symptom is an audit failure naming neither the file nor the
+cause. :func:`validate_manifests` runs ahead of the audit and the ratchet and
+says both.
+
 This module is both:
 
 * a **guard** -- :func:`audit` reads the JUnit XML that ``colcon test``
@@ -139,6 +148,15 @@ BASELINE_REPAIR_HELP = (
     'restore it from git, or re-create it with `python '
     'scripts/check_test_integrity.py --update-baseline`')
 
+#: What to tell someone whose package.xml will not parse. colcon will not say
+#: any of this: it logs the parse error at DEBUG and carries on regardless.
+MANIFEST_HELP = (
+    'colcon does not fail on a malformed package.xml -- it logs the parse '
+    'error at DEBUG, silently reclassifies the package from ament_python to '
+    'plain python, and still reports the build as successful, after which the '
+    'package produces no test result at all. A literal "--" inside an XML '
+    'comment is the usual cause: XML forbids it there.')
+
 #: Header written into the baseline file so it explains itself in a diff.
 BASELINE_COMMENT = (
     'Per-package counts of the tests that actually ran and are not ament '
@@ -207,12 +225,8 @@ class PackageAudit:
                 f'tests={self.tests})')
 
 
-def find_manifests(source_dir):
-    """Return ``(name, package.xml path)`` for every package under a tree.
-
-    The expected set is read from the **source tree**, not from whatever
-    happens to exist under ``build/``: a package that silently stops being
-    tested must still be expected, and therefore still be caught.
+def find_manifest_paths(source_dir):
+    """Return the sorted ``package.xml`` paths under a tree.
 
     ``COLCON_IGNORE`` / ``AMENT_IGNORE`` markers are deliberately *not*
     honoured -- dropping a package out of the test run is exactly the failure
@@ -226,12 +240,73 @@ def find_manifests(source_dir):
             continue
         # A package.xml marks a package root; do not descend into it.
         dirnames[:] = []
-        manifest = Path(dirpath) / 'package.xml'
-        name = _package_name(manifest)
-        if name is None:
-            raise ValueError(f'{manifest}: no <name> element')
+        found.append(Path(dirpath) / 'package.xml')
+    return sorted(found)
+
+
+def find_manifests(source_dir):
+    """Return ``(name, package.xml path)`` for every package under a tree.
+
+    The expected set is read from the **source tree**, not from whatever
+    happens to exist under ``build/``: a package that silently stops being
+    tested must still be expected, and therefore still be caught.
+
+    Raises :class:`ValueError`, naming the file and the reason, for a manifest
+    that will not parse or carries no ``<name>``. Callers that want to report
+    every bad manifest rather than stop at the first want
+    :func:`validate_manifests`.
+    """
+    found = []
+    for manifest in find_manifest_paths(source_dir):
+        name, problem = read_manifest_name(manifest)
+        if problem is not None:
+            raise ValueError(f'{manifest}: {problem}')
         found.append((name, manifest))
     return sorted(found)
+
+
+def read_manifest_name(manifest):
+    """Return ``(package name, problem)`` for a ``package.xml``.
+
+    Exactly one of the two is ``None``: a manifest either yields a name or a
+    one-line explanation of why it cannot. The XML parse is the interesting
+    half -- see :func:`validate_manifests` for why a manifest that does not
+    parse has to be caught here rather than left to colcon.
+    """
+    try:
+        root = ElementTree.parse(str(manifest)).getroot()
+    except ElementTree.ParseError as error:
+        return None, f'is not valid XML -- {error}'
+    except OSError as error:
+        return None, f'cannot be read -- {error.strerror}'
+    element = root.find('name')
+    if element is None or not (element.text or '').strip():
+        return None, 'has no <name> element'
+    return element.text.strip(), None
+
+
+def validate_manifests(source_dir):
+    """Return ``[(path, problem)]`` for every unusable ``package.xml``.
+
+    An empty list means every manifest in the tree parses and names itself.
+
+    This runs ahead of everything else because a malformed manifest breaks
+    the gate in a way the gate cannot otherwise see. ``colcon`` reports the
+    parse failure at DEBUG level only, quietly falls back to treating the
+    directory as a plain ``python`` package instead of an ``ament_python``
+    one, and still calls the build successful; the package then produces no
+    test result, and the first thing anyone sees is a ``no-result`` audit
+    failure that names neither the manifest nor the parse error (D24/D28 --
+    ~40 minutes lost to exactly this). A literal ``--`` inside an XML comment
+    is the usual cause: XML forbids it there, and nothing else in the
+    toolchain says so out loud.
+    """
+    problems = []
+    for manifest in find_manifest_paths(source_dir):
+        problem = read_manifest_name(manifest)[1]
+        if problem is not None:
+            problems.append((manifest, problem))
+    return problems
 
 
 def _git(source_dir, *arguments):
@@ -300,12 +375,26 @@ def find_source_packages(source_dir):
     return discover_packages(source_dir)[0]
 
 
-def _package_name(manifest):
-    root = ElementTree.parse(str(manifest)).getroot()
-    element = root.find('name')
-    if element is None or not (element.text or '').strip():
-        return None
-    return element.text.strip()
+def format_manifest_problems(problems):
+    """Render the banner printed when a ``package.xml`` will not parse.
+
+    Loud on purpose, and printed instead of the run rather than alongside it:
+    the whole failure mode being closed here is one that used to surface as a
+    quiet, misattributed symptom several stages later.
+    """
+    lines = [
+        '',
+        '=== package.xml validity ' + '=' * 40,
+    ]
+    for path, problem in problems:
+        lines.append(f'FAIL {path} {problem}')
+    lines.append('-' * 65)
+    lines.append(
+        f'MANIFEST CHECK FAILED: {len(problems)} package.xml file(s) are not '
+        f'usable; nothing else was run')
+    lines.append(f'note: {MANIFEST_HELP}')
+    lines.append('')
+    return '\n'.join(lines)
 
 
 def parse_xunit(path):
@@ -975,6 +1064,16 @@ def main(argv=None):
 
     if not Path(args.source_dir).is_dir():
         parser.error(f'--source-dir is not a directory: {args.source_dir}')
+
+    # First, ahead of the audit and the ratchet and (in the driver) ahead of
+    # colcon itself: a manifest that does not parse makes every later verdict
+    # a report about a workspace that is not the one on disk, so it fails the
+    # run here, on its own, naming the file and the parse error.
+    manifest_problems = validate_manifests(args.source_dir)
+    if manifest_problems:
+        print(format_manifest_problems(manifest_problems), flush=True)
+        return 1
+
     packages, unowned = discover_packages(args.source_dir)
     if not packages:
         # Refusing to pass here is the whole point: an audit that found
