@@ -237,6 +237,162 @@ removed or skipped.
 Also checked after every run: no leaked `robot_state_publisher` process
 (`ps -ef | grep robot_state_publisher` → 0).
 
+## Red-team round 1 — the three BLOCKs, fixed
+
+All three accepted; none escalated. Commits: `9b6fe96` (B3 model), `a7cf283`
+(B1/B2/B3 gates + N2/N3/N5/N6 + doc corrections).
+
+### B1 — the layout gate certified self-consistency, not correctness
+
+The red-team was right and the finding generalises past the instance, which is
+why it is now in D29 rather than only here. Every clause of
+`test_wheel_mounts_are_120_degrees_apart` compared measured quantities *to each
+other* — equal radii, 120° gaps, each axis radial at its own measured angle —
+and all three are invariant under rotating or permuting the mount set. So a
+left/right swap, a cyclic 120° shift and a global 40° rotation were all fully
+green, while the model disagreed with the driver about which motor sits where.
+
+Fix (the red-team's primary, not the minimum): a new
+`test_wheel_mounts_match_the_lerobot_driver_matrix` rebuilds the driver's
+body→wheel matrix from the parsed model — row *i* as `(-sin φ, cos φ, radius)`
+from the measured mount — and compares it row-for-row against the driver's own
+`(cos a, sin a, base_radius)` for `a = radians([240, 0, 120] - 90)`. The driver
+rows are a **dict keyed by joint name**, not an ordered list: the motor-key →
+row pairing *is* the fact under test, and a list would silently re-map if
+anyone reordered it. `math` only, no numpy. Also added, per the flag:
+`joint.child == joint.name + '_link'` for each wheel, in the joint-identity
+test, rather than trusting the macro to make it true.
+
+The relational test is kept — it gives the more legible message when the layout
+breaks symmetrically — but its docstring now states its own scope: it says
+*how* the layout broke, and the matrix test is what pins *where* each wheel is.
+The module docstring now names the relational/absolute distinction as the thing
+to ask about any future geometric assertion.
+
+### B2 — the issue's first acceptance criterion had no assertion
+
+New `test_solid_links_have_visual_and_collision_geometry`: every link not in
+`MASSLESS_FRAME_LINKS` has at least one `<visual>` and one `<collision>`; the
+chassis's collision is a non-degenerate cylinder; and its *visual* cylinder has
+the same radius and length, so what a reviewer sees is what the planner hits.
+
+### B3 — the chassis was buried in the wheels
+
+`chassis_z_offset` 0.03 → **0.085** (= `wheel_radius + chassis_height/2` = 0.08,
+plus 5 mm for the wheel mounts rather than sitting exactly on the float edge).
+Per the ruling the *relationship* is now gated, in the same test as B2:
+`chassis_z - chassis_height/2 >= wheel_radius`, all three read off the parsed
+model, so retuning any of them keeps the constraint enforced.
+
+I did **not** add an assertion for N4's "wheels do not stick out past the body"
+(the ruling left it to my judgement). It is an aesthetic preference, not a
+correctness constraint — a base with wheels wider than its puck is ugly, not
+broken — and gating it would forbid a legitimate future design. The comment now
+names the real criterion (`hypot(base_radius + wheel_width/2, wheel_radius)` =
+0.1487, not 0.140) and says explicitly that it is deliberately not asserted,
+which is the part that was actually wrong.
+
+### Doc corrections that had to land with the fix
+
+D29's fifth clause claimed asserting relationships "makes mis-mounting it a
+test failure" — false as shipped, and the #55 trap in `decisions.md` itself.
+Since D29 is this PR's own entry and unmerged, it is corrected in place: the
+gate clause now lists what actually ships, and a new clause records the
+permutation hole, the three repros, and the general lesson (*a gate built only
+from internal consistency checks certifies self-consistency, and a wrong model
+can be perfectly self-consistent*), which is the part PR3–PR7 need. The two
+false docstrings in `test_description.py` are corrected likewise, and
+`README.md` / `spec.md`'s gate summaries updated.
+
+NOTEs folded in: **N2** (two "PR2 lands the first `.stl`" sentences),
+**N3** (D29's heading now reads "… (amends D27's PR2 mesh bullet)"),
+**N5** (D29's first clause now records that `base_radius = 0.125` is the
+*driver's* number and that upstream's own CAD puts its wheels at 0.0992 /
+0.1192 / 0.1000 m — not even a common circle — with why following the driver is
+still right), **N6** (`process.stdout.close()` guarded behind
+`if not reader.is_alive()`). **N1** is the manager's file to correct; **N7** is
+informational.
+
+### Round-2 sabotage verification
+
+Same protocol as round 1: `git archive HEAD | tar -x -C /tmp/i65-fix`, `.pixi`
+symlinked, one perturbation at a time restored from a pristine copy of
+`base.xacro`, build + test + `test-result` per variant, inside `pixi run`.
+Scratch copies deleted; `git status --porcelain` empty afterwards. Every one of
+these was **green before this round**.
+
+**B1 repro 1 — swap `base_left_wheel` ↔ `base_right_wheel` (60 ↔ 300):**
+
+```
+build/robot_description/pytest.xml: 17 tests, 0 errors, 1 failure, 0 skipped
+- test_wheel_mounts_match_the_lerobot_driver_matrix
+  AssertionError: the model's wheel layout does not reproduce the LeRobot
+  driver's kinematic matrix ... Mismatches: ['base_left_wheel (mounted at
+  300.0000 deg, radius 0.1250): model row [0.866025, 0.5, 0.125] != driver row
+  [-0.866025, 0.5, 0.125]', 'base_right_wheel (mounted at 60.0000 deg, radius
+  0.1250): model row [-0.866025, 0.5, 0.125] != driver row [0.866025, 0.5,
+  0.125]']
+```
+
+**B1 repro 2 — cyclic +120° (left=180, back=300, right=60):** 1 failure, same
+test, all three rows named (`base_back_wheel … [0.866025, 0.5, 0.125] !=
+[0.0, -1.0, 0.125]`, etc.).
+
+**B1 repro 3 — global rotation of all three mounts by +40°:** 1 failure, same
+test, all three rows named (`base_left_wheel (mounted at 100.0000 deg) …
+[-0.984808, -0.173648, 0.125] != [-0.866025, 0.5, 0.125]`).
+
+**B2 repro 1 — delete the chassis's `<visual>` *and* `<collision>`:**
+
+```
+- test_solid_links_have_visual_and_collision_geometry
+  AssertionError: link(s) that are bodies rather than frames must carry both
+  visual and collision geometry: ['base_chassis_link: no <visual>',
+  'base_chassis_link: no <collision>']
+```
+
+**B2 repro 2 — delete the wheel macro's `<visual>`:** 1 failure, same test,
+`['base_left_wheel_link: no <visual>', 'base_back_wheel_link: no <visual>',
+'base_right_wheel_link: no <visual>']`.
+
+**B3 repro — `chassis_z_offset` back to the shipped-before 0.03:**
+
+```
+- test_solid_links_have_visual_and_collision_geometry
+  AssertionError: the chassis intersects the wheels: its underside sits at
+  z = 0.0000 (centre 0.0300 minus half of 0.0600) while the wheels reach
+  z = 0.0500. They are siblings under base_link, so this contact is not
+  filtered anywhere; raise chassis_z_offset to at least
+  wheel_radius + chassis_height/2 = 0.0800.
+```
+
+**B3 boundary — `chassis_z_offset = 0.079`, 1 mm under the minimum:** fails
+with `underside 0.0490 … wheels reach 0.0500`, i.e. the assert bites at the
+millimetre, not just at the gross violation.
+
+**Cross-wiring — the macro parameterised so `base_left_wheel` drives
+`base_right_wheel_link` and vice versa** (link set, joint set and every mount
+angle left intact):
+
+```
+- test_wheel_joints_are_exactly_three_continuous
+  AssertionError: each wheel joint must drive the link named after it;
+  cross-wiring two of them leaves the joint set, the link set and the mount
+  geometry all intact while moving the wrong wheel:
+  {'base_left_wheel': 'base_right_wheel_link',
+   'base_right_wheel': 'base_left_wheel_link'}
+```
+
+Note that the driver-matrix test correctly stays green here — the *mounts* are
+right, only the wiring is wrong — which is why this needed its own assertion.
+
+### Full suite after the fix round
+
+`pixi run build` + `pixi run test`: **756 tests, 0 errors, 0 failures, 0
+skipped**, all ten packages `ok`. Baseline ratcheted `robot_description`
+**12 → 14** and nothing else (`git diff scripts/test_baseline.json` is a single
+line). Tree clean.
+
 ## For the manager
 
 Two items to surface; neither is a blocker and neither was acted on beyond what
