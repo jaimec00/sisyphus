@@ -31,12 +31,16 @@ includes exactly the three subassemblies; `xacro` expands it; `check_urdf`
 accepts the expansion; the link set is exactly `EXPECTED_LINKS`; every file the
 description names (`<mesh>`, `<texture>`) exists on disk; the robot is named;
 and — added with the base — that there are exactly three `continuous` wheel
-joints with the LeRobot motor-key names, that they sit on one circle about
-`base_link` 120° apart with spin axes that come out radial once composed with
-their own rpy, that `base_footprint` is one wheel radius below the axle plane,
-that every link which is not a pure frame has a real inertial, and that
-`robot_state_publisher` loads the model (it builds a KDL tree, so it rejects
-models `check_urdf` accepts). Extend `EXPECTED_LINKS` and `FILE_BEARING_TAGS`
+joints with the LeRobot motor-key names, each driving its own link; that they
+sit on one circle about `base_link` 120° apart with spin axes that come out
+radial once composed with their own rpy; that the driver's body→wheel
+kinematic matrix, rebuilt from the model, matches LeRobot's own constant (the
+one assertion that pins *which* wheel is where — the relational ones all
+survive a left/right swap); that `base_footprint` is one wheel radius below
+the axle plane; that every link which is a body has visual and collision
+geometry and the chassis clears the wheels; that every link which is not a
+pure frame has a real inertial; and that `robot_state_publisher` loads the
+model (it builds a KDL tree, so it rejects models `check_urdf` accepts). Extend `EXPECTED_LINKS` and `FILE_BEARING_TAGS`
 as the description grows — both are module-level constants for that reason.
 Status: package + gate + mobile base; column, arms, grippers and MJCF still to
 come. See

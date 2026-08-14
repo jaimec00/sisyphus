@@ -32,14 +32,27 @@ the three subassemblies, and the share layout is really installed.
 PR2 adds a fifth tool and the base's own structural asserts: the model is
 loaded by ``robot_state_publisher``, which builds a **KDL tree** and so
 rejects models the two parsers above accept (and which is the first real
-consumer, per the roadmap's PR8 bringup); and the wheels are checked as
-*geometry* rather than as names -- exactly three ``continuous`` wheel joints,
-mounted on one circle about ``base_link`` 120 degrees apart with spin axes
-that come out radial once composed with their own rpy, a ``base_footprint``
-one wheel radius below the axle plane, and a real inertial on every link that
+consumer, per the roadmap's PR8 bringup); and the base is checked as
+*geometry* rather than as names -- exactly three ``continuous`` wheel joints
+each driving its own link, mounted on one circle about ``base_link`` 120
+degrees apart with spin axes that come out radial once composed with their own
+rpy, a ``base_footprint`` one wheel radius below the axle plane, visual and
+collision geometry on every link that is a body, a chassis that clears the
+wheels rather than intersecting them, and a real inertial on every link that
 is not a pure frame. None of those are visible to the link-set assert: a
 holonomic base whose three wheels are stacked at the origin has the right
 links, the right joints, and no chance of driving.
+
+The **absolute** wheel layout gets its own assert on top of those, and the
+distinction matters more than it looks: every check above compares the wheels
+to each other, so all of them survive rotating or permuting the mount set as a
+whole -- a left/right swap passes them while the robot drives *backward* on a
+forward command. ``test_wheel_mounts_match_the_lerobot_driver_matrix``
+therefore rebuilds the LeRobot driver's body->wheel matrix from the parsed
+model and compares it to the driver's own constant, which is the contract PR6
+cashes in, stated literally. When adding a layout assertion, ask which of the
+two kinds it is; relational ones are more legible, and absolute ones are the
+ones that catch a model that is self-consistent and wrong.
 
 The CLIs are used rather than ``xacro.process_file`` because the CLI is what a
 launch file actually runs, and rc + captured stderr is a legible failure.
@@ -53,12 +66,13 @@ There is no source-tree fallback, by design. It follows that this suite runs
 under ``colcon test`` (which puts the package's install prefix on
 ``AMENT_PREFIX_PATH``) after a ``colcon build``, not against a bare checkout.
 
-Extending this in PR2+: add the new links to ``EXPECTED_LINKS``, add any new
+Extending this in PR3+: add the new links to ``EXPECTED_LINKS``, add any new
 file-naming element to ``FILE_BEARING_TAGS``, and add whatever joint/limit
 assertions the subassembly earns. Keep the link set exact -- a set that is
-allowed to grow silently stops being a gate. The asset and include asserts are
-over an *empty* set and a *fixed* set today; they cost nothing until PR2 adds
-the first ``.stl``, and bite from that moment on.
+allowed to grow silently stops being a gate. The asset assert is still over an
+*empty* set: PR2 authored the base from primitives and vendored no meshes
+(D29), so it costs nothing until the first PR that lands real geometry
+files -- expected to be the arms -- and bites from that moment on.
 """
 
 import math
@@ -92,6 +106,25 @@ EXPECTED_LINKS = {
 #: directly comparable between driver and model. Renaming them here would
 #: silently decouple the two, which is why the set is asserted exactly.
 WHEEL_JOINTS = ('base_left_wheel', 'base_back_wheel', 'base_right_wheel')
+
+#: The LeRobot LeKiwi driver's own body->wheel kinematics, transcribed from
+#: `_body_to_wheel_raw` in `lerobot/robots/lekiwi/lekiwi.py`::
+#:
+#:     angles = np.radians(np.array([240, 0, 120]) - 90)   # left, back, right
+#:     m = np.array([[np.cos(a), np.sin(a), base_radius] for a in angles])
+#:
+#: Keyed by joint name rather than kept as an ordered list, because the pairing
+#: of motor key to row *is* the fact under test: a list would re-map silently if
+#: anyone reordered it. Row i of `m` is wheel i's rolling direction plus the
+#: lever arm, i.e. `m @ [vx, vy, omega]` is that wheel's linear speed.
+DRIVER_ROLLING_ANGLES_DEG = {
+    'base_left_wheel': 240.0 - 90.0,
+    'base_back_wheel': 0.0 - 90.0,
+    'base_right_wheel': 120.0 - 90.0,
+}
+
+#: The driver's `base_radius` default, metres -- the third column of `m`.
+DRIVER_BASE_RADIUS_M = 0.125
 
 #: Links that are pure frames and so carry no mass: the root and the ground
 #: projection. Every *other* link must have a real inertial (see
@@ -232,6 +265,39 @@ def _wheel_placements(model):
                             math.degrees(math.atan2(y, x)) % 360.0,
                             joint)
     return placements
+
+
+def _collision_cylinder(model, link_name):
+    """Return the ``(radius, length)`` of a link's first collision cylinder.
+
+    Fails naming the link if it has no collision geometry or if that geometry
+    is not a cylinder, so a shape change reports as itself rather than as an
+    ``AttributeError`` three assertions later.
+    """
+    link = model.link_map[link_name]
+    assert link.collisions, (
+        '%s has no <collision> geometry; see '
+        'test_solid_links_have_visual_and_collision_geometry.' % link_name)
+    geometry = link.collisions[0].geometry
+    assert hasattr(geometry, 'radius') and hasattr(geometry, 'length'), (
+        "%s's collision geometry is not a cylinder, so the dimensions this "
+        'assertion needs cannot be read off it: %r' % (link_name, geometry))
+    return geometry.radius, geometry.length
+
+
+def _wheel_radius(model):
+    """Return the wheel radius the model itself states, asserting the three agree.
+
+    Read off the wheels' own collision cylinders rather than hardcoded, so the
+    assertions that depend on it (the ground offset, the chassis clearance)
+    track a retuned ``wheel_radius`` instead of drifting from it.
+    """
+    radii = {round(_collision_cylinder(model, name + '_link')[0], 12)
+             for name in WHEEL_JOINTS}
+    assert len(radii) == 1, (
+        'the three wheels have different radii %s; a holonomic base with '
+        'mismatched wheels has no single ground plane' % sorted(radii))
+    return radii.pop()
 
 
 def _read_stream(stream, sink):
@@ -379,13 +445,16 @@ def test_link_set_is_exactly_the_expected_links(expansion):
 def test_wheel_joints_are_exactly_three_continuous(parsed_model):
     """The base has exactly the three named wheel joints, all ``continuous``.
 
-    Three separate regressions share this one assertion because they are one
-    fact about a holonomic base: a fourth wheel (D26 supersedes D1's 4-wheel
-    base), a renamed joint (which decouples the model from the LeRobot driver
-    that shares these motor keys), and a wheel authored as ``revolute`` or
-    ``fixed`` (which would silently cap or freeze the wheel) are all invisible
-    to ``check_urdf`` and to the link-set assert -- ``EXPECTED_LINKS`` names
-    links, and a joint can be renamed or retyped without touching one.
+    Four regressions share this one assertion because they are one fact about
+    the base's actuation: a fourth wheel (D26 supersedes D1's 4-wheel base), a
+    renamed joint (which decouples the model from the LeRobot driver that
+    shares these motor keys), a wheel authored as ``revolute`` or ``fixed``
+    (which would silently cap or freeze it), and a joint wired to a link other
+    than its own are all invisible to ``check_urdf`` and to the link-set
+    assert -- ``EXPECTED_LINKS`` names links, and a joint can be renamed,
+    retyped or re-parented without changing one. The last of those is checked
+    rather than left to the macro that currently makes it true, because "the
+    generator happens to be correct" is not a property the gate can rely on.
     """
     wheel_joints = {joint.name: joint.type for joint in parsed_model.joints
                     if 'wheel' in joint.name}
@@ -398,31 +467,44 @@ def test_wheel_joints_are_exactly_three_continuous(parsed_model):
     assert not mistyped, (
         'wheel joints must be continuous (an omniwheel has no travel limit); '
         'these are not: %s' % mistyped)
+    joints = {joint.name: joint for joint in parsed_model.joints}
+    miswired = {name: joints[name].child for name in WHEEL_JOINTS
+                if joints[name].child != name + '_link'}
+    assert not miswired, (
+        'each wheel joint must drive the link named after it; cross-wiring two '
+        'of them leaves the joint set, the link set and the mount geometry all '
+        'intact while moving the wrong wheel: %s' % miswired)
 
 
 def test_wheel_mounts_are_120_degrees_apart(parsed_model):
     """The three wheels sit on one circle about ``base_link``, 120 degrees apart.
 
-    This is the assertion that makes "3-omniwheel holonomic base" a gate
-    instead of a comment. Everything else in this file would stay green with
-    all three wheels stacked at the origin, mounted off the chassis instead of
-    the root, or spaced 90/90/180 -- the model would still be a valid URDF with
-    the right link and joint names, and would still load in
-    robot_state_publisher. It is also the property the base's kinematics are
-    derived from: LeRobot's LeKiwi driver maps body velocity to wheel speeds
-    through a matrix built from exactly these mount angles and this radius, so
-    a wheel that moves here without the driver moving with it is a robot that
-    drives sideways when told to drive forward.
+    This makes "3-omniwheel holonomic base" a shape the gate knows: every
+    other assertion in this file stays green with all three wheels stacked at
+    the origin, mounted off the chassis instead of the root, tilted out of the
+    axle plane, or spaced 90/90/180 -- the model would still be a valid URDF
+    with the right links and joints, and would still load in
+    robot_state_publisher.
 
-    The axis clause is the other half of that contract, and the easier half to
-    get wrong: it is asserted *after* rotating the joint axis by the joint's
-    own rpy, because the model states the axis in the wheel's rotated frame
-    (``0 0 1``) and it is the composition -- not either factor -- that has to
-    come out as the outward radial direction.
+    **Scope, stated because it is easy to over-read:** every clause here
+    compares measured quantities *to each other*, so all of them are invariant
+    under rotating or permuting the mount set as a whole. Swap
+    ``base_left_wheel`` with ``base_right_wheel``, or rotate all three mounts
+    by 40 degrees, and this test is still green while the model now disagrees
+    with the driver about which motor sits where. Pinning the absolute
+    name-to-direction mapping is a different assertion and belongs to
+    ``test_wheel_mounts_match_the_lerobot_driver_matrix``; this one is the
+    legible symmetry check that says *how* the layout broke.
+
+    The axis clause is the half most easily got wrong: it is asserted *after*
+    rotating the joint axis by the joint's own rpy, because the model states
+    the axis in the wheel's rotated frame (``0 0 1``) and it is the
+    composition -- not either factor -- that has to come out radial.
 
     Nothing here is compared against a literal dimension: the radius is read
     off the expansion itself, so retuning ``base_radius`` in the xacro is not
-    a test edit, while breaking the *relationship* between the wheels is.
+    a test edit here (it *is* one in the driver-matrix test, correctly -- that
+    number belongs to the driver).
     """
     placements = _wheel_placements(parsed_model)
 
@@ -468,6 +550,56 @@ def test_wheel_mounts_are_120_degrees_apart(parsed_model):
                 [round(v, 6) for v in expected], angle))
 
 
+def test_wheel_mounts_match_the_lerobot_driver_matrix(parsed_model):
+    """The model reproduces the LeRobot driver's body->wheel matrix, row for row.
+
+    This is the contract PR6 cashes in, asserted literally rather than as a
+    property of the layout. The driver
+    (``lerobot/robots/lekiwi/lekiwi.py::_body_to_wheel_raw``) turns a commanded
+    body velocity into a speed for each named motor through a fixed 3x3
+    matrix; the URDF is only a correct description of that robot if the matrix
+    rebuilt from where the wheels actually sit agrees with it. Row *i* is
+    rebuilt as ``(-sin phi_i, cos phi_i, radius_i)`` -- the wheel's rolling
+    direction ``d = z x r`` plus its lever arm -- from the mount angle and
+    radius measured off the expansion, and compared to the driver's own
+    ``(cos a_i, sin a_i, base_radius)``.
+
+    Why this and not just the symmetry checks next door: those compare the
+    wheels to each other, so they hold under any rotation or permutation of
+    the mount set, and a left/right swap or a cyclic 120-degree shift passes
+    every one of them while the robot drives backward (or 120 degrees off) on
+    a "forward" command. The mapping from *motor key* to *body direction* is
+    absolute, not relational, and this is the only assertion that pins it.
+
+    It follows that the two sourced numbers are deliberately compared against
+    literals here: ``base_radius`` and the mount angles are not this model's
+    to retune freely -- they are the driver's, and changing one without
+    changing the driver is exactly the regression being gated.
+    """
+    placements = _wheel_placements(parsed_model)
+    mismatched = []
+    for name, rolling_angle_deg in sorted(DRIVER_ROLLING_ANGLES_DEG.items()):
+        radius, mount_angle_deg, _joint = placements[name]
+        mount = math.radians(mount_angle_deg)
+        model_row = (-math.sin(mount), math.cos(mount), radius)
+        rolling = math.radians(rolling_angle_deg)
+        driver_row = (math.cos(rolling), math.sin(rolling), DRIVER_BASE_RADIUS_M)
+        if any(abs(model_row[i] - driver_row[i]) > PLACEMENT_TOL_M
+               for i in range(3)):
+            mismatched.append(
+                '%s (mounted at %.4f deg, radius %.4f): model row %s != driver '
+                'row %s' % (name, mount_angle_deg, radius,
+                            [round(v, 6) for v in model_row],
+                            [round(v, 6) for v in driver_row]))
+    assert not mismatched, (
+        "the model's wheel layout does not reproduce the LeRobot driver's "
+        'kinematic matrix, so commanding this base through that driver would '
+        'move it in the wrong direction. Note the driver builds its rows from '
+        '`radians([240, 0, 120] - 90)`, which are *rolling directions*: the '
+        'corresponding mount angles are 60/180/300 (D29). Mismatches: %s' % (
+            mismatched,))
+
+
 def test_base_footprint_is_the_ground_projection(parsed_model):
     """``base_footprint`` is a fixed child of ``base_link``, one wheel radius below it.
 
@@ -479,19 +611,7 @@ def test_base_footprint_is_the_ground_projection(parsed_model):
     literal, so the two cannot drift apart silently: ``base_link`` sits at axle
     height *because* that is where the wheels are.
     """
-    wheel_radii = set()
-    for joint_name in WHEEL_JOINTS:
-        link = parsed_model.link_map[joint_name + '_link']
-        assert link.collisions, '%s has no collision geometry' % link.name
-        geometry = link.collisions[0].geometry
-        assert hasattr(geometry, 'radius'), (
-            '%s collision geometry has no radius, so the ground offset cannot '
-            'be checked against it: %r' % (link.name, geometry))
-        wheel_radii.add(round(geometry.radius, 12))
-    assert len(wheel_radii) == 1, (
-        'the three wheels have different radii %s; a holonomic base with '
-        'mismatched wheels has no single ground plane' % sorted(wheel_radii))
-    wheel_radius = wheel_radii.pop()
+    wheel_radius = _wheel_radius(parsed_model)
 
     footprint_joints = [joint for joint in parsed_model.joints
                         if joint.child == 'base_footprint']
@@ -513,6 +633,73 @@ def test_base_footprint_is_the_ground_projection(parsed_model):
     assert all(abs(value) < PLACEMENT_TOL_M for value in joint.origin.rpy), (
         'base_footprint must be axis-aligned with base_link; rpy is %s' % (
             joint.origin.rpy,))
+
+
+def test_solid_links_have_visual_and_collision_geometry(parsed_model):
+    """Every link that is a body has geometry, and the body clears the wheels.
+
+    Two clauses, one question -- does this description actually describe a
+    *solid* base -- and both are invisible to everything else in this file.
+    The link set proves a link exists, ``check_urdf`` and
+    ``robot_state_publisher`` are happy with a link that is nothing but a name
+    plus an inertial, and the inertia test only reads masses. So the base
+    could ship with no visual geometry at all and no body collision, and the
+    gate whose stated justification is "geometry is the part a reviewer cannot
+    eyeball" (D27/D29) would not notice. That is issue #65's first acceptance
+    criterion, so it gets an assertion.
+
+    The second clause is the one a reviewer *really* cannot eyeball: the
+    chassis puck and the wheels are **siblings** under ``base_link``, so if the
+    puck's underside dips below the top of the wheels, half of every wheel is
+    inside the body solid and nothing filters that contact -- RViz draws wheels
+    sunk to their axles, MoveIt permanently disables a pair that should be
+    checked, and PR7's MJCF starts in penetration. The clearance is asserted as
+    a *relationship* between numbers read off the model, not as the literal
+    that satisfies it today, so retuning any of the three dimensions keeps the
+    constraint enforced (D29).
+    """
+    missing = []
+    for link in parsed_model.links:
+        if link.name in MASSLESS_FRAME_LINKS:
+            continue
+        if not link.visuals:
+            missing.append('%s: no <visual>' % link.name)
+        if not link.collisions:
+            missing.append('%s: no <collision>' % link.name)
+    assert not missing, (
+        'link(s) that are bodies rather than frames must carry both visual '
+        'and collision geometry: %s' % missing)
+
+    chassis_radius, chassis_height = _collision_cylinder(
+        parsed_model, 'base_chassis_link')
+    assert chassis_radius > 0 and chassis_height > 0, (
+        'the chassis collision cylinder is degenerate: radius %r, length %r' % (
+            chassis_radius, chassis_height))
+    chassis_visual = parsed_model.link_map['base_chassis_link'].visuals[0].geometry
+    assert (abs(getattr(chassis_visual, 'radius', -1) - chassis_radius) < PLACEMENT_TOL_M
+            and abs(getattr(chassis_visual, 'length', -1) - chassis_height)
+            < PLACEMENT_TOL_M), (
+        'the chassis is drawn as %r but collides as a cylinder of radius %.4f '
+        'and length %.4f; what a reviewer sees must be what the planner hits' % (
+            chassis_visual, chassis_radius, chassis_height))
+
+    chassis_joints = [joint for joint in parsed_model.joints
+                      if joint.child == 'base_chassis_link']
+    assert len(chassis_joints) == 1, (
+        'expected exactly one joint parenting base_chassis_link, found %d: '
+        '%s' % (len(chassis_joints),
+                [joint.name for joint in chassis_joints]))
+    chassis_z = chassis_joints[0].origin.xyz[2]
+    wheel_radius = _wheel_radius(parsed_model)
+    underside = chassis_z - chassis_height / 2.0
+    assert underside >= wheel_radius, (
+        'the chassis intersects the wheels: its underside sits at z = %.4f '
+        '(centre %.4f minus half of %.4f) while the wheels reach z = %.4f. '
+        'They are siblings under base_link, so this contact is not filtered '
+        'anywhere; raise chassis_z_offset to at least '
+        'wheel_radius + chassis_height/2 = %.4f.' % (
+            underside, chassis_z, chassis_height, wheel_radius,
+            wheel_radius + chassis_height / 2.0))
 
 
 def test_moving_links_have_inertia(parsed_model):
@@ -627,18 +814,26 @@ def test_model_loads_in_robot_state_publisher(expansion, tmp_path):
     finally:
         _terminate_group(process, group)
         reader.join(timeout=10)
-        process.stdout.close()
+        if not reader.is_alive():
+            # Guarded, because close() takes the buffer lock the reader holds
+            # while blocked in read(): closing under a still-blocked reader
+            # would hang the suite instead of failing it. Reachable only if a
+            # descendant escaped the process group, which is exactly when a
+            # hang would be least welcome. Leaking the fd in that case is
+            # strictly better -- the process is about to exit anyway.
+            process.stdout.close()
 
 
 def test_every_asset_reference_resolves(expansion, share_dir):
     """Every file the description names -- of any FILE_BEARING_TAGS kind -- exists.
 
-    Empty today (PR1 ships no geometry) and deliberately so: this is the same
-    shape as EXPECTED_LINKS, costing nothing until PR2 imports the first
-    LeRobot .stl and load-bearing from that moment. check_urdf validates the
-    model but never opens a mesh or a texture, so without this a typo'd
-    filename, an asset committed to src/ but not installed, or one referenced
-    and never committed at all is green here and red at bringup.
+    Still empty after PR2, and deliberately so: the base is primitives and
+    vendors no meshes (D29), so this is the same shape as EXPECTED_LINKS --
+    costing nothing until the first PR that lands real geometry files, and
+    load-bearing from that moment. check_urdf validates the model but never
+    opens a mesh or a texture, so without this a typo'd filename, an asset
+    committed to src/ but not installed, or one referenced and never committed
+    at all is green here and red at bringup.
     """
     root = ElementTree.fromstring(_require_expansion(expansion))
     references = [(tag, element.get('filename'))

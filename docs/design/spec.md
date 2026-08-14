@@ -126,11 +126,15 @@ end-effector decision); wrist cameras; microphone (D26).
   `urdf_parser_py` re-parses and the link set is asserted **exactly** → every
   file the description names (`<mesh>`, `<texture>`) resolves in the installed
   share tree (D27); plus, from the base on, that there are exactly three
-  `continuous` wheel joints with the expected names, that they are mounted
-  120° apart on one circle with radial spin axes, that `base_footprint` sits
-  one wheel radius below the axle plane, that every non-frame link has a real
-  inertial, and that **`robot_state_publisher` loads the model** — it builds a
-  KDL tree, so it rejects models `check_urdf` accepts (D29).
+  `continuous` wheel joints with the expected names, that the driver's
+  body→wheel matrix rebuilt from the model equals LeRobot's own constant (the
+  absolute check — the relational ones survive a left/right wheel swap), that
+  they are mounted 120° apart on one circle with radial spin axes, that
+  `base_footprint` sits one wheel radius below the axle plane, that every body
+  link has visual + collision geometry and the chassis clears the wheels, that
+  every non-frame link has a real inertial, and that
+  **`robot_state_publisher` loads the model** — it builds a KDL tree, so it
+  rejects models `check_urdf` accepts (D29).
 - **`RobotModel` is still in code** and will later be read *from* the URDF —
   the URDF is canonical for kinematics/geometry, MJCF carries a thin sim-only
   physics layer on top (D23; roadmap in
