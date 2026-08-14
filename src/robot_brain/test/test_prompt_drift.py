@@ -131,12 +131,19 @@ class TestBodyDescription:
 
     Most of the body *does* have a live source here: ``RobotModel`` is what the
     Mock reasons about, so the reach below is checked against it like every
-    other number in this module.  The **drivetrain** is the part that has none.
-    It exists only in ``robot_description``'s URDF, and reading that would put
-    ``ament_index_python`` on this package's path -- and this is the one
-    package whose defining property is that it needs no ROS at all (D21;
-    ``test_no_ros_runtime`` names that module as one it refuses to see
-    loaded).  So the drivetrain gets a hand-typed ledger instead.
+    other number in this module.  The **drivetrain** is the part with none on
+    this side of the skill API -- it is described in ``robot_description``'s
+    URDF, and this package does not depend on that.  Reading it means adding
+    the edge, which is measured rather than assumed:
+    ``get_package_share_directory('robot_description')`` raises under
+    ``colcon test`` today, because this suite's dependencies are exactly the
+    packages the brain meets *across* the seam D12/D13 put there to keep the
+    hardware layer swappable.  Two honest halves to that: nothing enforces it
+    (a test-time ROS import here is unguarded -- ``test_no_ros_runtime``
+    covers what the *shipped* assets import, not what a test does), and the
+    edge would buy one digit, since the URDF carries three wheel joints but
+    the words "omniwheel" and "holonomic" only in a comment.  A design call,
+    recorded as D30; the drivetrain gets a hand-typed ledger instead.
 
     Be clear about what that pin buys: it catches the claim we *already know*
     went stale.  It cannot notice the next one.  When the column, the arms or
