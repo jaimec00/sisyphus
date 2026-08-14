@@ -17,6 +17,9 @@ Schema, ``robot_safety``'s shipped limits and ``robot_backends``' seed world.
 No expected value in this module is typed by hand.
 """
 
+from types import MappingProxyType
+from typing import Mapping
+
 from brain_fixtures import (
     example_calls,
     failure_table,
@@ -41,6 +44,19 @@ PROMPT = operating_prompt()
 #: filters out would be worse than not teaching it: the agent would plan
 #: around a call it never gets to make.
 AGENT_TOOLS = frozenset(TOOL_NAMES) - frozenset(WITHHELD_TOOLS)
+
+#: Body facts the decision log has *superseded*, mapping the descriptor that
+#: replaced each to the spellings it replaced.  D1 gave the robot a four-wheel
+#: base; D26 traded it for the LeKiwi 3-omniwheel holonomic base and D29 built
+#: that geometry in ``robot_description``, but the prompt kept saying
+#: "four-wheel" for a day -- prose is retyped, never refactored, so nothing
+#: went red.
+#:
+#: Add a row when a decision supersedes another body fact.  Nothing here will
+#: remind you: see ``TestBodyDescription`` for what this ledger does not do.
+SUPERSEDED_BODY_CLAIMS: Mapping[str, tuple[str, ...]] = MappingProxyType({
+    '3-omniwheel holonomic': ('four-wheel', '4-wheel', 'four wheel'),
+})
 
 #: Each tool's argument names and its required ones, from the shipped schemas.
 SCHEMAS = {
@@ -92,6 +108,44 @@ def live_vocabulary() -> set[str]:
         # JSON literals, which the prompt quotes when describing a payload.
         | {'null', 'true', 'false'}
     )
+
+
+class TestBodyDescription:
+    """The body the prompt opens by describing is the body the decisions built.
+
+    Alone in this module, these tests compare the prompt against a hand-typed
+    ledger instead of a live source, because the body has no live source here:
+    ``robot_description`` ships a URDF and no Python, and reaching into it
+    would cost this pure-Python suite a colcon install tree and the xacro
+    toolchain -- then still leave it recovering a wheel count from English.
+
+    So be clear about what this buys: it pins the stale claims we *already
+    know about*.  It cannot notice the next one.  When the column, the arms or
+    the camera change shape, this file goes green while the prompt lies, until
+    somebody adds the row.
+    """
+
+    @pytest.mark.parametrize(
+        'superseded', sorted(
+            claim for claims in SUPERSEDED_BODY_CLAIMS.values() for claim in claims))
+    def test_a_superseded_body_claim_is_not_still_taught(self, superseded):
+        """The prompt described D1's four-wheel base for a day after D26 (#67).
+
+        Case-insensitive, and every spelling of the claim, because the thing
+        being guarded is a sentence somebody will one day rewrite by hand.
+        """
+        assert superseded.lower() not in PROMPT.lower(), (
+            f'the prompt still claims "{superseded}", which the decision log superseded')
+
+    @pytest.mark.parametrize('current', sorted(SUPERSEDED_BODY_CLAIMS))
+    def test_the_descriptor_that_replaced_it_is_taught(self, current):
+        """Deleting the stale claim is half the fix; the agent still needs the body.
+
+        Paired with the absence check so that neither passes vacuously: a
+        prompt that simply dropped the sentence would satisfy the other test.
+        """
+        assert current.lower() in PROMPT.lower(), (
+            f'the prompt never describes the robot as "{current}"')
 
 
 class TestToolCatalogue:
