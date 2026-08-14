@@ -65,12 +65,24 @@ Neither test forces a future tool into the model's hands.
 Prompt quality is the deliverable (D22: an LLM has to *operate* this robot
 well), so it is hand-written prose. The risk that buys is silent drift — rename
 a skill and the prompt still reads beautifully while teaching a call that no
-longer exists. `test/test_prompt_drift.py` closes that: every checkable claim
-is compared against the **live** source that owns it —
-`robot_mcp.tools.TOOL_NAMES`, each tool's own `inputSchema`,
-`robot_safety.SafetyLimits.defaults()` and `robot_backends.default_world()`. No
-expected value there is typed by hand, and a word in backticks that names
-nothing real fails the suite.
+longer exists. `test/test_prompt_drift.py` is what narrows that: wherever a
+claim has a live source, the test reads the expected value from there instead
+of restating it — `robot_mcp.tools.TOOL_NAMES`, each tool's own `inputSchema`,
+`robot_safety.SafetyLimits.defaults()`, `robot_backends.default_world()` and
+its `RobotModel` (the arm's reach, the column's travel), and `robot_skills`'
+enums (`Side` for the arm count, `FailureCode` for the failure table, the rest
+feeding the vocabulary check) — and a word in backticks that names nothing
+real fails the suite.
+
+That is the aim, not a guarantee. The prompt's description of the **body** is
+where the aim runs out: the arm count, its grippers, the column's travel and the
+arm's reach do have owners here and are read from them, but the drivetrain has
+no live source on this side of the skill-API seam (D30), so the base is pinned
+instead by a hand-typed ledger of superseded claims — it catches the claim
+already known to be stale (D1's four-wheel base, retired by D26) and not the
+next one. Elsewhere a handful of assertions still name a heading or a phrase by
+hand, and some owned claims have no assertion at all (`known_locations` is the
+one to know about). `TestBodyDescription` states its own limits in place.
 
 ## Installing the agent on the Pi
 

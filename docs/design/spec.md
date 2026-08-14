@@ -168,5 +168,16 @@ end-effector decision); wrist cameras; microphone (D26).
   green run, comes **down** only under `ALLOW_TEST_DECREASE=1`, counts tests that
   **ran** (a skip is a deletion), and is never written from a non-green run
   (D28).
+- **The operating prompt's body claims are gated inside `robot_brain`, not from
+  the URDF:** a body claim whose owner lives on the brain's side of the skill
+  API is read from that owner (arm count from `Side`, column travel and arm
+  reach from `RobotModel`); the drivetrain has no such owner, so
+  `SUPERSEDED_BODY_CLAIMS` in `test/test_prompt_drift.py` pins it and **must
+  gain a row whenever a decision supersedes a body fact that has no live
+  owner** — nothing detects the need. Find the owner first; a ledger row is the
+  fallback, not the rule. The same applies to a body fact the prompt gains for
+  the first time — the head camera, which the prompt does not mention today — as
+  it lands **ungated** unless its author reads it from an owner or pins it.
+  `robot_brain` takes **no dependency on `robot_description`** (D30).
 - **Sisyphus is the sole merger;** managers and operational agents stop at an
   open, green PR (D20).
