@@ -3,7 +3,32 @@
 - **Slug:** `i67-brain-prompt-holonomic-base`
 - **Branch:** `feat/i67-robot-brain-system-prompt-still-claims-a`
 - **Issue:** #67
-- **Phase:** round 3 — two full N+1 passes found 3 BLOCKs → fixing → then PR
+- **Phase:** round 4 fixed (4 BLOCKs, 3 of them in D30) → awaiting clean-follows-clean
+
+### Round 4 — the decision log was the least-reviewed artifact, exactly as warned
+
+Pass C (`red_team_full_c.md`) found **4 BLOCKs**, three against **D30 itself** —
+written *after* both earlier full passes, so no reviewer had ever seen it, and
+partly edited by me. Step 9 of the loop exists for precisely this, and the #55
+precedent it cites (a correction made in the ephemeral copy while the decision
+log kept the sentence it corrected) is what nearly happened here.
+
+| item | disposition |
+|---|---|
+| **H1** — D30 claimed the suite "compares every prompt claim that has an owner". VERIFIED false by counter-example *from D30's own list*: adding `hallway` to the seed world leaves 31 tests green while the prompt says "There are no others". The accurate list lived only in this file — **deleted at merge** — so the false categorical was what would survive on `main`. | **fixed** — narrowed to what was measured, with the unguarded owned claims named in the entry itself. |
+| **H2** — D30's rule "if the Mock reasons about it, check it" was false of the very sentence this PR rewrote: `two arms`→`seven arms`, `extendable`→`fixed`, `grippers`→`suction cups` all passed. `Side` has exactly two members and was **already imported** in that file. | **fixed in the code, not by weakening the entry** — arm count now read from `Side`, grippers from the Mock's one-per-side observation, column travel from `RobotModel`. D30's rule is now true *because the code changed*. **This also means AC2 was not fully met before**: "two arms with grippers" is a body claim in the same sentence as the four-wheel one. |
+| **H3** — the presence check was a raw substring over hard-wrapped Markdown, so re-wrapping line 3 by one word turned the suite **red on a byte-correct prompt**. That re-wrap already happened once in this PR, and PR3–PR7 each edit that sentence. | **fixed** — `introduction()` now collapses whitespace. Three passes missed it because the *absence* regex is wrap-tolerant and everyone measured that half. |
+| **H4** — every decision D1–D29 has a `spec.md` row; D30 had none, leaving its binding invariant invisible to the PR3–PR7 authors it binds. | **fixed** — row added under `## Ops & gates`. |
+
+Two implementer judgement calls I endorse: it **edited** D30 rather than
+appending a correction (the append-only rule protects merged history, and D30
+has never been on `main` — it arrives as one squashed commit, so `main` sees
+only the corrected entry), and it **declined** to bump `spec.md:15`'s "Flattened
+through **D28**" to D30, because that line asserts something about the whole
+file it had only spot-checked. Refusing to assert what you verified only in part
+is the single behaviour this run most needed and least had.
+
+- **Phase (superseded):** round 3 — two full N+1 passes found 3 BLOCKs → fixed
 - **Round:** 3. **Deliberately past `run-feature.md`'s "max 2 rounds"** — see the
   rule conflict recorded under *Ops findings* below. CLAUDE.md makes a BLOCK a
   must-fix-before-merge, and `.claude/agents/red-team.md` (as of #69) requires
