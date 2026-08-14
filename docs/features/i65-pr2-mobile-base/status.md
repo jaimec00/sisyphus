@@ -12,8 +12,8 @@ Worktree base: `origin/main` @ 3d07063
 | 3. Context explorer | done — `context.md`, 5 open questions |
 | 4. Manager rulings | done — R1–R14 below |
 | 5. Implementer | done — see `implementation.md`; ratchet 7 -> 12, full suite green |
-| 6. Red-team | ready to start |
-| 7. Fix rounds (max 2) | pending |
+| 6. Red-team | round 1 done — `red_team.md`: **3 BLOCK**, 7 NOTE |
+| 7. Fix rounds (max 2) | round 1 running — B1/B2/B3 + N2–N6; N1 fixed by the manager |
 | 8. Test-runner | pending |
 | 9. PR + ready | pending |
 
@@ -267,9 +267,21 @@ Wheel *i* sits at `xyz = (base_radius·cos φ, base_radius·sin φ, 0)` relative
 That rpy makes the child link's **+z the wheel's spin axis**, pointing radially
 outward — the conventional wheel-link frame, and the one PR7's MJCF and any
 wheel controller will expect. It also means a **positive** joint velocity drives
-the contact point along `+d = ẑ × r̂`, the same sign the LeRobot driver's
-`wheel_linear_speeds` uses (verified: `cross(r̂, [0,0,-r_w]) == d̂·r_w` for all
-three). Express the axis as `0 0 1` in the rotated child frame, **not** as a
+the wheel's contact-patch *material* along `+d = ẑ × r̂` (verified:
+`cross(r̂, [0,0,-r_w]) == d̂·r_w` for all three).
+
+> **Corrected during Phase 7** (red-team N1, and the N+1th site of the same
+> over-claim: this ruling originally continued "…the same sign the LeRobot
+> driver's `wheel_linear_speeds` uses"). It does not. The rolling constraint
+> gives `v_axle = -θ̇·r_w·d̂`, so a positive joint velocity moves the **body**
+> along `−d̂` while the driver's positive wheel speed means the body along
+> `+d̂`. The model is unchanged and matches upstream LeKiwi; the physical motor
+> sign is a **calibration** fact for PR6/PR7 to confirm in sim. **D29** carries
+> the precise statement — three source sites were corrected in Phase 5 while
+> this one, the ruling that authored the error, survived. Fixed here so no copy
+> of the claim outlives its correction.
+
+Express the axis as `0 0 1` in the rotated child frame, **not** as a
 radial vector with zero rpy — the composition is the thing PR6 depends on, so it
 should be the thing the test checks.
 
