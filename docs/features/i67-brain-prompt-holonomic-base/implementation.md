@@ -358,3 +358,106 @@ red-team calls it behaviourally the worst of the unchecked claims),
 `schema_version: 1`, `counter_1.z`, the column travel above, the ledger
 pattern's Unicode-dash and `4wheel` misses, `_FENCE` not recognising `~~~` /
 indented / HTML-comment fences, and N5/N2 from round 1.
+
+---
+
+# Round 4 — the two N+1 full passes
+
+Three BLOCKs, two commits (`5a84688`, `5837211`). Test count unchanged at 58;
+the ratchet did not move. `pixi run test` green at 761, 0 skipped, audit passed.
+
+## G1 — `src/robot_brain/README.md`
+
+The README carried the last copy of the sentence B2 and F1 spent two rounds
+fixing — "No expected value there is typed by hand" — and this PR is what made
+it false, so one package asserted two contradictory things about one property.
+Restated as an aim, with the exception named and the gap described, in the same
+framing F1 settled on; the live-source list gained `RobotModel` (the reach this
+PR started checking). I did not re-derive a new absolute claim.
+
+Worth recording *why* three passes cleared this file: every sweep, mine
+included, scoped the README to **body** claims and cleared it correctly on that
+basis. Nobody asked whether the README's claims about *the test suite* survived
+a PR that changed the test suite. That is a sweep-scoping lesson, not a
+diligence one.
+
+## G2 — the fourth attempt at one sentence, verified this time
+
+I ran it rather than transcribing it, as instructed.
+
+**The old reason is false.** I added a probe importing
+`ament_index_python.packages` inside `test/` and ran the package suite:
+`test_no_ros_runtime` passed. Its `PROBE` does name `ament_index_python`, but it
+inspects the modules a bare subprocess loads on `import robot_brain`, and its
+static scan's `FORBIDDEN_ROOTS` is `('rclpy',)` walking `robot_brain/` — neither
+sees `test/`. Both passes were right, and my round-2 docstring was wrong.
+
+**What I found that is true, and is new.** In the same probe,
+`get_package_share_directory('robot_description')` raised
+`PackageNotFoundError`, listing an `AMENT_PREFIX_PATH` of exactly
+`robot_brain, robot_mcp, robot_safety, robot_backends, robot_world,
+robot_skills` — colcon puts only the declared deps there. So under `colcon test`
+(how the suite actually runs) the URDF is **not** reachable without a real
+`<test_depend>` edge. Pass B's "32 passed" came from a hand-sourced
+`install/setup.bash`, which is not the harness. That makes the dependency edge a
+measured cost rather than a stylistic objection.
+
+**On pass A's proposed D12/D13 framing — I checked it before adopting it, and
+adopted it only in a narrowed form.** The quotes hold verbatim (D13: "the skill
+API is the seam between hardware-agnostic brain and swappable drivers/URDF";
+D12: "brain is hardware-agnostic via the skill API"). But the seam is about what
+the brain *commands at runtime*, and a test-time dependency does not cross it in
+that sense — a test is not the brain. What is defensible, and all I claim, is
+the dependency-graph fact: `robot_brain`'s test deps are today exactly the
+packages on the brain's side of that seam, and `robot_description` would be the
+first from the hardware layer. So the docstring states the seam as the *reason
+for the choice*, immediately followed by "nothing enforces that". If a future
+reader wants the URDF check, the docstring now tells them the door is open and
+what it costs.
+
+**And the price is smaller than it looks**, which nobody had measured: the URDF
+carries the wheel *count* structurally (three `continuous` joints, D29) but the
+words "omniwheel" and "holonomic" only in a hand-typed comment at
+`base.xacro:3`. The edge buys one digit of an eight-word claim; the rest would
+still be prose checked against prose.
+
+## G3 — D30 written
+
+Appended to `docs/design/decisions.md` in D27/D29's register; D1–D29 untouched
+(append-only). It carries the finding (a live system prompt whose body prose had
+no gate, and why the existing suite structurally could not see it), the ledger
+and its stated limits, the rejected URDF alternative **with the reason that
+survived execution** (the measured `<test_depend>` edge, the seam, the one-digit
+payoff — and explicitly *not* the `test_no_ros_runtime` claim, which is recorded
+there as measured false), the reach check as the case where a live source did
+exist, and the gap PR3–PR7 inherit.
+
+I agree with the reversal. The mechanical argument is decisive: `docs/features/`
+is deleted at merge and CI enforces it, so every ruling and both corrections
+evaporate while the follow-ups (issue) and retro (PR) survive. The reasoning was
+the only artifact routed nowhere.
+
+**Out of owned paths, flagged as required:** `docs/design/decisions.md` is
+outside `src/robot_brain/**` + this feature's docs. Written at the manager's
+explicit direction, appended only.
+
+## Recorded, not acted on
+
+- **The `pixi run test` flake has a cause and a one-line fix.** Two concurrent
+  `pixi run test` runs in one worktree race in the shared `build/` tree and the
+  driver dies at `scripts/check_test_integrity.py:765`, where `path.unlink()`
+  wants `missing_ok=True`. Ops-owned; explains the `no-result` the test-runner
+  saw.
+- **Routed outward, untouched here:** NOTE 8 (a second ledger row would ship
+  without controls, and `SUPERSEDED_BODY_CLAIMS['3-omniwheel holonomic']` is
+  hard-coded in the positive control, so deleting the row is a `KeyError`);
+  pass B's NOTE 3 — the strongest follow-up of the run: the worked examples'
+  failure reasons are **byte-identical** to what `MockBackend` +
+  `default_safety_layer()` emit, so one replay test asserting the reason string
+  is `in PROMPT` would pin the reach, the `3.25 m`, the `[0, 1.2] m` travel
+  range quoted inside a fence and the message format — five gap rows, no new
+  dependency; the `U+2011` non-breaking-hyphen escape from the ledger pattern;
+  `known_locations`; `schema_version: 1`; `counter_1.z`; N-A6 ("two arms" has a
+  live source in `Side` and is ungated); N5/N2; and `CLAUDE.md`'s "D1–D28",
+  which is stale at D29 and now at D30 — the same defect class as this issue, in
+  the file every agent auto-loads.
