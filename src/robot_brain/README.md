@@ -72,13 +72,15 @@ of restating it — `robot_mcp.tools.TOOL_NAMES`, each tool's own `inputSchema`,
 its `RobotModel` (the arm's reach) — and a word in backticks that names nothing
 real fails the suite.
 
-That is the aim, not a guarantee, and the gap is exactly where the prompt
-describes the **body**. The drivetrain has no live source on this side of the
-skill-API seam (D30), so the base description is pinned by a hand-typed ledger
-of superseded claims: it catches the claim already known to be stale — D1's
-four-wheel base, retired by D26 — and not the next one. A handful of other
-assertions name a heading or a phrase by hand too. `TestBodyDescription` states
-those limits where they apply.
+That is the aim, not a guarantee. The prompt's description of the **body** is
+where the aim runs out: the arm count, its grippers, the column's travel and the
+arm's reach do have owners here and are read from them, but the drivetrain has
+no live source on this side of the skill-API seam (D30), so the base is pinned
+instead by a hand-typed ledger of superseded claims — it catches the claim
+already known to be stale (D1's four-wheel base, retired by D26) and not the
+next one. Elsewhere a handful of assertions still name a heading or a phrase by
+hand, and some owned claims have no assertion at all (`known_locations` is the
+one to know about). `TestBodyDescription` states its own limits in place.
 
 ## Installing the agent on the Pi
 
