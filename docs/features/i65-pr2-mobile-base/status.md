@@ -14,7 +14,7 @@ Worktree base: `origin/main` @ 3d07063
 | 5. Implementer | done — see `implementation.md`; ratchet 7 -> 12, full suite green |
 | 6. Red-team | r1 `red_team.md` (3 BLOCK, 7 NOTE); r1-scoped `red_team_fix.md` (3 BLOCK, 5 NOTE) |
 | 7. Fix rounds (max 2) | r1 done (B1–B3 + N2–N6); **r2 running** (BF1–BF3); N1 fixed by the manager |
-| 8. Test-runner | pending |
+| 8. Test-runner | ready to start |
 | 9. PR + ready | pending |
 
 Blockers: none.

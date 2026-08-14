@@ -393,6 +393,139 @@ skipped**, all ten packages `ok`. Baseline ratcheted `robot_description`
 **12 → 14** and nothing else (`git diff scripts/test_baseline.json` is a single
 line). Tree clean.
 
+## Red-team round 2 (fix pass) — three more BLOCKs, closed
+
+`red_team_fix.md` confirmed all three round-1 BLOCKs fixed (it re-ran all seven
+repros itself and verified the driver transcription key-for-key against
+upstream), and found three new ones **in the fix**. All three accepted; none
+escalated. Commit: `35b68d1`.
+
+### BF1 — the heuristic paying off a third time: `wheel_radius` was ungated
+
+B1 asserted the driver contract for the mount angles and `base_radius` and
+stopped there. The driver has a **third** constant, and it is the one it
+*divides* by: `wheel_angular_speeds = wheel_linear_speeds / wheel_radius` going
+out, `wheel_linear_speeds = wheel_radps * wheel_radius` coming back. Nothing
+compared the model's radius to `0.05`, so `0.05 → 0.04` was fully green while
+the base drove at 0.8x commanded and reported the same 1.25x error back as
+odometry — self-consistent and wrong, exactly the class B1 exists to catch.
+
+Fixed with `DRIVER_WHEEL_RADIUS_M = 0.05` and a clause in the matrix test. The
+docstring drift the red-team spotted was the tell: it called the sourced pair
+"`base_radius` and the mount angles" while D29 and `spec.md` call it
+"`wheel_radius` and `base_radius`" (the angles are *derived* from the driver's
+rolling directions, not sourced). All three now say the same thing.
+
+### BF2 — the subtly-wrong criterion moved from the comment into the assertion
+
+`underside = joint.origin.z - length/2` is the true underside only if the
+collision is centred on the link origin and the joint's rotation is identity —
+neither of which was asserted. Two perturbations buried all three wheels and
+stayed green: an `<origin xyz="0 0 -0.06"/>` on the chassis collision, and
+`base_chassis_joint rpy="${pi/2} 0 0"`.
+
+Fixed both ends: the chassis joint's `rpy` must be identity, and
+`_collision_cylinder` now refuses to measure a shape carrying a non-identity
+`<origin>` at all (a new `_require_identity_origin` helper). **Deliberately
+narrow** — the requirement attaches where a dimension is *consumed*, not to the
+description at large, because offset geometry is entirely normal and PR3/PR4
+will have plenty of it; a blanket "no origins anywhere" would have been an
+extensibility trap. The helper's docstring says so, and says to compose the
+transform rather than delete the check.
+
+### BF3 — D29 claimed a verification nobody performed
+
+The fix round had rewritten "Each assertion was confirmed by perturbation
+(*four named examples*)" into "**Every** assertion was confirmed by
+perturbation" with the enumeration dropped — a stronger claim on less evidence,
+with about ten shipped clauses never perturbed by either round. Restored to the
+enumerated form, now listing all fourteen perturbations actually run across
+both rounds, **and saying explicitly which clauses ship on argument instead**,
+because a decision entry that rounds its own evidence up is the failure this PR
+already had to fix once. "Half of that growth is the red-team's" corrected to
+"two of them" (two of seven tests, which is what the sentence's own unit
+counts).
+
+### NOTEs — all five taken, each a line or two
+
+- **NF1** (worth more than a line of value): the matrix test rebuilt each row
+  from the *mount angle* and assumed the rolling direction, so a wheel at the
+  right angle with a tangential axis produced a correct-looking row and was
+  caught only by its neighbour. It now derives `d = ẑ × axis` from the joint's
+  actual axis (composed with rpy, then normalised — a non-unit `<axis>` is
+  legal URDF and must not fail spuriously). Verified below: the test now
+  catches an axis error on its own.
+- **NF2**: the docstring now says the clearance check is deliberately the
+  *strong* form (it forbids a legitimate narrow chassis hanging between the
+  wheels) and what to do about it rather than deleting it.
+- **NF3**: `DRIVER_MATRIX_TOL`, since two of the three compared columns are
+  direction cosines rather than metres.
+- **NF4**: the roadmap's §PR2 "Test:" list — the one doc site the earlier sweep
+  missed, and marked DONE, so it read as the record of what shipped.
+- **NF5**: the 124-char README line rewrapped.
+
+N4 from round 1 (asserting "wheels don't stick out") stays declined, per the
+manager's ruling.
+
+### Round-3 sabotage verification
+
+Same protocol; scratch copy at `/tmp/i65-f2`, deleted afterwards, tree clean.
+All four of these were **green before this round**.
+
+**BF1 — `wheel_radius` 0.05 → 0.04:**
+
+```
+17 tests, 0 errors, 1 failure, 0 skipped
+- test_wheel_mounts_match_the_lerobot_driver_matrix
+  AssertionError: the model's wheel radius is 0.0400 m but the LeRobot driver
+  divides by 0.0500 m ... the base simply moves at 0.800x the commanded speed
+  and reports the error back as its own position estimate.
+```
+
+**BF2 repro 1 — chassis `<collision>` given `<origin xyz="0 0 -0.06"/>`:**
+
+```
+- test_solid_links_have_visual_and_collision_geometry
+  AssertionError: base_chassis_link's <collision> carries a non-identity
+  <origin> (xyz=[0.0, 0.0, -0.06] rpy=[0, 0, 0]). The clearance and
+  ground-plane assertions read dimensions straight off this shape ...
+```
+
+**BF2 repro 2 — `base_chassis_joint rpy="${pi/2} 0 0"`:**
+
+```
+- test_solid_links_have_visual_and_collision_geometry
+  AssertionError: base_chassis_joint rotates the chassis
+  (rpy=[1.5707963267948966, 0.0, 0.0]) ... tip the puck on its side and it can
+  swallow the wheels with the arithmetic still passing.
+```
+
+**NF1 — mounts correct, spin axis rotated tangentially** (this is the
+interesting one: **2** failures, where before the fix the matrix test would
+have passed and only the neighbour would have fired):
+
+```
+17 tests, 0 errors, 2 failures, 0 skipped
+- test_wheel_mounts_are_120_degrees_apart      (the axis clause)
+- test_wheel_mounts_match_the_lerobot_driver_matrix
+  ... 'base_back_wheel (mounted at 180.0000 deg): model row [-1.0, 0.0, 0.125]
+  != driver row [0.0, -1.0, 0.125]' ...
+```
+
+**Regression check** — the round-2 repros still fire and the pristine model is
+still green: B1 left/right swap → 1 failure (matrix test); B3
+`chassis_z_offset = 0.03` → 1 failure (geometry test); B2 chassis
+visual+collision deletion → 1 failure (geometry test); pristine → `17 tests, 0
+errors, 0 failures`.
+
+### Full suite after round 2
+
+`pixi run build` + `pixi run test`: **756 tests, 0 errors, 0 failures, 0
+skipped**, all ten packages `ok`, `vs-base +0` everywhere. The baseline is
+**unchanged at 14** and correctly so: this round added assertions *inside*
+existing tests rather than new test functions, so there is no ratchet diff to
+commit. Tree clean.
+
 ## For the manager
 
 Two items to surface; neither is a blocker and neither was acted on beyond what
