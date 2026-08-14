@@ -294,3 +294,67 @@ Not fixed here (per "fix BLOCKs only"), surfaced for routing:
   prompt's unchecked prose rather than in this PR.
 - The manager's own `status.md`/`red_team.md` are uncommitted/untracked in the
   worktree; I left them alone rather than committing another agent's docs.
+
+---
+
+# Round 3 — two sentences
+
+Scoped pass, no BLOCKs, two false sentences. One commit (`6975585`), both in
+`test_prompt_drift.py`. Test count unchanged at 58 (`robot_brain` non-lint 55);
+the ratchet did not move and `scripts/test_baseline.json` is unchanged.
+
+## F1 — the module docstring, reframed as an aim
+
+"…with a single deliberate exception: `SUPERSEDED_BODY_CLAIMS`" was false, and
+false the *same way* the sentence it replaced was: `'out_of_reach'`,
+`'clamped'`, `'do not repeat'`, the seven section headings and
+`count('call place(') >= 3` are all hand-typed expected values too — and the
+first is a hand-typed copy of a `FailureCode` this module already derives live
+20 lines away. So B2's root cause was never "the ledger made it false"; the
+docstring has always overclaimed, and the ledger only made the overclaim
+visible. Corrected the diagnosis as well as the sentence.
+
+It now describes what the module *aims* at ("an aim, not an invariant"),
+mentions the kinds of literal that remain without counting them, and keeps the
+pointer to `TestBodyDescription`. That phrasing stays true after the next
+hand-typed assertion is added, which an exception count would not. The
+hand-typed assertions themselves are untouched — not this issue.
+
+## F2 — the control set is a floor, not a proof
+
+"a later edit to the pattern cannot quietly narrow it" was disproved by the
+red-team: `r'\b(?:four|4)[\s-]+wheel(?:s|ed|\s|-)'` passes all eight controls
+while going blind to `The base is four-wheel.`, because no control ended the
+phrase at punctuation.
+
+Both halves, since the sentence had to change either way to avoid a third
+overclaim: the missing control (`'The base is four-wheel.'`, and only that one)
+is added, and the docstring now says the set is a floor rather than a proof —
+a narrower pattern satisfying all of them is still constructible, so a change to
+the pattern wants reading, not just re-running.
+
+**Verified by mutation**: with the red-team's narrowed pattern in place,
+`test_the_matcher_catches_the_spellings_a_literal_list_did_not` fails with
+`AssertionError: The base is four-wheel.` and nothing else moves (1 failed,
+57 passed). Reverted; `pixi run test` green at 761, 0 skipped, audit passed.
+
+## Correction to a round-2 note
+
+Round 2 deferred the column travel quoted in the worked examples
+(`AGENTS.md:219,223`) partly on the grounds that it is "a different owning
+package" from the reach. That reason is wrong, and the follow-up should not
+carry it: `mock_world.py:86-87` gives `RobotModel` `min_column_height` /
+`max_column_height`, so those numbers have the **same live source the new reach
+test already calls** — `default_world().robot` — and the check would be the same
+shape as `test_the_reach_the_examples_quote_is_the_live_one`. It is deferred
+because it is out of this issue's scope, not because it is awkward. Recorded,
+not acted on, per the manager's routing.
+
+## Routed to follow-ups, deliberately untouched here
+
+The `known_locations` gap (`AGENTS.md:89,97,168` — the prompt says "There are no
+others" and 28 tests stay green when the seed world grows a location; the
+red-team calls it behaviourally the worst of the unchecked claims),
+`schema_version: 1`, `counter_1.z`, the column travel above, the ledger
+pattern's Unicode-dash and `4wheel` misses, `_FENCE` not recognising `~~~` /
+indented / HTML-comment fences, and N5/N2 from round 1.
