@@ -1,7 +1,8 @@
 # Roadmap #5 — URDF/MJCF robot body: PR breakdown
 
 **Status:** in progress. **PR1 is DONE** — merged as PR #62 (closes #61), ratified
-as **D27**. PR2–PR7 are not yet filed as issues.
+as **D27**. **PR2 is DONE** — closes #65, ratified as **D29**. PR3–PR7 are not
+yet filed as issues.
 **Decided:** URDF-as-source (Jaime, 2026-08-12). URDF/Xacro is canonical for
 kinematics/geometry; MJCF carries a thin sim-only physics layer on top;
 `RobotModel`'s constants are *read from* the URDF, not hardcoded.
@@ -57,15 +58,26 @@ numbers the URDF must eventually *own* (current literal defaults):
   This test file is the harness PRs 2–7 grow.
 - Unblocks: everything.
 
-### PR2 — Mobile base (3-omniwheel holonomic, LeKiwi crib)
-- `base_link` collision/visual + `base_footprint`; **3 omniwheel links** at 120°
-  + continuous joints (crib LeKiwi/XLeRobot base URDF). Dimensions as xacro
-  `<property>` (base radius, wheel radius, wheel mount angle).
-- **Test:** wheel joint names/types/count (=3); still expands + parses; loadable
-  by robot_state_publisher.
-- Also the PR that imports the first real mesh set — so it is where the flat
-  `glob()` install becomes an `os.walk` version, written against actual files
-  rather than a guess at their layout (D27's recorded limit).
+### PR2 — Mobile base (3-omniwheel holonomic, LeKiwi crib) — **DONE (closes #65, D29)**
+- `base_chassis_link` collision/visual + `base_footprint`, both fixed children
+  of `base_link` (which keeps no geometry — D27 declares it at the top level);
+  **3 omniwheel links** at 60°/180°/300° on `continuous` joints named for the
+  LeRobot driver's motor keys. Every dimension is an xacro `<property>`, with
+  the two sourced ones marked apart from the estimates (D29).
+- **Test:** wheel joint names/types/count (=3), each driving its own link; the
+  120° mount spacing and the outward-radial spin axis *after* rpy composition;
+  **the LeRobot driver's body→wheel matrix rebuilt from the model and compared
+  row-for-row to the driver's own constant, plus its `wheel_radius`** — the
+  absolute check, without which a left/right swap or a retuned wheel is green
+  (D29); `base_footprint` at minus the wheel radius; visual + collision
+  geometry on every body link and a chassis that clears the wheels; inertia on
+  every non-frame link; still expands + parses; loadable by
+  `robot_state_publisher`.
+- **Amended by D29: PR2 imports no meshes.** The base is primitives (the
+  upstream omniwheel STL is 15 MB × 3, the cheap LeKiwi mesh is the wrong body
+  per D26, and convex primitives are the better collision geometry anyway), so
+  the flat `glob()` install stays as D27 left it and the `os.walk` rewrite
+  moves to the first PR that actually lands meshes — see PR4.
 - Depends on PR1.
 
 ### PR3 — Extendable column  *(linear-rail STS3215 lift, Nori-style crib (D26))*
@@ -90,6 +102,10 @@ numbers the URDF must eventually *own* (current literal defaults):
   land before or after PR4/PR5.
 
 ### PR4 — SO-101 arm macro (single), instantiated left + right
+- **Likely the first mesh-bearing PR, so it inherits the `os.walk` install
+  rewrite** D27 recorded and D29 deferred out of PR2: the flat `glob()` in
+  `setup.py` cannot copy a nested `meshes/<subdir>/`, and the rewrite is to be
+  written against the arm's actual STL layout rather than a guess at it.
 - Crib arm links/joints from `so101_ros2`; wrap in a xacro macro parameterized
   by `prefix`/`side` + mount transform. Instantiate off `column_top` at
   `y=±shoulder_offset_y (0.18)`, `z=shoulder_offset_z (0.50)`.
