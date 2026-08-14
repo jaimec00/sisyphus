@@ -14,10 +14,12 @@ Nothing else in the workspace would notice.
 So every checkable claim the prompt makes is compared here against the **live**
 source that owns it -- ``robot_mcp``'s tool catalogue, each tool's own JSON
 Schema, ``robot_safety``'s shipped limits and ``robot_backends``' seed world.
-Every expected value here is read from one of those, with a single deliberate
-exception: ``SUPERSEDED_BODY_CLAIMS``, which is typed by hand because the
-drivetrain it describes has no live source in this package -- see
-``TestBodyDescription`` for why, and for what that costs.
+Reading each expected value from the source that owns it, rather than typing it
+here, is what this module aims at -- it is what makes the suite worth more than
+the prompt it checks.  It is an aim, not an invariant: some assertions still
+name a heading, a phrase or a code by hand, and ``SUPERSEDED_BODY_CLAIMS`` is
+hand-typed because the drivetrain it describes has no live source in this
+package at all -- see ``TestBodyDescription`` for why, and for what that costs.
 """
 
 import re
@@ -173,8 +175,10 @@ class TestBodyDescription:
 
         The absence check can only ever observe a pattern *failing* to match,
         so a typo in one would leave it green forever.  These are the retypes
-        the literal list it replaced let through, plus the ones it caught, so
-        a later edit to the pattern cannot quietly narrow it.  A second row
+        the literal list it replaced let through, the ones it caught, and a
+        claim that ends at punctuation.  They are a floor, not a proof: a
+        narrower pattern satisfying all of them is constructible, so a change
+        to the pattern wants reading, not just re-running.  A second row
         brings its own controls; spellings are specific to the claim retired.
         """
         pattern = SUPERSEDED_BODY_CLAIMS['3-omniwheel holonomic']
@@ -187,6 +191,7 @@ class TestBodyDescription:
             'four  wheel base',      # a double space survives most retypes
             'FOUR-WHEEL BASE',
             'four-wheeled base',
+            'The base is four-wheel.',   # a claim can end at punctuation
         ):
             assert re.search(pattern, claim, re.IGNORECASE), claim
 
