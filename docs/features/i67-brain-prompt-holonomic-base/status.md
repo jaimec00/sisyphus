@@ -3,7 +3,8 @@
 - **Slug:** `i67-brain-prompt-holonomic-base`
 - **Branch:** `feat/i67-robot-brain-system-prompt-still-claims-a`
 - **Issue:** #67
-- **Phase:** round 5 fixed → one confirming pass owed, then PR
+- **Phase:** **READY** — PR #70 open, green, reported to Sisyphus. Not merged; `docs/features/` left in place for review (docs-clean CI reads as failing until Sisyphus deletes them at merge).
+- **Final state:** 10 red-team passes, last two clean → N+1 satisfied. `pixi run test` 763 tests / 0 failures / 0 skipped, audit passed, ratchet `+0`. Rebased on `origin/main` = `1a8472b`. Follow-ups posted to issue #67; retro posted to PR #70.
 
 ### Round 5 — I committed the exact error I spent the run policing
 
