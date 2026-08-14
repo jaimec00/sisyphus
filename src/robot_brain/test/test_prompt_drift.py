@@ -14,9 +14,13 @@ Nothing else in the workspace would notice.
 So every checkable claim the prompt makes is compared here against the **live**
 source that owns it -- ``robot_mcp``'s tool catalogue, each tool's own JSON
 Schema, ``robot_safety``'s shipped limits and ``robot_backends``' seed world.
-No expected value in this module is typed by hand.
+Every expected value here is read from one of those, with a single deliberate
+exception: ``SUPERSEDED_BODY_CLAIMS``, which is typed by hand because the
+drivetrain it describes has no live source in this package -- see
+``TestBodyDescription`` for why, and for what that costs.
 """
 
+import re
 from types import MappingProxyType
 from typing import Mapping
 
@@ -46,17 +50,26 @@ PROMPT = operating_prompt()
 AGENT_TOOLS = frozenset(TOOL_NAMES) - frozenset(WITHHELD_TOOLS)
 
 #: Body facts the decision log has *superseded*, mapping the descriptor that
-#: replaced each to the spellings it replaced.  D1 gave the robot a four-wheel
-#: base; D26 traded it for the LeKiwi 3-omniwheel holonomic base and D29 built
-#: that geometry in ``robot_description``, but the prompt kept saying
-#: "four-wheel" for a day -- prose is retyped, never refactored, so nothing
-#: went red.
+#: replaced each to a pattern matching the claim it replaced.  D1 gave the
+#: robot a four-wheel base; D26 traded it for the LeKiwi 3-omniwheel holonomic
+#: base and D29 built that geometry in ``robot_description``, but the prompt
+#: kept saying "four-wheel" for a day -- prose is retyped, never refactored, so
+#: nothing went red.
+#:
+#: A pattern rather than a list of spellings, because the list came first and
+#: had a hole: it caught "four-wheel" and "4-wheel" and missed "4 wheels",
+#: which is the spelling D26 itself prints (``decisions.md``, "the '4 wheels'
+#: aesthetic of D1") and therefore the one in front of anyone re-drafting that
+#: sentence.  Matched case-insensitively.
 #:
 #: Add a row when a decision supersedes another body fact.  Nothing here will
 #: remind you: see ``TestBodyDescription`` for what this ledger does not do.
-SUPERSEDED_BODY_CLAIMS: Mapping[str, tuple[str, ...]] = MappingProxyType({
-    '3-omniwheel holonomic': ('four-wheel', '4-wheel', 'four wheel'),
+SUPERSEDED_BODY_CLAIMS: Mapping[str, str] = MappingProxyType({
+    '3-omniwheel holonomic': r'\b(?:four|4)[\s-]+wheel',
 })
+
+#: How the prompt states the arm's reach: ``0.85 m reach``.
+_STATED_REACH = re.compile(r'(\d+(?:\.\d+)?) m reach')
 
 #: Each tool's argument names and its required ones, from the shipped schemas.
 SCHEMAS = {
@@ -111,41 +124,104 @@ def live_vocabulary() -> set[str]:
 
 
 class TestBodyDescription:
-    """The body the prompt opens by describing is the body the decisions built.
+    """The body the prompt opens by describing is the body this workspace has.
 
-    Alone in this module, these tests compare the prompt against a hand-typed
-    ledger instead of a live source, because the body has no live source here:
-    ``robot_description`` ships a URDF and no Python, and reaching into it
-    would cost this pure-Python suite a colcon install tree and the xacro
-    toolchain -- then still leave it recovering a wheel count from English.
+    Most of the body *does* have a live source here: ``RobotModel`` is what the
+    Mock reasons about, so the reach below is checked against it like every
+    other number in this module.  The **drivetrain** is the part that has none.
+    It exists only in ``robot_description``'s URDF, and reading that would put
+    ``ament_index_python`` on this package's path -- and this is the one
+    package whose defining property is that it needs no ROS at all (D21;
+    ``test_no_ros_runtime`` names that module as one it refuses to see
+    loaded).  So the drivetrain gets a hand-typed ledger instead.
 
-    So be clear about what this buys: it pins the stale claims we *already
-    know about*.  It cannot notice the next one.  When the column, the arms or
-    the camera change shape, this file goes green while the prompt lies, until
-    somebody adds the row.
+    Be clear about what that pin buys: it catches the claim we *already know*
+    went stale.  It cannot notice the next one.  When the column, the arms or
+    the camera change shape, this file stays green while the prompt lies,
+    until somebody adds the row.
     """
 
-    @pytest.mark.parametrize(
-        'superseded', sorted(
-            claim for claims in SUPERSEDED_BODY_CLAIMS.values() for claim in claims))
-    def test_a_superseded_body_claim_is_not_still_taught(self, superseded):
+    @pytest.mark.parametrize('current', sorted(SUPERSEDED_BODY_CLAIMS))
+    def test_a_superseded_body_claim_is_not_still_taught(self, current):
         """The prompt described D1's four-wheel base for a day after D26 (#67).
 
-        Case-insensitive, and every spelling of the claim, because the thing
-        being guarded is a sentence somebody will one day rewrite by hand.
+        Matched over the whole prompt, not just the sentence that went wrong:
+        a retired body fact has no business anywhere in it.
         """
-        assert superseded.lower() not in PROMPT.lower(), (
-            f'the prompt still claims "{superseded}", which the decision log superseded')
+        found = re.search(SUPERSEDED_BODY_CLAIMS[current], PROMPT, re.IGNORECASE)
+        assert not found, (
+            f'the prompt still claims "{found.group(0)}", which "{current}" superseded')
 
     @pytest.mark.parametrize('current', sorted(SUPERSEDED_BODY_CLAIMS))
     def test_the_descriptor_that_replaced_it_is_taught(self, current):
         """Deleting the stale claim is half the fix; the agent still needs the body.
 
-        Paired with the absence check so that neither passes vacuously: a
-        prompt that simply dropped the sentence would satisfy the other test.
+        Scoped to the opening paragraphs, where the body is introduced, so the
+        phrase has to be doing the describing: over the whole prompt this would
+        also pass on a leftover mention in a fenced note, beside a sentence
+        calling the robot anything at all.
         """
-        assert current.lower() in PROMPT.lower(), (
-            f'the prompt never describes the robot as "{current}"')
+        introduction = PROMPT.split('\n## ', 1)[0]
+        assert current.lower() in introduction.lower(), (
+            f'the prompt never introduces the robot as "{current}"')
+
+    def test_the_matcher_catches_the_spellings_a_literal_list_did_not(self):
+        """The ledger is a pattern now, and an untested pattern is a hole.
+
+        The absence check can only ever observe a pattern *failing* to match,
+        so a typo in one would leave it green forever.  These are the retypes
+        the literal list it replaced let through, plus the ones it caught, so
+        a later edit to the pattern cannot quietly narrow it.  A second row
+        brings its own controls; spellings are specific to the claim retired.
+        """
+        pattern = SUPERSEDED_BODY_CLAIMS['3-omniwheel holonomic']
+        for claim in (
+            'a four-wheel base',
+            'a 4-wheel base',
+            'four wheels',
+            '4 wheels',              # decisions.md's own spelling of D1's base
+            'a 4 wheel base',
+            'four  wheel base',      # a double space survives most retypes
+            'FOUR-WHEEL BASE',
+            'four-wheeled base',
+        ):
+            assert re.search(pattern, claim, re.IGNORECASE), claim
+
+    def test_no_matcher_fires_on_the_body_we_actually_have(self):
+        """The other half: a guard that cries wolf gets deleted, not fixed.
+
+        Every pattern in the ledger against prose the prompt is *entitled* to
+        contain -- the sentence this issue installed, and the neighbouring
+        numbers a wider pattern would swallow.
+        """
+        for pattern in SUPERSEDED_BODY_CLAIMS.values():
+            for innocent in (
+                'a 3-omniwheel holonomic base',
+                'three omniwheels at 60, 180 and 300 degrees',
+                'four objects are on the table',
+                'Speed caps: base 0.6 m/s, column 0.15 m/s, arm 0.5 m/s.',
+            ):
+                assert not re.search(pattern, innocent, re.IGNORECASE), (pattern, innocent)
+
+    def test_the_reach_the_examples_quote_is_the_live_one(self):
+        """A worked example quotes the arm's reach, and nothing else checks it.
+
+        ``TestSafetyEnvelope`` scopes to the safety section; this number is in
+        a refusal message under "Worked examples", so retuning
+        ``RobotModel.reach_radius`` used to move the prompt out from under
+        every assertion in this file.  A set comparison in both directions, as
+        there: a changed reach fails, and so does a second reach no model
+        backs -- including the empty set, if the phrase is ever reworded away.
+
+        The model's other distances are deliberately not asserted: the prompt
+        never states the shoulder offsets, and matching ``0.5`` against "arm
+        0.5 m/s" would be a coincidence, not a check.
+        """
+        model = default_world().robot
+        stated = {float(number) for number in _STATED_REACH.findall(PROMPT)}
+        assert stated == {model.reach_radius}, (
+            f'the prompt quotes {sorted(stated)} as the reach; the model says '
+            f'{model.reach_radius}')
 
 
 class TestToolCatalogue:
