@@ -170,3 +170,127 @@ from an English sentence. Large brittle coupling, one sentence of value.
   implements D26/D29, it decides nothing new.
 - **No escalation raised.** R1–R4 were all followed; I re-derived R1's and R2's
   reasoning independently before complying and reached the same conclusions.
+
+---
+
+# Round 2 — red-team fixes
+
+Three BLOCKs and one promoted NOTE, in two commits (`a64aee7`, `f2044f9`).
+Nothing in `AGENTS.md` changed: the prose fix survived review, and every fix
+below is in `src/robot_brain/test/test_prompt_drift.py`.
+
+Test count 55 → 58 (`robot_brain` non-lint 54 → 55; the ledger's absence check
+went from 3 parametrized cases to 1, and four tests were added). Ratchet raised
+itself; no `ALLOW_TEST_DECREASE` was needed.
+
+## B1 — the ledger is a pattern now, with controls
+
+`('four-wheel', '4-wheel', 'four wheel')` → `r'\b(?:four|4)[\s-]+wheel'`, matched
+case-insensitively. The mapping keeps its shape (current descriptor → the claim
+it retired) and the parametrize ids stay readable (`[3-omniwheel holonomic]`),
+because both ledger tests now parametrize over the *keys*.
+
+**How I convinced myself it catches what the list missed.** Not by reading it —
+by making the belief executable, as
+`test_the_matcher_catches_the_spellings_a_literal_list_did_not`. It asserts the
+pattern fires on all eight strings from the red-team's table: the three the old
+list caught (`a four-wheel base`, `a 4-wheel base`, `four wheels`), its
+incidental catches (`FOUR-WHEEL BASE`, `four-wheeled base`), and the three it
+missed (`4 wheels` — `decisions.md`'s own spelling — `a 4 wheel base`, and
+`four  wheel base` with a doubled space). That test is not decoration: the
+absence check can only ever observe a pattern *failing* to match, so a typo'd
+pattern would leave it green forever. Verified by mutation — changing the
+pattern to `wheeel` fails the control test and **nothing else**, i.e. without it
+the hole would have been invisible again.
+
+**How I convinced myself it does not false-positive.**
+`test_no_matcher_fires_on_the_body_we_actually_have` runs every ledger pattern
+against prose the prompt is entitled to contain: the sentence this PR installed,
+a plausible omniwheel-geometry sentence, `four objects are on the table` (the
+word "four" near furniture), and the full speed-caps line (digits near "base").
+Plus the live case, which is the absence check itself, green on the real prompt.
+The one real false-positive class stays open by design and matches N4: a prompt
+that *disclaims* the old base ("this is not a four-wheel base") would fail — R1
+forbids that genre of sentence anyway, and I would rather this guard be loud.
+`quad-wheel` is still not matched; a synonym is a different claim and would get
+its own row.
+
+## B2 — the module docstring
+
+"No expected value in this module is typed by hand" is replaced by a sentence
+that names the exception and points at the class that bounds it. The red-team
+was right and I was wrong to shelter behind R4: R4's text scopes to `AGENTS.md`.
+Shipping a newly-false sentence in the statement of purpose of the file that
+fixes a stale claim is the same bug one directory over.
+
+## B3 — the reach is checked, and the docstring says what is true
+
+`test_the_reach_the_examples_quote_is_the_live_one` compares
+`{n for n in PROMPT matching '<n> m reach'}` with
+`{default_world().robot.reach_radius}` — a set equality in both directions, in
+the style of `TestSafetyEnvelope`, so a changed model, a second stated reach, or
+a rewording that removes the phrase all fail with the numbers in the message.
+`default_world()` rather than a bare `RobotModel()`: it is the world the agent
+actually meets, and this module already imports it.
+
+I checked the rest of `RobotModel` before asserting only the reach:
+`shoulder_offset_y` (0.18) does not appear in the prompt at all, and
+`shoulder_offset_z` (0.50) appears only as "arm 0.5 m/s" — the safety velocity
+cap, a different fact. Asserting against that would be a coincidence, not a
+check; the docstring says so.
+
+`RobotModel.reach_radius` is left at 0.85 as instructed — the prompt and the
+model agree today, which is what this PR owns.
+
+The class docstring now says the **drivetrain** has no live source (true) rather
+than "the body" (false), and gives the reason that survives measurement: reading
+the URDF needs a `<test_depend>` on `robot_description`, which drags
+`ament_index_python` onto the path of the one package whose defining property is
+that it needs no ROS (D21; `test_no_ros_runtime` names that module explicitly).
+The inflated colcon/xacro/English-parsing reasoning is gone from the file.
+
+## N1 — the presence check
+
+**Intro-scoping alone was not enough, and I found that by running it.** The
+manager's and red-team's suggested one-liner (`PROMPT.split('\n## ', 1)[0]`)
+still passed the red-team's own scenario, because the prompt's first `##`
+heading is "How to work" — a fenced note left under the opening paragraph is
+*inside* the introduction. The check is now
+`without_fences(PROMPT).split('\n## ', 1)[0]`: dropping the fences is the half
+that does the work, and the intro scope keeps the phrase in the paragraph that
+introduces the body. The absence check stays on the raw prompt, as advised.
+
+## Verification (round 2)
+
+`pixi run test` green: 761 tests, 0 skipped, audit passed, baseline
+`robot_brain` 54 → 55, committed. Five mutations, each run through
+`colcon test` and reverted, with the working tree clean afterwards:
+
+| mutation | expected | observed |
+|---|---|---|
+| prompt says "a base on 4 wheels" (the spelling the old list missed) | absence + presence fail | exactly those two |
+| body sentence → "a mystery box on legs", descriptor left in a fenced TODO in the intro (N1's scenario) | presence fails | it does — and did **not** before the `without_fences` fix |
+| `RobotModel.reach_radius` 0.85 → 0.40 (the red-team's mutation) | reach test fails | `the prompt quotes [0.85] as the reach; the model says 0.4` |
+| prompt's "0.85 m reach" → "1.85 m reach" | reach test fails | it does (the equality binds from both sides) |
+| ledger pattern typo'd to `wheeel` | matcher control fails, absence stays green | exactly that — the reason the control exists |
+
+## Surviving NOTEs for the manager
+
+Not fixed here (per "fix BLOCKs only"), surfaced for routing:
+
+- **N5** (red-team) — `AGENTS.md:81`'s example observation omits the
+  `orientation` quaternion the live observation always sends; nothing parses the
+  fenced observation JSON against the live shape. Pre-existing, defensible as
+  abbreviation.
+- **N2's cheaper live source** — `src/robot_description/package.xml:6` contains
+  the literal string `3-omniwheel holonomic base`; cross-checking it buys
+  consistency, not truth. For the follow-up, not this PR.
+- **Observed while doing B3, not in the red-team's list**: the same unguarded
+  corner exists one more time. `AGENTS.md:219,223` quote the column travel
+  (`[0, 1.2] m`, "from 1.2 m up") inside worked examples, where
+  `TestSafetyEnvelope`'s section-scoped check cannot see them — so retuning
+  `SafetyLimits` would leave those two lines stale and green. Same shape as the
+  reach gap, different owning package; belongs with the follow-up about the
+  prompt's unchecked prose rather than in this PR.
+- The manager's own `status.md`/`red_team.md` are uncommitted/untracked in the
+  worktree; I left them alone rather than committing another agent's docs.
