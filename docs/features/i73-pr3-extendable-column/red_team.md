@@ -164,3 +164,283 @@ Relevant paths: `docs/design/decisions.md` (D31, lines 129–131), `src/robot_de
 > clause 6 is wrong, and for the same reason (both were written from the clause's
 > prose rather than from `git diff`). `scripts/test_baseline.json` settles it:
 > `robot_description` 14 → 21, i.e. **+7**. Folded into the round-2 fix list as R13.
+
+---
+---
+
+# Red-team — #73 / PR3 — Extendable column. Round 2.
+
+Reviewing `868a6a5`, `829319b`, `b230b25` (the fix diff `a7d8190..HEAD`) first,
+then the whole feature again over `origin/main..HEAD`. Read-only on the
+worktree throughout; every perturbation ran against a scratch copy of the
+*installed* share tree at `/tmp/rtscratch2/`, restored after each run.
+`git status --short` empty at the end.
+
+## Evidence base
+
+- `pixi run build` + `pixi run test` → **green**: 799 tests, 0 errors, 0
+  failures, 0 skipped; audit passed; `robot_description` 27 collected /
+  **24 non-lint, `vs-base +0`**.
+- 30 further single-edit perturbations in two batches (`/tmp/rtscratch2/p1.py`,
+  `p2.py`), each run against the shipped 24-test suite and restored.
+- `/tmp/rtsafe/`: `robot_safety` + `robot_brain` shadowed on `PYTHONPATH` to
+  raise the real `velocity.column` cap and see what objects.
+
+---
+
+# A. The fix diff, ruling by ruling — all VERIFIED
+
+## R13 / B1 — the datum arithmetic. **Fixed, and now pinned.**
+
+The expansion is unchanged (`rail z 0.78`, `lift z −0.585`, datum
+`0.195 → 1.395`), and every document now states it that way: `column.xacro:88-99`
+spells out both origins with the derivation, D31 clause 5 states
+`column_rail_joint.z + column_lift.origin.z + q = chassis_top +
+column_carriage_height + (q − min_column_height) = 0.195 + q` **and records the
+defect and why it survived**, and `spec.md`, `README.md` and the roadmap's §PR3
+carry the same corrected number. A sweep for every restatement
+(`0.78 + q`, "rail joint's z plus", "rail joint's offset plus",
+`column_rail_joint.origin.z + q`) finds **no surviving instance** outside
+quotations-of-the-defect in `red_team.md` and `status.md` R13.
+
+`test_column_datum_rests_on_the_mast_foot_at_the_lower_limit` is real and
+sharp. Sliding `column_lift_origin_z`:
+
+| slide | result |
+|---|---|
+| +0.005 | **1 red** — the datum test alone |
+| +0.01 | **1 red** — datum only |
+| +0.02 | **1 red** — datum only (the docstring's claim) |
+| +0.05 | **1 red** — datum only; the span test is still green |
+| +0.06 | **2 red** — datum **and** span |
+| −0.005 | **2 red** — datum and span |
+
+So both numbers in the docstring are exactly right: the span test tolerates
+`+0.05` and not `+0.06` (the mast's over-travel), and the datum test catches
+`+0.02`. It in fact catches far less — the assertion is an identity to
+`PLACEMENT_TOL_M = 1e-9`, so **the smallest slide that still passes everything
+is one nanometre**, i.e. none. The docstring understates itself, which is the
+right direction.
+
+## R14 / B2 — capability vs policy. **Fixed, and the inequality is gated.**
+
+`column_lift_velocity` is now `0.25`; `SAFETY_COLUMN_SPEED_CAP_MPS = 0.15`.
+Broken both ways:
+
+| URDF velocity | result |
+|---|---|
+| 0.15 (equal to the cap) | **red** — `test_column_lift_can_outrun_the_safety_layers_column_cap` |
+| 0.14 (below the cap) | **red** — same test |
+| 0.16 (just above) | green |
+| 0.0 | **red ×2** — that test *and* the positive-limits test |
+
+The claimed asymmetry with the *height* bounds is factually correct:
+`limits.yaml` carries `column: {min_height: 0.0, max_height: 1.2}`, identical to
+the URDF's position limits, and the xacro states why that case is the opposite
+(a position clamp should stop *at* the mechanical stop). That asymmetry is
+stated where a reader meets it — in `column.xacro`'s own property comment, not
+only in D31.
+
+R10's premise and `context.md` Q4 both carry a correction block naming the
+`docs/design/`-only scope error that produced them.
+
+The inverse risk is real but out of this PR's scope — see **N9** below.
+
+## R15 / B3 — the filtering claim. **Demoted everywhere, with an actionable expiry.**
+
+A sweep for `ACM|fusestatic|parent/child|parent-child` across `docs/design/`
+and `src/robot_description/` finds the claim in exactly four places, all
+demoted: `column.xacro:44-53` ("*expected*… **unverified and stays so until PR7
+builds the MJCF**", `fusestatic` named, "PR7 should check that rather than
+inherit it"), D31 clause 3 — whose **headline itself** changed to "because a
+carriage rides its mast, and the model should say so", with "that justification
+is enough on its own" — the roadmap's §PR3 ("**PR7 owes a check here:** whether
+MuJoCo's `fusestatic` folds the fixed-jointed rail into `base_link`"), and
+`test_column_lift_is_the_models_only_prismatic_joint`'s docstring ("that half
+is **unverified until PR7**… so it is not what this assertion rests on"). The
+assertion *message* no longer mentions filtering at all, and neither does
+`test_column_rail_stands_on_the_chassis`'s. `spec.md` and `README.md` both say
+"expected but **unverified until PR7's MJCF**".
+
+The `fusestatic` caveat is phrased as an obligation on a named PR in the
+roadmap, which is where PR7's author will actually look. That is the honest
+form.
+
+## R16 / B4 — "and only that test". **Dropped, and the replacement is accurate.**
+
+D31 clause 6 now says "watching **at least** that test fail", names the six
+single-cause perturbations, and says the rest red two or three at once. I
+re-measured every row of `implementation.md` §5's re-measured table against the
+shipped 24-test suite. **All twelve rows I could reproduce match exactly**,
+including the three that changed shape when the two new tests landed:
+
+| perturbation | table says | I measured |
+|---|---|---|
+| mast rooted at `base_link` z = 0 | 3 | **3** (stands / spans / datum) |
+| lift origin `rpy=pi/2`, axis `0 0 1` | 3 | **3** (axis / spans / datum) |
+| `<limit>` deleted | 7 | **7** (`check_urdf`, RSP, and the five column tests that read a limit) |
+| `velocity="0"` | 2 | **2** (positive-limits + outrun) |
+| `effort="0"` | 1 | **1** |
+| velocity dropped to the cap | 1 | **1** |
+| `max_column_height` → 1.00 | 1 | **1** |
+| `lower` deleted | 1 | **1** |
+| axis `0 1 0` / `<axis>` deleted | 1 / 1 | **1 / 1** |
+| mast shortened to 0.6 m | 1 | **1** |
+| mast width zeroed | 1 | **1** |
+| mast drawn slimmer | 1 | **1** |
+| lift origin slid +0.02 | 1 | **1** |
+| carriage box centred | 1 | **1** |
+| rail mass zeroed | 1 | **1** |
+
+"Fifteen of the nineteen are single-cause" is arithmetically right for the
+table as written.
+
+## R17 — the count. **Now correct, and correct by construction.**
+
+`git diff origin/main..HEAD` on the test file: **10** added `def test_`, **0**
+removed, **8** added `def _` helpers. `test_baseline.json` 14 → 24 (+10),
+reproduced by my own green run as `robot_description … 24 … +0 ok`. D31's "the
+gate grew by ten" and `implementation.md`'s "8 new helpers, 10 new tests" both
+match the diff. D31's own header still says "Six clauses" and has six
+non-rationale bullets plus a `*Rationale:*` bullet — the same shape as D27, D29
+and D30, so that count is right too.
+
+## R18 — the five NOTES ruled in for this PR. **All fixed, all verified red-on-break.**
+
+| note | perturbation | result |
+|---|---|---|
+| **N1** `lower` may be omitted | delete `lower="…"` | **red** — `..._limits_are_the_robot_model_column_bounds`. Also checked the neighbours: deleting `upper` → **red** (same test); deleting `effort` or `velocity` → the URDF no longer parses at all (`check_urdf` red, RSP red, 16 fixture errors), so the hole existed only for `lower`/`upper` and is now closed for both. |
+| **N2** degenerate mast | `column_rail_width = 0` | **red** — `..._rail_stands_on_the_chassis` (new guard). `column_rail_depth = 0` → **red** too, so the guard covers all three extents, not just the one I found. |
+| **N3** mast visual ≠ collision | draw it half-width | **red** — `test_column_mast_is_drawn_as_it_collides`. Offsetting the visual by 0.1 m → **red** too (the check covers offset as well as size). |
+| **N6** ASCII graph | verified **by index**, not by eye | `(done)` markers now on their own line at columns **0 / 7 / 14** = exactly PR1 / PR2 / PR3; the PR3.5 branch `│` is back at column **15** and the `└` beneath it at **15** (they connect); PR6's `└` is at column **23** = PR4's last column, its pre-PR3 position. Both anchors correct; the re-pad did not fix one and break the other. |
+| **N7** `spec.md:33` | read | now "PR3.5 **will** add a `head_camera_link` … (which exists as of D31; the camera link does **not** yet)". True as written. |
+
+## R3 — the one piece of round-1 evidence that was the manager's, not mine. **Now VERIFIED by me.**
+
+Reversing the include order in the scratch top-level file:
+
+```
+rc = 2
+error: name 'chassis_z_offset' is not defined
+when evaluating expression 'column_base_z + column_rail_length / 2'
+when processing file: …/urdf/column.xacro
+```
+
+and the suite goes **6 failed + 16 errors**, led by
+`test_xacro_expands_without_error`. The quoted message in D31 clause 4, the
+xacro header and the README matches the tool's output exactly, and the claim
+"already caught by the gate's first test" is true. Note for completeness that
+`test_top_level_includes_every_subassembly` compares a **set**, so nothing gates
+the include *order* directly — expansion does, loudly, which is what the docs
+claim.
+
+---
+
+# B. The N+1 sweep — clean
+
+Grepped the whole repo for every restatement of the four claim families the fix
+round touched:
+
+- **datum arithmetic** — no surviving wrong instance; the corrected form appears
+  in `column.xacro`, D31, `spec.md`, `README.md`, the roadmap, the test
+  docstring and the assertion message of
+  `..._limits_are_the_robot_model_column_bounds` (which round 1 missed and the
+  implementer's own sweep found).
+- **MoveIt/MuJoCo filtering** — four instances, all demoted; two more
+  (a test docstring and an assertion message) that neither the ruling nor my
+  round 1 listed were found and fixed by the implementer's sweep.
+- **"and only that test"** — no surviving instance outside the ephemeral docs
+  that discuss the correction.
+- **counts** — every test/helper/clause count in the diff now matches `git diff`
+  (checked: D31 "ten" and "Six clauses", `implementation.md` "8 helpers / 10
+  tests", `test_baseline.json` 24, `EXPECTED_LINKS` 8).
+
+Checkable claims *introduced by round 2* that I executed rather than read:
+the `0.195 + q` range and the `−0.585` origin (both exact); `limits.yaml`'s
+column min/max being 0.00/1.20 (exact); the `+0.05` green / `+0.06` red
+over-travel measurement (exact); the `fusestatic`/SRDF caveat (correctly stated
+as unexecutable); "the safety layer's own suite never reads the URDF" (true);
+"this file shipped `velocity="0.15"` for one review round" (true).
+
+---
+
+# C. Full pass over `origin/main..HEAD` — no regressions
+
+- **Invariants:** `MASSLESS_FRAME_LINKS` is still exactly
+  `frozenset({'base_link', 'base_footprint'})`; `EXPECTED_LINKS` is still the 8
+  links and the model expands to exactly those 8; `setup.py`, `package.xml` and
+  `robot.urdf.xacro` are untouched by the whole feature; `src/robot_safety/` and
+  `src/robot_backends/` are untouched (PR6 owns the latter).
+- **No assertion weakened.** Across the whole feature diff the test file has
+  **zero** removed `def`s; the round-2 diff only rewords docstrings/messages,
+  adds three tests, one helper, one constant and one guard clause.
+- **`robot_state_publisher` still loads the model** — passes in the scratch run
+  and in `pixi run test`, and still fails loudly when the model is broken
+  (`<limit>` deleted → RSP red).
+- **Acceptance criteria** all still have a failing-if-broken test, and two are
+  now *strictly* better covered than in round 1: the limits criterion no longer
+  accepts a defaulted `lower`, and the "geometry a reviewer cannot eyeball"
+  criterion now covers the mast's visual and its degeneracy.
+- **Ratchet:** `test_baseline.json` 14 → 24, an increase, reproduced by a green
+  run (`+0 ok`); `baseline_blockers()` refuses to re-cut a floor from any run
+  with an error or failure.
+
+---
+
+# BLOCK
+
+**None.**
+
+# NOTE
+
+**N9 — the velocity pin is one-directional in a sharper way than N5, and the
+constant's comment slightly undersells it — VERIFIED.** With
+`robot_safety/limits.yaml`'s `velocity.column` raised to **0.30** (loaded live —
+I printed `{COLUMN: 0.3}` from the shadowed package), `robot_description`'s 24
+tests stay **green** and `robot_safety`'s 176 stay green, while policy (0.30)
+now exceeds capability (0.25) — the inversion `column.xacro` calls "worse" than
+the equality this round fixed. The only thing that objects anywhere is
+`robot_brain`'s `TestSafetyEnvelope::test_the_stated_envelope_is_exactly_the_shipped_limits`,
+and it objects to the *prompt* not matching the cap, not to the cap not matching
+the URDF; edit the prompt in lockstep and the inversion is invisible.
+
+This is inherent to R14's transcription choice (which is the right call — a
+description package must not grow a dependency on the safety layer), so it is a
+NOTE, not a BLOCK, and it belongs with **N5** in the follow-up comment on the
+issue. One clause of copy-editing would make the residue exact, though: the
+constant's comment says drift "makes the assertion weaker, never wrong", which
+is true of the assertion and could be read as true of the *property* it
+protects. It is not — a cap **lowered** stays gated, a cap **raised above
+capability** is not. Worth naming, since that is the direction that breaks the
+thing the test exists for.
+
+*Considered and deliberately not raised:* the three "drawn as it collides"
+tests all read `visuals[0]`, so a second stray `<visual>` of the wrong size
+would pass — a pre-existing pattern shared with the chassis and the carriage,
+not introduced here, and not worth a ratchet. N4, N5 and N8 are deferred by
+R18 and are not re-raised.
+
+---
+
+# Verdict
+
+**Round 2 is clean: no BLOCKs.** All four round-1 BLOCKs and all five ruled-in
+NOTES are fixed, and each fix was verified by executing a perturbation rather
+than by reading the diff — the new datum test pins the identity to a nanometre,
+the velocity inequality goes red at 0.15 and at 0.14 and green at 0.16, the
+`lower`/`upper` declaration hole is closed in both directions, the degeneracy
+and visual guards fire, and the ASCII graph's anchors are back at columns 15 and
+23 by index. The N+1 sweep found no surviving instance of any of the four
+corrected claims, and the implementation's own re-measured perturbation table
+reproduces exactly against the shipped suite. `pixi run test` is green at 799
+tests with the floor ratcheted 21 → 24 on a green run.
+
+Per the N+1 rule this is the **first** clean pass, and it directly follows a
+round that found four BLOCKs — so it proves the fixes landed. Whether a third
+pass is warranted is the manager's call; my own read is that the residual risk
+is low and concentrated in prose that has now been swept three times by two
+different agents, and that one further pass would most likely be spent
+confirming that.
+
+**Mergeable, subject to the manager's judgment on the N+1 third pass**, with N4,
+N5, N8 and N9 routed to Sisyphus as follow-ups on the issue.
