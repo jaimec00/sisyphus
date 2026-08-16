@@ -152,10 +152,23 @@
        this robot is allowed to move a lift through the height where hands are.
        Policy must sit strictly **below** capability or the clamp is vacuous:
        equal, it can never bind for anything that trusts the URDF; above, it
-       would be a cap the machine cannot reach. So this number's job is to clear
-       0.15 m/s with room for policy to be tightened after an incident, and the
-       gate asserts that relationship (see SAFETY_COLUMN_SPEED_CAP_MPS in
-       test_description.py).
+       would be a cap the machine cannot reach.
+
+       Of those two, **the inversion (policy above capability) is the worse
+       one**, and it is worth ranking them rather than listing them. Equality
+       is a guard that has stopped guarding: nothing unsafe is commanded,
+       because the machine's own ceiling happens to sit exactly where policy
+       does. The inversion is a guard that is *wrong about the machine*:
+       whatever reads the cap — a planner, the brain's prompt, a future
+       controller — believes in a speed the lift does not have, so the
+       effective limiter silently becomes an unaudited number in a description
+       package instead of the file whose entire job is safety limits, and a
+       command issued at the permitted speed saturates the actuator and turns
+       into a tracking error at runtime rather than a refusal at the seam.
+
+       So this number's job is to clear 0.15 m/s with room for policy to be
+       tightened after an incident, and the gate asserts that relationship
+       (see SAFETY_COLUMN_SPEED_CAP_MPS in test_description.py).
 
        Note the *height* bounds above are deliberately the opposite: there,
        policy equals capability (`limits.yaml`'s `column.min/max_height` are
