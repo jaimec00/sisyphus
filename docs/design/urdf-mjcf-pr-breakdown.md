@@ -95,9 +95,13 @@ numbers the URDF must eventually *own* (current literal defaults):
   above `base_link` is **both** joint origins plus the joint value — `0.195 + q`
   today (0.195 m … 1.395 m) — not the rail joint's alone. And `column_lift`'s
   parent is **`column_rail_link`, not `base_link`**: kinematically identical
-  while the rail joint is fixed, but the carriage wraps the mast (a measured
-  0.06 × 0.06 × 0.08 m overlap prism at every joint value), and only the
-  parent/child arrangement describes that honestly. **PR7 owes a check here:**
+  while the rail joint is fixed, but the carriage wraps the mast (a
+  0.06 × 0.06 × 0.08 m overlap prism at every joint value, now asserted rather
+  than measured once), and only the parent/child arrangement describes that
+  honestly. The column's *lateral* placement is gated too, after a third review
+  round found a mast five metres from the robot passing the whole suite: the
+  mast's footprint must lie inside the chassis puck it stands on, and the
+  carriage's cross-section must contain the rail's. **PR7 owes a check here:**
   whether MuJoCo's `fusestatic` folds the fixed-jointed rail into `base_link`,
   in which case the contact filtering this arrangement is *expected* to buy
   comes from body fusion instead — unverified until the MJCF exists. The mast's

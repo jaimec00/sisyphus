@@ -37,10 +37,11 @@
   - **The prismatic joint's parent is the rail, not `base_link`.** Kinematically
     identical while `column_rail_joint` is fixed. What decides it is that the
     carriage *wraps* the rail: the two solids below deliberately interpenetrate
-    (a measured 0.06 × 0.06 × 0.08 m prism at every reachable joint value),
-    which is what a carriage on a mast does, and shaving them apart would
-    describe a mechanism that falls over. Parenting the carriage to the rail it
-    rides is simply the honest kinematic description of that, and it is the
+    (a 0.06 × 0.06 × 0.08 m prism at every reachable joint value — asserted by
+    test_column_carriage_wraps_the_mast, not just measured here), which is what
+    a carriage on a mast does, and shaving them apart would describe a
+    mechanism that falls over. Parenting the carriage to the rail it rides is
+    simply the honest kinematic description of that, and it is the
     arrangement collision tooling is *expected* to filter — MoveIt's generated
     ACM disables adjacent pairs, MuJoCo excludes parent/child bodies — where
     two siblings under `base_link` would be filtered by neither.

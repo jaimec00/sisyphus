@@ -65,11 +65,13 @@ inverts that correspondence and retires the copy); that its effort and velocity
 limits are positive and its velocity clears `SAFETY_COLUMN_SPEED_CAP_MPS`, the
 safety layer's policy cap, which a capability equal to it could never bind;
 that its axis is +z in `base_link` once every rpy above it is composed; that
-the mast is a non-degenerate solid which clears the chassis, contains its own
-carriage over the whole travel and is drawn as it collides; and that the
-carriage's body sits below its mount datum — one carriage-height above the
-mast's foot at zero travel, the identity every height on this robot is derived
-from — so what PR3.5/PR4 mount there does not start inside it.
+the mast is a non-degenerate solid which stands *on* the chassis — clearing it
+in height and with its whole footprint inside the puck's radius — contains its
+own carriage over the whole travel, is drawn as it collides, and is wrapped
+laterally by that carriage; and that the carriage's body sits below its mount
+datum — one carriage-height above the mast's foot at zero travel, the identity
+every height on this robot is derived from — so what PR3.5/PR4 mount there does
+not start inside it.
 Extend `EXPECTED_LINKS` and `FILE_BEARING_TAGS` as the description grows —
 both are module-level constants for that reason.
 Status: package + gate + mobile base + column; arms, grippers, head camera and

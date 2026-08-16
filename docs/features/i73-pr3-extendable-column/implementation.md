@@ -5,24 +5,33 @@ Branch `feat/i73-pr3-extendable-column-prismatic-sts3215`, base `origin/main`
 records an arithmetic reading of R3 that the ruling's own R7 test formula
 implies; nothing was silently deviated from.
 
-**Round 2 (red-team round 1: 4 BLOCKs, 8 NOTEs → rulings R13–R18).** The model
-was upheld; every BLOCK was in the durable prose, plus one number. Two of the
+**Fix round 1 (red-team round 1: 4 BLOCKs, 8 NOTEs → R13–R18).** The model was
+upheld; every BLOCK was in the durable prose, plus one number. Two of the
 round-1 rulings turned out to be wrong on the facts (R4's height formula, R10's
 "nothing in this repo constrains the velocity" premise) and are corrected in
-`status.md` rather than defended. **§9 is the round-2 changelog** — read it
-first if you reviewed the first pass.
+`status.md` rather than defended.
+
+**Fix round 2 (red-team round 3: 1 BLOCK, 1 NOTE → R19–R20).** Round 3 proved
+the round-2 fixes landed (the manager's comment-only commit verified by AST
+identity) and then attacked an axis nobody had: **the column's lateral
+placement was ungated at all four of its translations**, so a mast five metres
+from the robot passed the whole suite with `test_column_rail_stands_on_the_
+chassis` green. Fixed by two relational clauses; see §9.
+
+**§9 is the changelog for both fix rounds** — read it first if you reviewed an
+earlier pass.
 
 ## 1. What shipped
 
 | path | change |
 |---|---|
 | `src/robot_description/urdf/column.xacro` | placeholder body replaced with the mast + carriage + prismatic lift |
-| `src/robot_description/test/test_description.py` | `EXPECTED_LINKS` → 8; `ROBOT_MODEL_*_COLUMN_HEIGHT_M` and `SAFETY_COLUMN_SPEED_CAP_MPS` constants; `MASSLESS_FRAME_LINKS` admission rule; **8 new helpers**; **10 new tests** (7 in round 1, 3 in round 2); module docstring paragraph. Both counts are `git diff origin/main \| grep '^+def '`, not prose |
+| `src/robot_description/test/test_description.py` | `EXPECTED_LINKS` → 8; `ROBOT_MODEL_*_COLUMN_HEIGHT_M` and `SAFETY_COLUMN_SPEED_CAP_MPS` constants; `MASSLESS_FRAME_LINKS` admission rule; **9 new helpers**; **11 new tests** (7 in round 1, 3 in fix round 1, 1 in fix round 2); module docstring paragraph. Both counts are `git diff origin/main \| grep '^+def '`, not prose |
 | `docs/design/decisions.md` | **D31** |
 | `docs/design/urdf-mjcf-pr-breakdown.md` | §PR3 → DONE, with the two amendments and the recorded contradiction |
 | `docs/design/spec.md` | column added to "Description & packaging"; the false `spec.md:123` sentence fixed |
 | `src/robot_description/README.md` | column entry, new gate clauses, status line |
-| `scripts/test_baseline.json` | `robot_description` 14 → 21 → **24**, written by the green runs (D28), committed as produced |
+| `scripts/test_baseline.json` | `robot_description` 14 → 21 → 24 → **25**, written by the green runs (D28), committed as produced |
 
 Untouched, deliberately: `setup.py` (globs unchanged — no meshes),
 `robot.urdf.xacro` (already includes `column.xacro`), `package.xml` (no new
@@ -154,10 +163,10 @@ only as the contradiction it is (§6).
 
 ## 5. Tests: what they catch, and the evidence they do
 
-**Ten** new tests (`robot_description` 14 → 24 tests that actually run; the
-ratchet raised the floor 14 → 21 and then 21 → 24 on green runs, and both
-writes are committed). Seven landed in round 1, three in the fix round; the
-count is from `git diff origin/main`, not from this sentence — round 1 said
+**Eleven** new tests (`robot_description` 14 → 25 tests that actually run; the
+ratchet raised the floor 14 → 21 → 24 → 25 on green runs, and every write is
+committed). Seven landed in round 1, three in fix round 1, one in fix round 2;
+the count is from `git diff origin/main`, not from this sentence — round 1 said
 "six" in four places because it was copied from prose (R17).
 
 Each was confirmed by **perturbing the model and watching at least that test
@@ -188,8 +197,19 @@ origin really does break the height arithmetic three tests read.
 | carriage visual moved off its collision | 1 | same |
 | rail mass zeroed | 1 | `test_moving_links_have_inertia` (existing, generic) |
 | `<limit>` deleted | 7 | `check_urdf`, RSP, and all five column tests that read a limit — each with its own message via `_lift_limit` |
+| **mast joint `x=0.5`** | 1 | `..._rail_stands_on_the_chassis` (footprint clause) |
+| **mast joint `x=5.0`** | 1 | same |
+| **mast joint `y=0.5`** | 1 | same |
+| **mast joint `x=0.13`** (just past the rim) | 1 | same — the gate is a relationship, not a pin at zero |
+| **mast joint `x=0.08`** (set back, still on the puck) | 0 | **green, deliberately**: an off-centre column is a legal design |
+| **lift joint `x=0.5`** | 1 | `..._carriage_wraps_the_mast` |
+| **carriage shape offset `x=0.5`** | 1 | same |
+| **carriage `0.02 × 0.02` on a `0.06` rail** | 1 | same |
+| **rail shape offset `x=0.5`** | 2 | both lateral clauses |
 
-Fifteen of the nineteen are single-cause. Also measured, because the datum
+Twenty-three of the twenty-eight are single-cause; one is green on purpose.
+The nine lateral rows are red-team round 3's own perturbation list, re-run
+against the fixed gate. Also measured, because the datum
 test's value depends on it: the span test tolerates sliding the lift origin by
 up to the mast's over-travel (+0.05 m green, +0.06 m red), while the datum test
 catches +0.02 m.
@@ -238,10 +258,11 @@ unperturbed one.
 1. **The R3 arithmetic reading in §4.1** — I believe the foot lands exactly on
    0.115 and that this is R3's intent; verify it against the expansion
    (`column_rail_joint` z = 0.78, rail length 1.33 → foot 0.115 = chassis top).
-2. **The carriage/mast interpenetration.** Deliberate, and measured by round 1
-   (a 0.06 × 0.06 × 0.08 m overlap prism at every reachable q). The filtering
-   argument that once justified it is now written everywhere as an expectation
-   with an expiry (R15) — check that no restatement of it survived as fact.
+2. **The carriage/mast interpenetration.** Deliberate; measured by round 1 and
+   now *asserted* by `test_column_carriage_wraps_the_mast` (round 3 showed the
+   measurement was silently falsifiable in x and y). The filtering argument
+   that once justified it is written everywhere as an expectation with an
+   expiry (R15) — check that no restatement of it survived as fact.
 3. **`test_column_lift_is_the_models_only_prismatic_joint`'s uniqueness
    clause** — PR5's parallel-jaw gripper may legitimately be a second prismatic
    joint. I made that a deliberate-edit ratchet (like `EXPECTED_LINKS`) and said
@@ -262,15 +283,29 @@ unperturbed one.
 6. **`_axis_in_base_link`'s tree walk** — it assumes a single-parent chain
    terminating at `base_link` and asserts rather than `KeyError`s when it does
    not.
+7. **"Which coordinate does the gate still not know about?"** — round 3's
+   question, which found the whole lateral axis, and the one I would ask again
+   rather than re-checking z. My own honest list of what is still ungated after
+   this round, offered so the answer is a starting point instead of a search:
+   the **inertia tensors** are checked only for positive `ixx/iyy/izz`, never
+   against the geometry they are supposed to be computed from, so a rail with a
+   wheel's tensor passes (a PR2-inherited limit, not introduced here, and it
+   would bite in PR7's MJCF rather than anywhere before it); every "drawn as it
+   collides" test reads `visuals[0]`/`collisions[0]` only, so a second shape on
+   a link is invisible (round 3 saw this and correctly called it pre-existing);
+   the carriage's own footprint may overhang the deck without complaint; and
+   nothing pins the column's lateral position to a *value* — deliberately, but
+   that decision is worth re-taking when PR4 puts shoulders at
+   ±`shoulder_offset_y` off this carriage.
 
 ## 8. Status
 
-`pixi run build` then `pixi run test`: **green**, 799 tests, 0 skipped, 0
-failures, audit passed; `robot_description` 24 non-lint, floor ratcheted
-14 → 21 → 24. No test was removed, renamed, weakened or skipped in either
+`pixi run build` then `pixi run test`: **green**, 800 tests, 0 skipped, 0
+failures, audit passed; `robot_description` 25 non-lint, floor ratcheted
+14 → 21 → 24 → 25. No test was removed, renamed, weakened or skipped in any
 round, so no `ALLOW_TEST_DECREASE` was needed anywhere. No escalations — the
-two falsified rulings (R4's arithmetic, R2's MJCF rationale) were the
-manager's own and were corrected by it in R13/R15.
+falsified rulings (R4's arithmetic, R2's MJCF rationale) were the manager's own
+and were corrected by it in R13/R15.
 
 **Surviving NOTEs, deferred by R18 to a follow-up comment on the issue (not
 fixed here):**
@@ -287,6 +322,7 @@ fixed here):**
   nothing. Inherent to R5, documented where the constants are read, retired by
   PR6 — and worth saying in the PR description so nobody reads "the limits are
   asserted against `RobotModel`" as a live pin.
+- **N9** — deferred with the others by the manager: the transcribed safety cap is one-directional in the same way N5's is, and a cap *raised above* the URDF's capability inverts policy and capability with this suite still green. The constant's comment now says so, and names the option that would close it without a dependency edge here (a cross-check from a third place that already depends on both — workspace tooling, or PR8's bringup). Nobody owns that.
 - **N8** — the robot as now described is ~1.495 m tall on a 0.25 m wheel
   circle; CoM ≈ 0.38 m at full extension gives a static tip angle ≈ 18°, before
   PR4 adds two arms and a payload at 1.4 m. Both drivers are inherited (LeKiwi's
@@ -318,3 +354,21 @@ claim I wrote *during* this round — the new datum test's docstring asserted th
 span test would tolerate a 200 mm slide of the lift origin; measured, it does
 not (it tolerates the 50 mm of over-travel and no more), so the docstring now
 states the measured numbers.
+
+### Fix round 2 — red-team round 3 (R19–R20)
+
+| ruling | what changed |
+|---|---|
+| **R19 / B5** | **Every x and y in the column was ungated.** Orientation was gated at all four of the column's frames (`_axis_aligned_joint`, `_box_geometry`) and translation at none of them, so seven single-edit perturbations — mast at `x=0.5`, at `x=5.0`, at `y=0.5`; lift joint at `x=0.5`; rail shape offset; carriage shape offset; a `0.02 × 0.02` carriage on a `0.06` rail — each left **all 24 tests green**, with a test *named* `..._rail_stands_on_the_chassis` passing for a mast in the next room. Two relational clauses fix it: the mast's collision footprint must lie inside the chassis puck's radius (true corner distance `hypot(\|x\| + w/2, \|y\| + d/2)` for an axis-aligned box — not `hypot(centre) + half-diagonal`, which would reject a legal mast near the rim), and the new `test_column_carriage_wraps_the_mast` requires the carriage's cross-section to contain the rail's, composed through the lift joint's origin. All seven perturbations now red; a legal off-centre mast stays green. |
+| **R20 / N10** | The safety-cap comment cited a ranking (`the inversion column.xacro calls worse than the equality`) that `column.xacro` did not make — it listed both failure modes without ranking them — and the ranking's real source, `status.md` R14, is deleted at merge. Resolved durably: **`column.xacro` now states the ranking and why** (equality is a guard that has stopped guarding; the inversion is a guard that is *wrong about the machine*, making an unaudited description number the effective limiter and turning a permitted command into actuator saturation). The same comment no longer says a live cross-check is impossible before PR6 — it is impossible *from here*, and a third place that already depends on both packages could do it. Named as an option nobody owns, not as a plan. |
+
+**What I asked of my own new assertions**, per round 3's lesson: the footprint
+clause constrains the *mast* only and is a containment rather than a placement
+(an off-centre column is legal; a cantilevered one would fail it and should
+relax it), it assumes nothing about the chassis being centred — it **asserts**
+that instead — and the carriage's own footprint is bounded only indirectly
+through the wrap clause. The wrap clause is the strong (full-containment) form,
+which a C-profile guide block would legitimately fail, and it is q-independent
+*because* the axis test pins the travel direction to +z, a dependency the
+docstring names rather than leaving to be noticed. All of that is in the two
+docstrings.

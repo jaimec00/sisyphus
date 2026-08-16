@@ -163,10 +163,11 @@ end-effector decision); wrist cameras; microphone (D26).
   defaulted* (transcribed, not imported — PR6 retires the copy), that its
   effort/velocity are positive and its velocity clears the safety layer's
   column cap, that its axis is +z once every rpy above it is composed, that the
-  mast is a real solid which clears the chassis, contains its carriage over the
-  whole travel and is drawn as it collides, and that the carriage sits below its
-  own mount datum, one carriage-height above the mast's foot at zero travel
-  (D31).
+  mast is a real solid which stands on the chassis — clearing it in height and
+  with its footprint inside the puck's radius — contains its carriage over the
+  whole travel, is drawn as it collides and is wrapped laterally by that
+  carriage, and that the carriage sits below its own mount datum, one
+  carriage-height above the mast's foot at zero travel (D31).
 - **`RobotModel` is still in code** and will later be read *from* the URDF —
   the URDF is canonical for kinematics/geometry, MJCF carries a thin sim-only
   physics layer on top (D23; roadmap in
