@@ -187,7 +187,7 @@ origin really does break the height arithmetic three tests read.
 | velocity dropped to the cap (0.15) | 1 | `..._lift_can_outrun_the_safety_layers_column_cap` |
 | axis `0 1 0` | 1 | `..._lift_axis_is_vertical_in_base_link` |
 | `<axis>` deleted (URDF defaults it to `1 0 0`) | 1 | same |
-| axis left `0 0 1` under `rpy="${pi/2} 0 0"` | 3 | that one, plus the span and datum tests (their `_axis_aligned_joint` guard) |
+| axis left `0 0 1` under `rpy="${pi/2} 0 0"` | 4 | that one, plus the span, datum and wrap tests (their shared `_axis_aligned_joint` guard) |
 | mast rooted at `base_link` z = 0 | 3 | `..._rail_stands_on_the_chassis`, `..._rail_spans_the_carriage_travel`, `..._datum_rests_on_the_mast_foot_at_the_lower_limit` |
 | mast shortened to 0.6 m | 1 | `..._rail_spans_the_carriage_travel` |
 | mast width zeroed | 1 | `..._rail_stands_on_the_chassis` (its degeneracy guard) |
@@ -207,9 +207,12 @@ origin really does break the height arithmetic three tests read.
 | **carriage `0.02 × 0.02` on a `0.06` rail** | 1 | same |
 | **rail shape offset `x=0.5`** | 2 | both lateral clauses |
 
-Twenty-three of the twenty-eight are single-cause; one is green on purpose.
-The nine lateral rows are red-team round 3's own perturbation list, re-run
-against the fixed gate. Also measured, because the datum
+Twenty-two of the twenty-eight rows are single-cause, five are multi-cause
+and one is green on purpose. Every count in this table was re-measured against
+the final 25-test suite rather than carried over: adding the wrap test moved
+the rotated-lift-origin row from three to four, which is the kind of number
+that goes stale silently. The nine lateral rows are red-team round 3's own
+perturbation list, re-run against the fixed gate. Also measured, because the datum
 test's value depends on it: the span test tolerates sliding the lift origin by
 up to the mast's over-travel (+0.05 m green, +0.06 m red), while the datum test
 catches +0.02 m.
