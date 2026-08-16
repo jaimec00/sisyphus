@@ -870,3 +870,205 @@ true, and its reasoning is good.
 The two NOTES are both about *where knowledge lives* rather than about anything
 being wrong: one test credited with a conjunction, and two honest caveats
 recorded only in a doc that will be deleted. Neither blocks.
+
+---
+---
+
+# Red-team — #73 / PR3 — Extendable column. Round 5.
+
+Reviewing `0466fe1` (manager-authored, comments and docstrings only) plus a
+final full pass over `origin/main..HEAD`. Read-only on the worktree; all
+perturbations ran against a fresh scratch copy of the installed share tree at
+`/tmp/rt5/`, restored after each run. `git status --short` empty at the end.
+
+## Evidence base
+
+- `pixi run test` at this HEAD → **green**, rc 0: 800 tests, 0 errors, 0
+  failures, 0 skipped; `robot_description` 28 collected / **25 non-lint,
+  `vs-base +0`**.
+- 13 perturbations (`/tmp/rt5/p.py`) against the shipped 25-test suite.
+
+---
+
+# A. Comments and docstrings only — VERIFIED four ways
+
+`ast.dump()` alone is the wrong instrument here, because a module docstring
+*is* an AST node and would report a difference that means nothing. So, between
+`e5a6a49` and `0466fe1`:
+
+| check | result |
+|---|---|
+| AST with every docstring node stripped | **identical** |
+| the set of `ast.Assert` nodes | **identical**, 77 before and after |
+| the set of function definitions | **identical** |
+| module-level constant assignments (names → value AST) | **identical** |
+
+No assertion, constant or control-flow change.
+
+---
+
+# B. N11's re-attribution is right, and the split is exact
+
+The corrected sentence says `test_column_carriage_wraps_the_mast` pins the
+`0.06 × 0.06` cross-section while the `0.08 m` of depth follows from the datum
+and span tests. Verified by destroying each half of the prism separately:
+
+| perturbation | prism half destroyed | tests that red |
+|---|---|---|
+| lift joint `x = 0.5` | cross-section (carriage beside the rail) | **`..._carriage_wraps_the_mast` only** |
+| lift origin `+1.4` | depth (carriage entirely above the rail) | **datum + span**; wrap **green** |
+| lift origin `−1.4` | depth (carriage entirely below the rail) | **datum + span**; wrap **green** |
+| lift origin `+0.9` | depth reduced, cross-section intact | **datum + span**; wrap **green** |
+
+The two test sets are **disjoint**: the wrap clause contributes nothing to the
+depth and the datum/span pair contributes nothing to the cross-section. The
+attribution is not merely defensible, it is minimal — and the division of
+labour within the pair is the natural one (the datum test pins the bottom of
+the travel as an equality, the span test pins the top as an inequality), so
+naming both rather than one is correct. The old sentence was wrong; the new one
+is not a new mis-attribution.
+
+# C. All four N12 caveats are true as written
+
+Each re-derived against the **current** 25-test suite rather than transcribed
+from round 4:
+
+| caveat | perturbation | result |
+|---|---|---|
+| #1 "a rail carrying a wheel's tensor passes" | mast inertia replaced with the omniwheel's tensor (`1.05e-4 / 1.05e-4 / 1.875e-4`, ~3500× too small) | **all 25 green** |
+| #2 "a 0.4 m cube bolted to the mast five metres out passes the whole suite" | second `<collision>` at `x = 5.0` | **all 25 green** — and the same as a second `<visual>` is green too, so the docstring's "``visuals[0]`` **and** ``collisions[0]``" is right in both halves |
+| #3 "the carriage's own footprint may overhang the chassis deck" | mast at the legal `x = 0.11`, carriage then spanning to `x = 0.18` on a 0.15 m puck | **all 25 green** |
+| #4 "nothing pins the column's lateral position to a *value*" | mast at `x = 0.08` | **all 25 green** |
+
+All four are accurate, and none over-claims.
+
+# D. Is the list complete at four? — one item belongs on it, one is optional
+
+This is the manager's direct question, and the honest answer is that **#1 is
+narrower than the blind spot it describes**. It names *inertia tensors*; the
+gap is every physical scalar:
+
+| perturbation | result |
+|---|---|
+| `column_lift_effort = 0.001` N — a lift that cannot hold its own 0.8 kg carriage (7.8 N) | **all 25 green** |
+| `column_rail_mass = 0.001` kg — a gram of aluminium 1.33 m long | **all 25 green** |
+| `column_carriage_mass = 500` kg | **all 25 green** |
+
+`test_column_lift_declares_positive_effort_and_velocity_limits` and
+`test_moving_links_have_inertia` between them check **sign only**, for mass,
+for the three moments, and for effort — never against the geometry or the
+masses the model already states. My round-4 verdict called §7's list complete;
+that was true of what §7 covered, but I had not then measured effort or mass
+*magnitudes*. Now that the list is the durable artifact PR4–PR7 will read as
+*the* list, #1 should say scalars rather than tensors. See **N14**.
+
+Optional second candidate, offered rather than pressed: **`column_rail_joint`'s
+name is not pinned anywhere.** Renaming it leaves all 25 green, because every
+lookup finds it by child link (`joint.child == 'column_rail_link'`,
+`parent_map`). It is the only named element in the model that is not a
+contract somewhere — the wheel joints are an exact set, `column_lift` is pinned
+by the prismatic set, and `base_chassis_joint` is looked up by name in two
+places. A fixed joint's name is weakly contractual (it is not in
+`joint_states`), but it does surface in an SRDF and in PR7's MJCF. The
+manager's call whether that earns a line.
+
+# E. Final full pass: internal consistency across the eleven
+
+I went looking for two assertions that disagree and did not find any: the
+footprint, wrap, span and datum clauses are mutually satisfiable with margin on
+the shipped model (footprint reach 0.0424 against 0.15; wrap overhangs −0.04 in
+x and −0.02 in y; span 0.05 of over-travel; the datum exact by construction),
+the tolerance constants are used for the quantity each is named for, and the
+one place two clauses could have been in tension — the datum's *equality*
+versus the span's *inequalities* at the bottom of the travel — is a deliberate
+strengthening whose docstring says so.
+
+Two observations that are not findings. The chassis-centred assertion now lives
+inside a **column** test, so deleting that test would silently drop a **base**
+invariant nothing else holds; the assertion message pre-empts this ("compose
+the offset here rather than deleting the check"), which is the right handling.
+And three tests route through `_axis_aligned_joint(column_lift)`, which is why
+a rotated lift origin reds four — correct behaviour, and D31 now says so.
+
+What I did find is prose, in the durable file, and it is N13.
+
+---
+
+# BLOCK
+
+**None.**
+
+# NOTE
+
+**N13 — two prose counts in the durable test file went stale when the fix
+rounds changed the facts under them; both trace to `868a6a5` — VERIFIED.**
+
+1. Module docstring, PR3 paragraph: "**Two** column assertions exist because a
+   review round caught the claim they now pin: the datum's height at zero
+   travel … and the lift's velocity limit against
+   ``SAFETY_COLUMN_SPEED_CAP_MPS``." There are now **four**: round 3 added the
+   footprint clause (which exists because a review round caught that
+   ``test_column_rail_stands_on_the_chassis``'s own *name* was a claim nothing
+   executed) and ``test_column_carriage_wraps_the_mast`` (which exists because
+   a review round caught D31 clause 3's prism being falsifiable — the file's
+   own `column.xacro` now says exactly that). The sentence reads as exhaustive
+   and is an undercount.
+2. `test_column_lift_is_the_models_only_prismatic_joint`'s docstring opens
+   "**Four** faults share one assertion" and closes, fourteen lines later,
+   "All **three** faults pass ``check_urdf`` and ``robot_state_publisher``".
+   Both numbers are individually defensible — four is the assertion's coverage
+   including the uniqueness clause, three is the count in that paragraph — but
+   nothing signals the narrowing, and a reader hits the two counts in the same
+   docstring.
+
+Neither is false about the *model*, and neither affects behaviour. They are
+worth a line only because this is the fourth appearance of one specific defect
+in this feature — a count written from prose rather than from the artifact
+(six → ten → eleven, all fixed) — and because both were **introduced by a fix
+round** and survived rounds 2, 3 and 4 plus the manager's own N+1 sweeps. Fix:
+"Four column assertions exist because a review round caught the claim they now
+pin", naming the footprint and wrap clauses; and "All three of those pass
+``check_urdf``…" for the second.
+
+**N14 — the durable blind-spot list's item #1 should say *scalars*, not
+*tensors* — VERIFIED.** Measured above: `effort = 0.001` N, a 1 g mast and a
+500 kg carriage each pass all 25 tests. Suggested wording: "**Every physical
+scalar — mass, the three moments, and the joint's `effort` — is checked for
+sign only, never against the geometry or the masses the model already states.**
+A rail carrying a wheel's tensor passes; so does a lift with 0.001 N of effort
+holding a 0.8 kg carriage." That keeps the item's shape and closes the
+under-statement at the moment it becomes the list PR4–PR7 read.
+
+*Deferred and not re-raised:* N4, N5, N8, N9.
+
+---
+
+# Verdict
+
+**Round 5 is clean: no BLOCKs.** With round 4 also clean, that is **two
+consecutive clean passes**, the second of which reviewed a real diff — the N+1
+rule as `CLAUDE.md` and `.claude/agents/red-team.md` state it is satisfied.
+
+`0466fe1` does what it says: docstring-and-comment-only proven four ways, N11's
+re-attribution verified to be not just true but minimal (the wrap clause and
+the datum/span pair pin disjoint halves of the prism), and all four N12 caveats
+true as written when re-derived against the current suite rather than
+transcribed. The manager's warning about manager-written prose was well placed
+and this time the prose holds — the one thing I found in it is an
+under-statement (N14), not a false claim.
+
+Both NOTES are cheap and neither blocks: N14 broadens one word of the new
+blind-spot list at the last moment it is cheap to do so, and N13 fixes two
+stale counts that a fix round introduced and three review rounds walked past.
+If the manager takes them, they are a comment edit with no behaviour change; if
+not, they belong on the follow-up comment with N4/N5/N8/N9.
+
+**Mergeable.** The model has been correct since round 1; five rounds of review
+found eleven defects and every single one of them was in prose about the model
+rather than in the model — a datum formula missing a term, a filtering
+mechanism asserted rather than measured, a verification claim generalised past
+what was run, four test counts taken from sentences, a safety number that
+collided with the safety layer's own, and one gate hole where a test's *name*
+was the overclaim. The gate that ships is materially stronger than the one that
+started: eleven new assertions, and the four things it still cannot see are
+now written down in the file that survives merge.
