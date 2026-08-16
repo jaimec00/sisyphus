@@ -17,7 +17,7 @@ first if you reviewed the first pass.
 | path | change |
 |---|---|
 | `src/robot_description/urdf/column.xacro` | placeholder body replaced with the mast + carriage + prismatic lift |
-| `src/robot_description/test/test_description.py` | `EXPECTED_LINKS` → 8; `ROBOT_MODEL_*_COLUMN_HEIGHT_M` and `SAFETY_COLUMN_SPEED_CAP_MPS` constants; `MASSLESS_FRAME_LINKS` admission rule; 6 new helpers; **10 new tests** (7 in round 1, 3 in round 2); module docstring paragraph |
+| `src/robot_description/test/test_description.py` | `EXPECTED_LINKS` → 8; `ROBOT_MODEL_*_COLUMN_HEIGHT_M` and `SAFETY_COLUMN_SPEED_CAP_MPS` constants; `MASSLESS_FRAME_LINKS` admission rule; **8 new helpers**; **10 new tests** (7 in round 1, 3 in round 2); module docstring paragraph. Both counts are `git diff origin/main \| grep '^+def '`, not prose |
 | `docs/design/decisions.md` | **D31** |
 | `docs/design/urdf-mjcf-pr-breakdown.md` | §PR3 → DONE, with the two amendments and the recorded contradiction |
 | `docs/design/spec.md` | column added to "Description & packaging"; the false `spec.md:123` sentence fixed |
