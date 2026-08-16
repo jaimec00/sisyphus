@@ -13,8 +13,24 @@ Layout — everything here is installed to `share/robot_description/`:
   `xacro:macro` instantiated three times for the wheels at 60°/180°/300°.
   Every dimension is an `<xacro:property>`; the header names which two are
   sourced from LeRobot's driver and which are estimates.
-- `urdf/{column,arm}.xacro` — subassemblies, empty for now; geometry lands in
-  PR3 (column) and PR4 (arms) of the URDF roadmap.
+- `urdf/column.xacro` — the extendable column (D26/D31): a static
+  `column_rail_link` mast fixed to `base_link` with its foot on the chassis
+  puck's top surface, and a `column_top` carriage riding it on the prismatic
+  `column_lift` (limits 0.00–1.20 m, `RobotModel`'s column travel). Three
+  properties of it bind later PRs. `column_top`'s **link frame origin is the
+  arm/head mount datum** — the carriage body hangs below it, and the datum sits
+  at `column_rail_joint.z + column_lift.origin.z + q` = `0.195 + q` above
+  `base_link`, i.e. **both** joint origins plus the joint value. The lift's
+  parent is the rail, not `base_link`, because the carriage wraps the mast and
+  only that arrangement describes the overlap honestly (whether it also buys
+  collision filtering is expected but **unverified until PR7's MJCF** — a fixed
+  rail joint may be fused into `base_link` there). And its `<limit velocity>` is
+  *capability*, deliberately held above `robot_safety`'s `velocity.column`
+  *policy* cap, since a cap equal to capability can never bind. The mount height
+  is *computed* from `base.xacro`'s properties, so this file only expands after
+  `base.xacro` (reversing the include order fails loudly at expansion).
+- `urdf/arm.xacro` — subassembly, empty for now; geometry lands in PR4 of the
+  URDF roadmap.
 - `meshes/` — visual/collision geometry, still empty: the base is primitives
   only, and per D29 the first real mesh set (and the `os.walk` install rewrite
   D27 deferred) arrives with the arms.
@@ -40,10 +56,26 @@ survive a left/right swap); that `base_footprint` is one wheel radius below
 the axle plane; that every link which is a body has visual and
 collision geometry and the chassis clears the wheels; that every link which is
 not a pure frame has a real inertial; and that `robot_state_publisher` loads
-the model (it builds a KDL tree, so it rejects models `check_urdf` accepts).
+the model (it builds a KDL tree, so it rejects models `check_urdf` accepts);
+and — added with the column — that `column_lift` is the model's *only*
+prismatic joint and carries `column_top` along the rail; that its limits equal
+`RobotModel`'s column bounds and are *declared* rather than left to URDF's
+defaults (transcribed as `ROBOT_MODEL_*` constants rather than imported — PR6
+inverts that correspondence and retires the copy); that its effort and velocity
+limits are positive and its velocity clears `SAFETY_COLUMN_SPEED_CAP_MPS`, the
+safety layer's policy cap, which a capability equal to it could never bind;
+that its axis is +z in `base_link` once every rpy above it is composed; that
+the mast is a non-degenerate solid which stands *on* the chassis — clearing it
+in height and with its whole footprint inside the puck's radius — contains its
+own carriage over the whole travel, is drawn as it collides, and is wrapped
+laterally by that carriage; and that the carriage's body sits below its mount
+datum — one carriage-height above the mast's foot at zero travel, the identity
+every height on this robot is derived from — so what PR3.5/PR4 mount there does
+not start inside it.
 Extend `EXPECTED_LINKS` and `FILE_BEARING_TAGS` as the description grows —
 both are module-level constants for that reason.
-Status: package + gate + mobile base; column, arms, grippers and MJCF still to
-come. See
+Status: package + gate + mobile base + column; arms, grippers, head camera and
+MJCF still to come. See
 `docs/design/PROJECT.md` for the architecture and `docs/design/decisions.md`
-D26/D27/D29 for the hardware lineage, the packaging call and the base.
+D26/D27/D29/D31 for the hardware lineage, the packaging call, the base and the
+column.

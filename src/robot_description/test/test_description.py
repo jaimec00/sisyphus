@@ -43,6 +43,28 @@ is not a pure frame. None of those are visible to the link-set assert: a
 holonomic base whose three wheels are stacked at the origin has the right
 links, the right joints, and no chance of driving.
 
+PR3 adds the column, and with it the first joint in this model that is *not*
+free to spin: a prismatic ``column_lift`` carrying ``column_top``, whose
+``lower``/``upper`` are the column travel ``RobotModel`` already enforces. That
+makes the column the first place the URDF **owns** a number from outside
+itself, so its assertions are shaped by the same rule the wheel layout taught
+(below): the limits are compared against transcribed ``ROBOT_MODEL_*``
+constants rather than merely against each other, and the mast, the travel and
+the chassis are tied together *relationally* -- the rail must clear the chassis
+it stands on and must span the travel its own carriage is allowed, both read
+off the model, so retuning any of them keeps the constraint. The lift's axis is
+checked after composing every rpy between it and ``base_link``, because a
+column that lifts sideways satisfies "prismatic, 0.00-1.20" perfectly. Four
+column assertions exist because a review round caught the claim they now pin:
+the datum's height at zero travel (stated in three documents with one of the
+two joint origins left out, and wrong by 585 mm); the lift's velocity limit
+against ``SAFETY_COLUMN_SPEED_CAP_MPS`` (shipped equal to the safety layer's
+own cap, which makes that cap unable to bind); and the mast's footprint on the
+deck plus the carriage's wrap around the mast (the interpenetration three
+documents called *measured* -- which left every x and y in the column ungated,
+so a mast five metres from the base passed the whole suite). All four were
+prose nothing executed.
+
 The **absolute** wheel layout gets its own assert on top of those, and the
 distinction matters more than it looks: every check above compares the wheels
 to each other, so all of them survive rotating or permuting the mount set as a
@@ -73,6 +95,34 @@ allowed to grow silently stops being a gate. The asset assert is still over an
 *empty* set: PR2 authored the base from primitives and vendored no meshes
 (D29), so it costs nothing until the first PR that lands real geometry
 files -- expected to be the arms -- and bites from that moment on.
+
+What this gate still does **not** know, recorded here because it is the file a
+later PR reads and because the alternative -- a list in a `docs/features/` doc
+-- is deleted at merge. None of these is introduced by the column; all four are
+places where a wrong model is currently self-consistent, which is the failure
+class D29 named and PR3's own review round hit twice:
+
+1. **No physical scalar is checked for *magnitude*, only for sign.** Inertia
+   tensors are never compared against the geometry they are supposed to be
+   computed from -- a rail carrying the omniwheel's tensor, ~3500x too small,
+   passes -- and neither are masses or actuator limits: a 1 g mast, a 500 kg
+   carriage, and an ``effort`` of 0.001 N (a lift that cannot hold its own
+   carriage) are all green. Inherited from PR2, and widened here from
+   "tensors" to "scalars" after a review round measured the other three.
+   Positivity is genuinely all this gate knows; it bites in PR7's MJCF rather
+   than before it.
+2. **Every "drawn as it collides" assertion reads ``visuals[0]`` and
+   ``collisions[0]`` only**, so a *second* shape on a link is invisible.
+   Measured: a 0.4 m cube bolted to the mast five metres out passes the whole
+   suite.
+3. **The carriage's own footprint may overhang the chassis deck** -- the
+   footprint clause covers the mast only, deliberately (see
+   ``test_column_rail_stands_on_the_chassis``).
+4. **Nothing pins the column's lateral position to a *value*.** The gate
+   constrains the mast to stand somewhere on the deck and the carriage to wrap
+   it; both are containments, not placements. Deliberate -- but worth
+   re-taking when PR4 mounts shoulders at ±``shoulder_offset_y`` off this
+   carriage, since a laterally displaced column moves both arms with it.
 """
 
 import math
@@ -89,8 +139,9 @@ import pytest
 from urdf_parser_py.urdf import URDF
 
 #: The complete link set the top-level description must expand to. PR1 shipped
-#: the root frame and nothing else; PR2 adds the base. Every later PR extends
-#: this deliberately -- a set allowed to grow silently stops being a gate.
+#: the root frame and nothing else; PR2 adds the base, PR3 the column's static
+#: mast and its moving carriage. Every later PR extends this deliberately -- a
+#: set allowed to grow silently stops being a gate.
 EXPECTED_LINKS = {
     'base_link',
     'base_footprint',
@@ -98,6 +149,8 @@ EXPECTED_LINKS = {
     'base_left_wheel_link',
     'base_back_wheel_link',
     'base_right_wheel_link',
+    'column_rail_link',
+    'column_top',
 }
 
 #: The base's three actuated joints. These names are *not* free: LeKiwi's URDF
@@ -142,9 +195,72 @@ DRIVER_WHEEL_RADIUS_M = 0.05
 #: is ~2e-16, so there are seven orders of headroom.
 DRIVER_MATRIX_TOL = 1e-9
 
+#: The column's travel, transcribed from `RobotModel.min_column_height` and
+#: `RobotModel.max_column_height` in
+#: `src/robot_backends/robot_backends/mock_world.py` -- the numbers the Mock
+#: backend, the safety layer and the brain's prompt all already enforce, and
+#: which the URDF's `column_lift` limits must equal. Metres.
+#:
+#: Transcribed rather than imported, the same way the DRIVER_* constants above
+#: transcribe LeRobot's: `robot_description` takes no dependency on
+#: `robot_backends` (D30 declined the analogous cross-seam test edge, and PR6
+#: *inverts* this one by making `RobotModel` read the URDF, so an edge landed
+#: here would have to be torn back out). The cost is real and worth stating
+#: plainly: this is a hand-typed copy, so it can drift from its source without
+#: anything noticing -- exactly the weakness D30 records for its own ledger.
+#: What closes it is PR6: once `RobotModel`'s defaults come from this URDF the
+#: copy disappears rather than needing to be maintained.
+ROBOT_MODEL_MIN_COLUMN_HEIGHT_M = 0.0
+ROBOT_MODEL_MAX_COLUMN_HEIGHT_M = 1.20
+
+#: The safety layer's column speed cap, transcribed from `velocity.column` in
+#: `src/robot_safety/robot_safety/limits.yaml` -- the *policy* limit on how
+#: fast this robot may move its lift, m/s.
+#:
+#: It is here because the URDF's `<limit velocity>` is a different quantity
+#: pointing at the same axis: capability, i.e. what the mechanism can do and
+#: what MoveIt and ros2_control plan and clamp against. Policy has to sit
+#: strictly *below* capability or the clamp cannot bind -- set them equal and
+#: the safety layer stops constraining anything that trusts the URDF, with
+#: nothing anywhere going red. That is not hypothetical: this description
+#: shipped 0.15 for exactly one review round, having independently guessed the
+#: cap's own value.
+#:
+#: Same transcription residue as the ROBOT_MODEL_* constants above, and
+#: deliberately the same trade: no `robot_safety` test dependency (a
+#: description package must not grow an edge to the safety layer to check one
+#: inequality), so this is a hand-typed copy that can drift from `limits.yaml`.
+#: Drift is not symmetric, and the direction that matters is the one this
+#: assertion exists to prevent. A cap *lowered* in `limits.yaml` leaves this
+#: comparing against a stale, higher number -- the assertion is merely stricter
+#: than it needs to be, and the property still holds. A cap *raised above the
+#: URDF's capability* is the failure: policy would then exceed capability (the
+#: inversion `column.xacro` ranks as worse than the equality this constant was
+#: added to catch, and says why) and **this test would still pass**, because it
+#: compares against the copy rather than against `limits.yaml`. Measured, at
+#: the scope this sentence claims -- all nine packages: raising the real cap to
+#: 0.30 leaves every one of them green except `robot_brain`'s prompt-envelope
+#: test, which objects to the prompt, not to the URDF. Nothing closes it *from
+#: here* short of reading the cap live, which would cost the dependency edge
+#: above. It could be closed from a third place that legitimately depends on
+#: both -- the workspace-tooling suite, or PR8's bringup -- at no cost to this
+#: package's dependency graph; that is an option, not a plan, and nobody owns
+#: it. PR6/PR7, which give the lift a real actuator model, are where to
+#: revisit the trade.
+SAFETY_COLUMN_SPEED_CAP_MPS = 0.15
+
 #: Links that are pure frames and so carry no mass: the root and the ground
 #: projection. Every *other* link must have a real inertial (see
 #: test_moving_links_have_inertia).
+#:
+#: Admission rule, written down so it stops being re-litigated per PR: a link
+#: joins this set only if it corresponds to **no physical body** and exists to
+#: serve an outside convention (`base_link` is the URDF root frame;
+#: `base_footprint` is the ground projection Nav2 and RViz expect). "Computing
+#: an inertia for it was inconvenient" is never a reason. Adding a link here
+#: exempts it from *both* the geometry check and the inertia check with no
+#: other signal anywhere in this suite -- it is the one rug in the gate, which
+#: is why PR3's rail and carriage, both real solids, stayed out of it.
 MASSLESS_FRAME_LINKS = frozenset({'base_link', 'base_footprint'})
 
 #: What robot_state_publisher logs once it has built its KDL tree. Reaching
@@ -329,6 +445,162 @@ def _collision_cylinder(model, link_name):
         'assertion needs cannot be read off it: %r' % (link_name, geometry))
     _require_identity_origin(collision.origin, "%s's <collision>" % link_name)
     return geometry.radius, geometry.length
+
+
+def _box_geometry(shape, what):
+    """Return a ``<visual>``/``<collision>`` box's ``(size, offset)`` in link coordinates.
+
+    The box-shaped sibling of ``_collision_cylinder``, and deliberately *not*
+    the same contract: it returns the shape's own offset instead of requiring
+    the identity, because the column's carriage is displaced from its link
+    frame on purpose -- ``column_top``'s frame is the arm/head mount datum and
+    the body hangs below it -- so forbidding an offset here would be wrong
+    rather than protective. Callers compose the offset themselves, which is
+    what ``_require_identity_origin``'s own docstring asks a later PR to do
+    instead of deleting it.
+
+    A *rotation* is still refused: every caller reads the returned z extent as
+    a height in the link frame, and a tipped box makes that number mean
+    something else while parsing perfectly well.
+    """
+    geometry = shape.geometry
+    size = getattr(geometry, 'size', None)
+    assert size is not None and len(size) == 3, (
+        '%s is not a box, so the dimensions this assertion needs cannot be '
+        'read off it: %r' % (what, geometry))
+    origin = shape.origin
+    xyz = tuple(origin.xyz or (0.0, 0.0, 0.0)) if origin is not None else (0.0, 0.0, 0.0)
+    rpy = tuple(origin.rpy or (0.0, 0.0, 0.0)) if origin is not None else (0.0, 0.0, 0.0)
+    assert all(abs(value) < PLACEMENT_TOL_M for value in rpy), (
+        '%s is rotated (rpy=%s). Its z extent is read as a height in the link '
+        'frame, which only means anything while the two are aligned.' % (
+            what, list(rpy)))
+    return tuple(float(value) for value in size), xyz
+
+
+def _collision_box(model, link_name):
+    """Return the ``(size, offset)`` of a link's first collision box."""
+    link = model.link_map[link_name]
+    assert link.collisions, (
+        '%s has no <collision> geometry; see '
+        'test_solid_links_have_visual_and_collision_geometry.' % link_name)
+    return _box_geometry(link.collisions[0], "%s's <collision>" % link_name)
+
+
+def _axis_aligned_joint(model, joint_name):
+    """Return a joint by name, asserting its origin carries no rotation.
+
+    The column's arithmetic adds z offsets taken from different frames -- a
+    joint origin here, half a collision box there -- and that addition only
+    means anything while every frame on the way up is aligned with
+    ``base_link``. Tip one of them and a mast can be lying inside the chassis
+    with the sums still passing. Same rationale as ``_require_identity_origin``
+    one level up, for joints rather than shapes; a later PR that genuinely
+    needs a rotated column joint should compose the transform here rather than
+    drop the check.
+    """
+    joint = model.joint_map.get(joint_name)
+    assert joint is not None, (
+        "no joint named '%s'; the column's joints are named in "
+        'test_column_lift_is_the_models_only_prismatic_joint.' % joint_name)
+    rpy = _joint_rpy(joint)
+    assert all(abs(value) < PLACEMENT_TOL_M for value in rpy), (
+        '%s is rotated (rpy=%s); the height arithmetic below treats its child '
+        "frame as parallel to its parent's." % (joint_name, list(rpy)))
+    return joint
+
+
+def _joint_xyz(joint):
+    """Return a joint origin's xyz triple, treating a missing origin as no offset.
+
+    URDF makes the ``<origin>`` and its ``xyz`` optional and ``urdf_parser_py``
+    reports ``None`` for either, so every read of a placement goes through
+    here rather than through ``joint.origin.xyz`` directly.
+    """
+    if joint.origin is None or joint.origin.xyz is None:
+        return (0.0, 0.0, 0.0)
+    return tuple(float(value) for value in joint.origin.xyz)
+
+
+def _joint_z(joint):
+    """Return a joint origin's z offset, treating a missing origin as zero."""
+    return _joint_xyz(joint)[2]
+
+
+def _joint_rpy(joint):
+    """Return a joint origin's rpy triple, treating a missing origin as no rotation.
+
+    URDF makes both the ``<origin>`` and its ``rpy`` optional, and
+    ``urdf_parser_py`` faithfully reports ``None`` for either, which is an
+    ``AttributeError`` three lines into any rotation composition.
+    """
+    if joint.origin is None or joint.origin.rpy is None:
+        return (0.0, 0.0, 0.0)
+    return tuple(float(value) for value in joint.origin.rpy)
+
+
+def _limit_attributes(expansion, joint_name):
+    """Return the attributes a joint's ``<limit>`` element *literally declares*.
+
+    Read off the raw expansion rather than the parsed model, because URDF --
+    and faithfully, ``urdf_parser_py`` -- fills in defaults: an omitted
+    ``lower`` comes back as ``0.0``, indistinguishable from a stated ``0.0``.
+    Everywhere else in this file the parsed model is the right thing to assert
+    against; this is the exception, because the claim being gated is that the
+    description *states* a bound, not that something downstream infers the same
+    number from a default.
+    """
+    root = ElementTree.fromstring(_require_expansion(expansion))
+    for joint in root.iter('joint'):
+        if joint.get('name') == joint_name:
+            limit = joint.find('limit')
+            assert limit is not None, (
+                '%s declares no <limit> element; see '
+                'test_check_urdf_parses_the_expansion.' % joint_name)
+            return dict(limit.attrib)
+    pytest.fail("the expansion contains no joint named '%s'" % joint_name)
+
+
+def _lift_limit(model):
+    """Return ``column_lift``'s ``<limit>``, failing legibly if it has none.
+
+    Same job as ``_require_expansion`` one level down: a prismatic joint with
+    no limit is rejected by ``check_urdf`` *and* by ``robot_state_publisher``,
+    so the three assertions that read one would otherwise report that single
+    root cause as three ``AttributeError``s on ``None``.
+    """
+    limit = model.joint_map['column_lift'].limit
+    assert limit is not None, (
+        'column_lift has no <limit>, so this assertion never ran -- see '
+        'test_check_urdf_parses_the_expansion for the root cause. A prismatic '
+        'joint without limits is unbounded travel and neither parser accepts '
+        'it.')
+    return limit
+
+
+def _axis_in_base_link(model, joint):
+    """Express a joint's axis in ``base_link`` coordinates, composing every rpy above it.
+
+    Walks the parent chain rather than composing one joint's rpy, because the
+    axis a consumer sees is the product of every frame between the joint and
+    the root: PR3's lift hangs off the rail, which hangs off ``base_link``, and
+    a later PR is free to add another link in between. Reuses
+    ``_rotation_from_rpy``/``_rotate`` rather than re-deriving them.
+    """
+    assert joint.axis is not None, (
+        '%s declares no <axis>, which URDF silently defaults to (1, 0, 0) -- a '
+        'joint that travels forward rather than wherever it was meant to' % (
+            joint.name,))
+    vector = _rotate(_rotation_from_rpy(_joint_rpy(joint)), tuple(joint.axis))
+    link = joint.parent
+    while link != 'base_link':
+        assert link in model.parent_map, (
+            "%r has no parent joint but is not base_link, so %s's axis cannot "
+            'be resolved into the root frame' % (link, joint.name))
+        joint_name, parent = model.parent_map[link]
+        vector = _rotate(_rotation_from_rpy(_joint_rpy(model.joint_map[joint_name])), vector)
+        link = parent
+    return vector
 
 
 def _wheel_radius(model):
@@ -705,6 +977,497 @@ def test_base_footprint_is_the_ground_projection(parsed_model):
     assert all(abs(value) < PLACEMENT_TOL_M for value in joint.origin.rpy), (
         'base_footprint must be axis-aligned with base_link; rpy is %s' % (
             joint.origin.rpy,))
+
+
+def test_column_lift_is_the_models_only_prismatic_joint(parsed_model):
+    """``column_lift`` is prismatic, carries ``column_top`` off the rail, and is unique.
+
+    Four faults share one assertion because they are one fact about the
+    column's actuation, and every one of them is invisible to everything else
+    here: ``EXPECTED_LINKS`` names links, so the lift can be retyped ``fixed``
+    (a column that cannot lift), renamed (decoupling the URDF from the
+    ``column_lift`` key `RobotModel`/PR6 and the skill layer speak), or
+    re-parented onto ``base_link`` -- which is kinematically identical while
+    ``column_rail_joint`` is fixed and is exactly why it needs asserting: the
+    carriage wraps the mast, so the two solids interpenetrate at every joint
+    value, and only the parent/child arrangement describes that honestly. It is
+    also the arrangement collision tooling is *expected* to filter (a generated
+    MoveIt ACM disables adjacent pairs; MuJoCo excludes parent/child bodies),
+    where siblings under ``base_link`` would be filtered by neither -- but that
+    half is **unverified until PR7 builds the MJCF**, and a fixed rail joint may
+    be fused into ``base_link`` there anyway, so it is not what this assertion
+    rests on. Those three -- retype, rename, re-parent -- plus the fourth the
+    uniqueness clause below catches all pass ``check_urdf`` and
+    ``robot_state_publisher`` without complaint.
+
+    The uniqueness clause is a deliberate ratchet in the same spirit as
+    ``EXPECTED_LINKS``: today one prismatic joint means one lift, so a second
+    one appearing is a mistake. PR5's parallel-jaw gripper may well be a
+    legitimate second prismatic joint -- when it lands, this set grows by an
+    explicit edit naming it, which is the point.
+    """
+    prismatic = {joint.name for joint in parsed_model.joints
+                 if joint.type == 'prismatic'}
+    assert prismatic == {'column_lift'}, (
+        'the model must have exactly one prismatic joint, the column lift: '
+        'missing %s, unexpected %s' % (
+            sorted({'column_lift'} - prismatic), sorted(prismatic - {'column_lift'})))
+    lift = parsed_model.joint_map['column_lift']
+    assert lift.parent == 'column_rail_link' and lift.child == 'column_top', (
+        'column_lift must carry column_top along column_rail_link; it is wired '
+        '%s -> %s. A carriage rides its own mast: the two interpenetrate by '
+        'construction, and only the parent/child arrangement says so -- as '
+        'siblings under base_link the model states no relationship between two '
+        'solids that are always in contact.' % (lift.parent, lift.child))
+
+
+def test_column_lift_limits_are_the_robot_model_column_bounds(parsed_model, expansion):
+    """``column_lift``'s travel limits equal `RobotModel`'s column bounds, and say so.
+
+    The first place this description owns a number that belongs to something
+    outside it, and therefore the column's answer to D29's lesson: a gate built
+    only from internal consistency checks certifies self-consistency, and a
+    wrong model can be perfectly self-consistent. Every other column assertion
+    in this file is relational -- the mast clears the chassis, the mast spans
+    the travel, the axis is vertical -- and all of them stay green for a lift
+    with 0.5 m of travel, or 5.0 m. Only this one says *which* travel, and it
+    is the travel the Mock backend validates commands against, the safety
+    layer clamps to, and the brain's prompt quotes at the planner.
+
+    Asserted against transcribed constants, not against a live import (see
+    ROBOT_MODEL_*_COLUMN_HEIGHT_M for why the copy and what retires it).
+
+    Both bounds are then checked a second time **as attributes of the raw
+    expansion**, which is not belt-and-braces: URDF defaults an omitted
+    ``lower`` to 0, so deleting ``lower="${min_column_height}"`` from the
+    ``<limit>`` leaves the parsed model reading 0.0 and this whole suite green
+    while the description no longer *states* the bound at all. The acceptance
+    criterion is that the URDF owns these two numbers, and a number that is
+    only true by someone else's default is not owned.
+    """
+    limit = _lift_limit(parsed_model)
+    bounds = ((limit.lower, ROBOT_MODEL_MIN_COLUMN_HEIGHT_M, 'lower'),
+              (limit.upper, ROBOT_MODEL_MAX_COLUMN_HEIGHT_M, 'upper'))
+    wrong = ['%s is %r, RobotModel says %r' % (which, got, want)
+             for got, want, which in bounds
+             if got is None or abs(got - want) > PLACEMENT_TOL_M]
+    assert not wrong, (
+        "column_lift's limits disagree with RobotModel's column travel "
+        '(min_column_height / max_column_height in '
+        "robot_backends/mock_world.py): %s. These are the carriage's travel "
+        "along the rail, measured from the joint's own origin; the datum's "
+        'height above base_link is both joint origins plus the joint value '
+        '(0.195 + q today), and that mount offset is deliberately not folded '
+        'into the limits.' % wrong)
+
+    declared = _limit_attributes(expansion, 'column_lift')
+    missing = [name for name in ('lower', 'upper') if name not in declared]
+    assert not missing, (
+        "column_lift's <limit> does not declare %s. URDF defaults an omitted "
+        'lower to 0, which happens to equal the bound today, so the model '
+        'parses to the right number without stating it -- and would keep '
+        'parsing to 0 if RobotModel ever moved.' % missing)
+
+
+def test_column_lift_declares_positive_effort_and_velocity_limits(parsed_model):
+    """The lift's effort and velocity limits are present and strictly positive.
+
+    Absence is not the fault this catches -- ``check_urdf`` and
+    ``urdf_parser_py`` both refuse to parse a ``<limit>`` missing either
+    attribute, so a description without them never reaches this line. **Zero
+    is**: ``<limit effort="0" velocity="0">`` parses cleanly, loads in
+    ``robot_state_publisher``, satisfies every other column assertion here, and
+    describes a lift that cannot move -- MoveIt will not plan through a joint
+    with no velocity budget and ``ros2_control`` will not command one. It is
+    also the shape a placeholder decays into when somebody "removes" a number
+    they do not have.
+
+    Only presence and sign are asserted, deliberately: both values are
+    ESTIMATED in the xacro (no STS3215 torque figure or lead-screw ratio is
+    recorded anywhere in this repo), so pinning either would assert a guess.
+    """
+    limit = _lift_limit(parsed_model)
+    faults = ['%s is %r' % (name, getattr(limit, name, None))
+              for name in ('effort', 'velocity')
+              if not getattr(limit, name, None) or getattr(limit, name) <= 0]
+    assert not faults, (
+        'column_lift needs a positive effort and velocity limit: %s. Both are '
+        'estimates (see the xacro), but a zero or negative one is a joint no '
+        'planner or controller will move.' % faults)
+
+
+def test_column_lift_can_outrun_the_safety_layers_column_cap(parsed_model):
+    """The lift's *capability* is strictly faster than the safety layer's *policy*.
+
+    Two numbers about the same axis that mean different things: the URDF's
+    ``<limit velocity>`` is what the mechanism can do (what MoveIt and
+    ros2_control plan and clamp against), while ``limits.yaml``'s
+    ``velocity.column`` is how fast this robot is *allowed* to move a lift
+    through the height where hands are. A clamp only does something if there is
+    something above it to clamp; capability equal to policy makes the safety
+    layer's column cap vacuous for every consumer that believes the
+    description, and capability *below* policy makes the cap unreachable
+    instead. Neither shows up anywhere else -- the positive-limits test next
+    door is happy with any positive number, and the safety layer's own suite
+    never reads the URDF.
+
+    Not hypothetical: this file shipped ``velocity="0.15"`` -- the cap's exact
+    value, arrived at independently as an estimate -- for one review round.
+    That is the D29 wheel-radius shape (two packages agreeing by coincidence
+    with nothing asserting it), pointed at invariant 3.
+    """
+    velocity = _lift_limit(parsed_model).velocity
+    assert velocity > SAFETY_COLUMN_SPEED_CAP_MPS, (
+        'the column lift declares a top speed of %r m/s, which does not exceed '
+        "the safety layer's column cap of %r m/s "
+        '(robot_safety/robot_safety/limits.yaml, velocity.column). The URDF '
+        'states capability and the cap states policy: policy at or above '
+        'capability is a clamp that can never bind.' % (
+            velocity, SAFETY_COLUMN_SPEED_CAP_MPS))
+
+
+def test_column_lift_axis_is_vertical_in_base_link(parsed_model):
+    """The lift travels along ``base_link``'s +z once every rpy above it is composed.
+
+    D29's composed-axis check, applied to the column. A lift that travels
+    sideways -- or worse, one whose own ``<axis>`` reads ``0 0 1`` under a
+    joint origin that rotates it -- is type-correct, limit-correct, geometry-
+    correct and utterly wrong, and nothing else in this file looks at the
+    direction: the limits test reads two scalars, the clearance and span tests
+    read z extents, and ``check_urdf``/``robot_state_publisher`` are happy with
+    a horizontal column. The axis is resolved through *every* joint between the
+    lift and the root, not just its own, because that composition is what PR6
+    and PR7 will read the column's travel direction off.
+    """
+    axis = _axis_in_base_link(parsed_model, parsed_model.joint_map['column_lift'])
+    assert all(abs(axis[i] - (0.0, 0.0, 1.0)[i]) < PLACEMENT_TOL_M
+               for i in range(3)), (
+        "column_lift's axis, resolved into base_link, is %s; the column lifts, "
+        "so it must be +z (0, 0, 1). Note this composes the joint's own rpy "
+        'with every joint above it: a literal `0 0 1` axis under a rotated '
+        'origin fails here, correctly.' % ([round(value, 6) for value in axis],))
+
+
+def test_column_rail_stands_on_the_chassis(parsed_model):
+    """The mast is a fixed child of ``base_link`` whose foot clears the chassis puck.
+
+    The column/chassis version of the clearance the base already asserts for
+    its wheels, and it exists because that one does not generalise: its second
+    half names ``base_chassis_link`` and the wheels explicitly. Root the mast
+    at ``base_link``'s own z (axle height, which is where a joint origin with
+    no offset puts it) and its lower 115 mm sit inside the chassis solid -- two
+    solids in a penetration the model states no relationship about (they are
+    siblings), and every other assertion here stays green. That is the exact
+    bug D29's red-team round found buried in the base's own wheels.
+
+    Both heights are read off the parsed model and compared as a
+    *relationship*, never against the literal that satisfies them today
+    (0.115 m), so retuning the chassis, the mast or the carriage keeps the
+    constraint enforced rather than breaking the test.
+
+    **"Stands on" is two claims, and the second one had to be added** after a
+    review round found this test green for a mast standing five metres from
+    the robot: every column assertion in this file read a z, so the mast's
+    *height* above the deck was gated and its *position over* the deck was not,
+    at any of the four places the column carries a translation. A test whose
+    name claims more than it checks is the defect, so the footprint clause
+    below is the name being made true, and the general form of the lesson is
+    worth more than the instance: ask of each geometric assertion which
+    coordinates it silently ignores.
+
+    Scope of the footprint clause, stated because it is conservative in one
+    direction and deliberately permissive in another. Conservative: it requires
+    the mast's whole footprint inside the puck, so a legitimately cantilevered
+    mast overhanging the deck edge would fail it and should relax it to the
+    support its own design has, not delete it. Permissive: it is a containment,
+    **not a placement** -- it does not say the column is centred, only that it
+    stands on the deck, because an off-centre column is a reasonable thing for
+    PR4 to want when it hangs two arms off the carriage. If a later PR needs
+    the lateral position pinned to a *value* (the way the wheels' angles are
+    pinned to the driver's matrix), that is a different, absolute assertion and
+    this one does not substitute for it. And it constrains the **mast** only:
+    the carriage's own footprint is bounded here only indirectly, through
+    ``test_column_carriage_wraps_the_mast``, and nothing says the carriage may
+    not overhang the deck -- which is correct for a body that spends its life
+    in the air, and worth re-asking when PR4 hangs arms off it.
+    """
+    rail_joints = [joint for joint in parsed_model.joints
+                   if joint.child == 'column_rail_link']
+    assert len(rail_joints) == 1, (
+        'expected exactly one joint parenting column_rail_link, found %d: '
+        '%s' % (len(rail_joints), [joint.name for joint in rail_joints]))
+    assert rail_joints[0].type == 'fixed', (
+        'the mast is structure, not a mechanism: column_rail_joint must be '
+        'fixed, it is %r' % rail_joints[0].type)
+    assert rail_joints[0].parent == 'base_link', (
+        'the column mounts on the base (D26/#73), so the mast hangs off the '
+        'root frame; its parent is %r' % rail_joints[0].parent)
+
+    rail_joint = _axis_aligned_joint(parsed_model, rail_joints[0].name)
+    rail_size, rail_offset = _collision_box(parsed_model, 'column_rail_link')
+    assert all(dimension > 0 for dimension in rail_size), (
+        'the mast collision box is degenerate: %s. A zero-thickness or '
+        'zero-length mast satisfies every height relationship in this file '
+        'while describing no solid at all.' % (list(rail_size),))
+    rail_length = rail_size[2]
+    rail_foot = _joint_z(rail_joint) + rail_offset[2] - rail_length / 2.0
+
+    chassis_joint = _axis_aligned_joint(parsed_model, 'base_chassis_joint')
+    chassis_radius, chassis_height = _collision_cylinder(
+        parsed_model, 'base_chassis_link')
+    chassis_top = _joint_z(chassis_joint) + chassis_height / 2.0
+
+    assert rail_foot >= chassis_top - PLACEMENT_TOL_M, (
+        "the column sinks into the base: the mast's foot sits at z = %.4f "
+        "while the chassis puck's top surface is at z = %.4f. They are in "
+        'different subtrees, so the model states no relationship between two '
+        "solids that would then overlap; the rail joint's z must be at least "
+        'chassis_top + rail_length/2 = %.4f.' % (
+            rail_foot, chassis_top, chassis_top + rail_length / 2.0))
+
+    # The mast's footprint, in base_link's x/y: the joint that places the link,
+    # plus the shape's own offset within it, plus the half-section. Both frames
+    # are known unrotated (the joint by _axis_aligned_joint, the shape by
+    # _box_geometry), so the farthest point of an axis-aligned box is its
+    # corner -- hypot of the two per-axis extremes, not the larger of them, and
+    # not hypot(centre) + half-diagonal, which would reject a legal mast sitting
+    # near the rim.
+    rail_x = _joint_xyz(rail_joint)[0] + rail_offset[0]
+    rail_y = _joint_xyz(rail_joint)[1] + rail_offset[1]
+    footprint_reach = math.hypot(abs(rail_x) + rail_size[0] / 2.0,
+                                 abs(rail_y) + rail_size[1] / 2.0)
+    chassis_x, chassis_y = _joint_xyz(chassis_joint)[:2]
+    assert abs(chassis_x) < PLACEMENT_TOL_M and abs(chassis_y) < PLACEMENT_TOL_M, (
+        'the chassis puck is displaced from base_link (x=%.4f, y=%.4f), so the '
+        "mast's footprint below is measured against the wrong centre. Compose "
+        'the offset here rather than deleting the check.' % (chassis_x, chassis_y))
+    assert footprint_reach <= chassis_radius + PLACEMENT_TOL_M, (
+        'the mast stands off the deck: its collision footprint reaches %.4f m '
+        'from base_link (corner of a %.3f x %.3f section centred at x=%.4f, '
+        'y=%.4f) while the chassis puck it stands on has radius %.4f m. The '
+        'height clause above is green for a mast in the next room -- this is '
+        'the half of "stands on" that says *over what*.' % (
+            footprint_reach, rail_size[0], rail_size[1], rail_x, rail_y,
+            chassis_radius))
+
+
+def test_column_rail_spans_the_carriage_travel(parsed_model):
+    """The mast is long enough for the carriage to stay on it over the whole travel.
+
+    A rail shorter than the travel it permits is a carriage that flies off the
+    end of its own mast: physically incoherent, and green under every other
+    assertion in this file -- the limits test reads the travel without knowing
+    how long the rail is, and the geometry tests know the rail's length without
+    knowing what the joint is allowed to do. Nothing else relates the two.
+
+    Deliberately the **strong** form, in the same spirit as the chassis/wheel
+    clearance above: it requires the carriage to be fully *contained* by the
+    mast at the top of the travel, not merely for the mast to be as long as the
+    travel, because a carriage half off the end is supported by nothing. A
+    later design where the carriage legitimately overhangs (a short mast with a
+    long cantilevered plate) should relax this to the containment its own
+    mechanism needs rather than delete it.
+    """
+    limit = _lift_limit(parsed_model)
+    travel = limit.upper - limit.lower
+    (_x, _y, rail_length), rail_offset = _collision_box(parsed_model, 'column_rail_link')
+    assert rail_length >= travel - PLACEMENT_TOL_M, (
+        'the mast is %.4f m long but the carriage is allowed %.4f m of travel '
+        '(%.4f to %.4f), so it leaves the rail entirely' % (
+            rail_length, travel, limit.lower, limit.upper))
+
+    rail_joint = _axis_aligned_joint(parsed_model, parsed_model.parent_map['column_rail_link'][0])
+    rail_centre = _joint_z(rail_joint) + rail_offset[2]
+    lift_joint = _axis_aligned_joint(parsed_model, 'column_lift')
+    (_cx, _cy, carriage_height), carriage_offset = _collision_box(parsed_model, 'column_top')
+    # The datum's height above base_link at the top of the travel, plus the
+    # carriage body hanging off it.
+    datum_top = _joint_z(rail_joint) + _joint_z(lift_joint) + limit.upper
+    carriage_top = datum_top + carriage_offset[2] + carriage_height / 2.0
+    carriage_bottom_at_rest = (_joint_z(rail_joint) + _joint_z(lift_joint)
+                               + limit.lower + carriage_offset[2]
+                               - carriage_height / 2.0)
+    assert carriage_top <= rail_centre + rail_length / 2.0 + PLACEMENT_TOL_M, (
+        'at its upper limit the carriage reaches z = %.4f while the mast ends '
+        'at z = %.4f: the top of the travel hangs off the top of the rail' % (
+            carriage_top, rail_centre + rail_length / 2.0))
+    assert carriage_bottom_at_rest >= rail_centre - rail_length / 2.0 - PLACEMENT_TOL_M, (
+        'at its lower limit the carriage reaches down to z = %.4f while the '
+        'mast starts at z = %.4f: the bottom of the travel hangs off the foot '
+        'of the rail' % (carriage_bottom_at_rest, rail_centre - rail_length / 2.0))
+
+
+def test_column_carriage_wraps_the_mast(parsed_model):
+    """The carriage's cross-section contains the mast's, so the two really are in contact.
+
+    D31 clause 3 rests its whole justification for parenting the lift to the
+    rail on the two solids overlapping by construction -- "a carriage rides its
+    mast". Until this assertion existed that was a measurement somebody took
+    once and wrote down: moving ``column_lift``'s origin 0.5 m sideways left a
+    carriage riding half a metre beside a rail it never touches, with all
+    twenty-four other assertions green, and the decision entry silently false
+    about the shipped model.
+
+    Composed in the **rail's** frame, which is where the relationship lives:
+    the carriage's section centre is the lift joint's own x/y plus the
+    carriage shape's offset within its link, and the rail's is its shape's
+    offset within the rail link. Both frames are known unrotated
+    (``_axis_aligned_joint``, ``_box_geometry``), so containment is a per-axis
+    interval comparison.
+
+    Independent of the joint value *because* the travel direction is +z:
+    ``test_column_lift_axis_is_vertical_in_base_link`` is what makes that true,
+    and this test would be about one configuration rather than all of them if
+    that one were deleted -- which is the kind of dependency worth naming
+    rather than leaving for a reader to notice.
+
+    Scope: containment is the **strong** form of "wraps", and a real linear
+    guide is often a C-profile block that embraces three sides of a rail rather
+    than four. Such a design should relax this to the overlap its own section
+    has -- the claim being gated is that the two sections *meet*, and full
+    containment is simply the cheapest honest way to state it for the box
+    primitives this model uses. It says nothing about z (the span and datum
+    tests own that) and nothing about where the pair sits in ``base_link`` (the
+    footprint clause in ``test_column_rail_stands_on_the_chassis`` owns that).
+    """
+    lift_joint = _axis_aligned_joint(parsed_model, 'column_lift')
+    rail_size, rail_offset = _collision_box(parsed_model, 'column_rail_link')
+    carriage_size, carriage_offset = _collision_box(parsed_model, 'column_top')
+
+    lift_xyz = _joint_xyz(lift_joint)
+    faults = []
+    for axis, name in ((0, 'x'), (1, 'y')):
+        rail_centre = rail_offset[axis]
+        carriage_centre = lift_xyz[axis] + carriage_offset[axis]
+        overhang = (abs(rail_centre - carriage_centre) + rail_size[axis] / 2.0
+                    - carriage_size[axis] / 2.0)
+        if overhang > PLACEMENT_TOL_M:
+            faults.append(
+                '%s: the mast spans %.4f..%.4f in the rail frame while the '
+                'carriage spans %.4f..%.4f -- %.4f m of mast is outside it' % (
+                    name,
+                    rail_centre - rail_size[axis] / 2.0,
+                    rail_centre + rail_size[axis] / 2.0,
+                    carriage_centre - carriage_size[axis] / 2.0,
+                    carriage_centre + carriage_size[axis] / 2.0,
+                    overhang))
+    assert not faults, (
+        'the carriage does not wrap the mast: %s. A carriage that misses its '
+        'own rail is a lift held up by nothing, and it makes D31 clause 3 -- '
+        'which justifies parenting this joint to the rail by the two solids '
+        'being in permanent contact -- false about the shipped model, with '
+        'every height assertion in this file still green.' % faults)
+
+
+def test_column_mast_is_drawn_as_it_collides(parsed_model):
+    """The mast's ``<visual>`` box is the same box as its ``<collision>``.
+
+    The chassis and the carriage each carry this assertion under the same
+    principle -- what a reviewer sees must be what the planner hits -- and the
+    mast was the one solid in the description that did not. Both boxes come
+    from the same xacro properties today, so divergence takes a deliberate
+    edit; that is equally true of the carriage, which is gated, and the reason
+    to gate it is that the visual is the *only* part of this model a human
+    reviewer actually looks at. A mast drawn slim and colliding fat (or the
+    reverse) is a robot whose renders and whose planner disagree about where
+    the column is, with nothing else here objecting.
+    """
+    collision_size, collision_offset = _collision_box(parsed_model, 'column_rail_link')
+    visuals = parsed_model.link_map['column_rail_link'].visuals
+    assert visuals, 'column_rail_link has no <visual>'
+    visual_size, visual_offset = _box_geometry(
+        visuals[0], "column_rail_link's <visual>")
+    assert (all(abs(visual_size[i] - collision_size[i]) < PLACEMENT_TOL_M
+                for i in range(3))
+            and all(abs(visual_offset[i] - collision_offset[i]) < PLACEMENT_TOL_M
+                    for i in range(3))), (
+        'the mast is drawn as a box of %s at %s but collides as %s at %s' % (
+            list(visual_size), list(visual_offset),
+            list(collision_size), list(collision_offset)))
+
+
+def test_column_datum_rests_on_the_mast_foot_at_the_lower_limit(parsed_model):
+    """At zero travel the mount datum sits exactly one carriage above the mast's foot.
+
+    This is the identity every height claim about this robot is derived from,
+    and until it was written down nothing asserted it -- which is precisely how
+    the durable docs came to state the datum height with ``column_lift``'s own
+    origin left out, overstating it by 585 mm on the one sentence PR6 is told
+    to reconcile against ``RobotModel``. Prose drifts from arithmetic that no
+    test performs.
+
+    What it pins: the *zero of the travel* is the carriage resting on the
+    bottom of the rail, so the datum's height above ``base_link`` at joint
+    value q is ``column_rail_joint.z + column_lift.origin.z + q`` -- both
+    origins, not just the rail's -- and equals
+    ``chassis_top + column_carriage_height + (q - lower)``. The span test next
+    door only requires the carriage to be *somewhere* on the rail at both ends,
+    so it tolerates sliding the lift joint's origin by as much as the mast's
+    over-travel (measured: up to +0.05 m stays green there, +0.06 m does not)
+    while every height PR3.5, PR4 and PR6 compute from this datum moves by the
+    same amount. This one catches +0.02 m. Read as a relationship between
+    numbers off the model, so retuning the chassis, the mast or the carriage
+    keeps it.
+    """
+    limit = _lift_limit(parsed_model)
+    rail_joint = _axis_aligned_joint(
+        parsed_model, parsed_model.parent_map['column_rail_link'][0])
+    lift_joint = _axis_aligned_joint(parsed_model, 'column_lift')
+    rail_size, rail_offset = _collision_box(parsed_model, 'column_rail_link')
+    carriage_size, _carriage_offset = _collision_box(parsed_model, 'column_top')
+
+    rail_foot = _joint_z(rail_joint) + rail_offset[2] - rail_size[2] / 2.0
+    datum_at_rest = _joint_z(rail_joint) + _joint_z(lift_joint) + limit.lower
+    expected = rail_foot + carriage_size[2]
+    assert abs(datum_at_rest - expected) < PLACEMENT_TOL_M, (
+        'at the lower limit (%.4f) the mount datum sits at z = %.4f above '
+        "base_link, but the mast's foot is at %.4f and the carriage is %.4f "
+        'tall, so a carriage resting on the foot puts the datum at %.4f. '
+        'Either the carriage is floating above the bottom of its own travel or '
+        'it starts below the mast; both make every height derived from '
+        'column_top wrong by the difference.' % (
+            limit.lower, datum_at_rest, rail_foot, carriage_size[2], expected))
+
+
+def test_column_top_is_the_arm_mount_datum(parsed_model):
+    """``column_top``'s link frame is the carriage's top surface, not its middle.
+
+    This is the semantics the whole column hangs on and the one thing in it a
+    reviewer cannot eyeball. ``column_top`` is both the moving carriage *and*
+    the datum PR3.5's head camera and PR4's shoulders are placed against
+    (``shoulder_offset_z`` is measured "above ``column_top``" in the roadmap's
+    own table), which is only true if the body sits entirely below its own link
+    frame. Centre the box on the frame instead -- the obvious way to author a
+    link, and what every other solid in this description does -- and the name
+    stops being true: everything mounted at the datum starts half-buried inside
+    the carriage, which is D29's buried-wheel bug displaced one link up and
+    invisible to every other assertion here, since the link set, the inertia
+    check and the geometry check never look at *where* a shape sits inside its
+    link.
+
+    The visual is required to agree with the collision for the same reason the
+    chassis's is: what a reviewer sees must be what the planner hits, and a
+    datum that is right in one and wrong in the other is worse than either.
+    """
+    (size, offset) = _collision_box(parsed_model, 'column_top')
+    top_face = offset[2] + size[2] / 2.0
+    assert size[2] > 0, 'the carriage collision box is degenerate: %s' % (list(size),)
+    assert top_face <= PLACEMENT_TOL_M, (
+        "column_top's collision body reaches z = %.4f in its own link frame, "
+        'i.e. above the frame origin. That origin is the arm/head mount datum '
+        '(the roadmap measures shoulder_offset_z from it), so the carriage '
+        'must hang below it -- offset the shape by -height/2 rather than '
+        'centring it on the frame.' % top_face)
+
+    visual = parsed_model.link_map['column_top'].visuals
+    assert visual, 'column_top has no <visual>'
+    visual_size, visual_offset = _box_geometry(visual[0], "column_top's <visual>")
+    assert (all(abs(visual_size[i] - size[i]) < PLACEMENT_TOL_M for i in range(3))
+            and all(abs(visual_offset[i] - offset[i]) < PLACEMENT_TOL_M
+                    for i in range(3))), (
+        'the carriage is drawn as a box of %s at %s but collides as %s at %s; '
+        'what a reviewer sees must be what the planner hits' % (
+            list(visual_size), list(visual_offset), list(size), list(offset)))
 
 
 def test_solid_links_have_visual_and_collision_geometry(parsed_model):

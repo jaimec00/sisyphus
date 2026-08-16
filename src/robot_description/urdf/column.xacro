@@ -3,8 +3,304 @@
   Extendable column: one linear-rail STS3215 lift, modeled as a single
   prismatic joint (D26).
 
-  Deliberately empty: PR1 ships the package and the expand/parse gate only.
-  The column links and the prismatic joint land in PR3.
+  Crib status, stated first because it decides what may be cited below: D26
+  names Nori Bot (arXiv 2605.16537) as the crib for this mechanism and marks it
+  **UNVERIFIED until the paper is read** — spec.md and PROJECT.md carry the same
+  flag. Nothing in this repo records a single dimension of that machine beyond
+  D26's "~600 mm linear rail" paraphrase. So Nori Bot is cribbed here as a
+  *concept* — a lead-screw/linear-rail Z lift driven by one STS3215 on the arm
+  bus, no second controller — and **no number below is attributed to it**. The
+  only sourced numbers are the two travel bounds, which come from this repo's
+  own `RobotModel` (D23); everything else is marked ESTIMATED, because a fake
+  citation is worse than an estimate that says it is one (D29).
+
+  Shape:
+
+      base_link ──fixed (column_rail_joint)──▶ column_rail_link   [static mast]
+      column_rail_link ──prismatic (column_lift)──▶ column_top    [carriage]
+
+  Three things about that shape are deliberate and are the ones to argue with:
+
+  - **The static mast is modeled.** A lift with 1.2 m of travel has a rail that
+    is physically there at every joint value; describing only the carriage
+    yields a block floating a metre in the air with nothing underneath it —
+    invisible to Nav2/MoveIt collision and structurally absent from PR7's MJCF.
+
+  - **`column_top` is the carriage itself, and its link frame origin IS the
+    arm/head mount datum**: the carriage body hangs *below* that origin (see the
+    <origin> on its visual/collision/inertial), so PR3.5's head camera and PR4's
+    shoulders mount at `column_top`'s own frame without landing inside the
+    carriage solid. The alternative — a `column_carriage_link` plus a massless
+    `column_top` frame fixed to it — is one more link that corresponds to no
+    body, the modelling artifact D29 refused to import from LeKiwi's CAD chain.
+
+  - **The prismatic joint's parent is the rail, not `base_link`.** Kinematically
+    identical while `column_rail_joint` is fixed. What decides it is that the
+    carriage *wraps* the rail: the two solids below deliberately interpenetrate
+    (a 0.06 × 0.06 × 0.08 m prism at every reachable joint value — gated, not
+    just measured here, though by the suite rather than by one test:
+    test_column_carriage_wraps_the_mast pins the 0.06 × 0.06 cross-section,
+    while the 0.08 m of depth follows from the datum and span tests), which is what
+    a carriage on a mast does, and shaving them apart would describe a
+    mechanism that falls over. Parenting the carriage to the rail it rides is
+    simply the honest kinematic description of that, and it is the
+    arrangement collision tooling is *expected* to filter — MoveIt's generated
+    ACM disables adjacent pairs, MuJoCo excludes parent/child bodies — where
+    two siblings under `base_link` would be filtered by neither.
+
+    That expectation is **unverified and stays so until PR7 builds the MJCF**:
+    there is no SRDF in this repo (so there is no ACM yet), and a *fixed* rail
+    joint is a strong candidate for MuJoCo's `fusestatic`, which would fuse
+    `column_rail_link` into `base_link`'s body and make the carriage's MuJoCo
+    parent `base_link` either way — in which case the filtering comes from body
+    fusion, not from this parenting. **PR7 should check that rather than
+    inherit it.** The parenting stands on kinematic honesty alone.
+
+  Recorded contradiction (D31): D26 paraphrases the crib as a "~600 mm linear
+  rail" while `RobotModel` demands **1.20 m of travel**. A single-stage carriage
+  on a 600 mm rail cannot travel 1.20 m, so the two cannot both be literal. The
+  travel bound wins here — it is the number the Mock, the safety layer and the
+  brain already enforce — and the mast is therefore authored *longer* than the
+  travel. Whether the real mechanism is a two-stage/telescoping rail (600 mm of
+  rail, 1.2 m of travel) or the travel bound is optimistic is a question for the
+  Nori paper and for PR6, not something to invent an answer to here.
+
+  Include-order coupling, stated because it is invisible otherwise: the mount
+  height below is computed from `base.xacro`'s own `chassis_z_offset` /
+  `chassis_height`, so this file only expands when `base.xacro` is included
+  first (robot.urdf.xacro does). Reversing that order fails loudly at expansion
+  ("name 'chassis_z_offset' is not defined"), which the gate already runs.
 -->
 <robot xmlns:xacro="http://www.ros.org/wiki/xacro">
+
+  <!-- ==================================================================
+       Dimensions. Two sourced numbers (the travel bounds); the rest are
+       honest placeholders, marked as such per property.
+       ================================================================== -->
+
+  <!-- SOURCED (robot_backends, `mock_world.py`): `RobotModel.min_column_height`
+       and `RobotModel.max_column_height`, the column travel the Mock backend,
+       the safety layer and the brain's prompt already enforce. Deliberately
+       spelled with `RobotModel`'s own field names — not prefixed like every
+       other property here — so PR6, which inverts this correspondence and makes
+       `RobotModel` read the URDF, greps one identifier and finds both ends of
+       it. Metres.
+
+       These are the carriage's **travel along the rail**, measured from
+       `column_lift`'s own origin: they are not heights above `base_link` and
+       not heights above the floor. The mount datum's height above `base_link`
+       at joint value q is **both** joint origins plus q:
+
+         column_rail_joint.z + column_lift.origin.z + q
+           = chassis_top + column_carriage_height + (q - min_column_height)
+           = 0.195 + q       ->  0.195 m ... 1.395 m today
+
+       i.e. at the bottom of the travel the carriage rests on the mast's foot
+       and its top face — the datum — is one carriage-height up. `column_lift`'s
+       own origin is *negative* (-0.585 today) because the rail's box is centred
+       in its link frame, so leaving that term out overstates the datum by more
+       than half a metre; the gate pins the identity in
+       test_column_datum_rests_on_the_mast_foot_at_the_lower_limit.
+
+       The roadmap's table maps these two fields straight onto the lower/upper
+       limit values with no additive term, so the mount offset is deliberately
+       *not* folded into the limits. Which of the two `RobotModel.column_height`
+       itself means is PR6's to reconcile (D31). -->
+  <xacro:property name="min_column_height" value="0.00"/>
+  <xacro:property name="max_column_height" value="1.20"/>
+
+  <!-- ESTIMATED: the mast's cross-section, m. An aluminium linear-rail
+       extrusion of roughly this size is what a single-servo lead-screw lift is
+       built on; nothing upstream publishes the profile, and the paper that
+       would (D26's Nori crib) is unread. Square, because there is no evidence
+       for an asymmetric one. -->
+  <xacro:property name="column_rail_width" value="0.06"/>
+  <xacro:property name="column_rail_depth" value="0.06"/>
+  <!-- ESTIMATED: rail left over above the carriage at full extension, m. A
+       carriage flush with the end of its own rail is a mechanism with no hard
+       stop and no room for the lead screw's end bearing. 50 mm is a guess with
+       the right sign. -->
+  <xacro:property name="column_rail_overtravel" value="0.05"/>
+
+  <!-- ESTIMATED: the carriage / mount plate that rides the rail and carries the
+       arms and the head, m. Wider and deeper than the rail because it wraps it;
+       its height is what separates the mount datum from the rail's own bottom
+       stop, so it is a real dimension rather than decoration. -->
+  <xacro:property name="column_carriage_width" value="0.14"/>
+  <xacro:property name="column_carriage_depth" value="0.10"/>
+  <xacro:property name="column_carriage_height" value="0.08"/>
+
+  <!-- ESTIMATED: masses, kg. Plausible for an extruded aluminium mast and a
+       printed/machined carriage plate with a nut block on it; nothing upstream
+       publishes them. The inertias below are *computed* from the dimensions
+       above, so retuning one cannot leave a stale tensor behind (D29). -->
+  <xacro:property name="column_rail_mass" value="2.5"/>
+  <xacro:property name="column_carriage_mass" value="0.8"/>
+
+  <!-- ESTIMATED: `column_lift`'s effort (N) and velocity (m/s) limits. Both are
+       **mandatory** — `check_urdf` and `urdf_parser_py` each refuse to parse a
+       `<limit>` that omits either — so there is no honest option of leaving
+       them out, and no STS3215 stall-torque figure, lead-screw pitch or gear
+       ratio is recorded anywhere in this repo to derive them from. They are
+       therefore placeholders with the right order of magnitude for a lift that
+       must hold two arms and a payload against gravity, owed a real actuator
+       model when PR6/PR7 give the servo one. Deliberately not dressed up as a
+       datasheet number (D29).
+
+       The velocity is a placeholder with a **constraint on it**, which is why
+       it is not simply the roundest number to hand. A URDF `<limit velocity>`
+       is *capability* — what the mechanism can do, and what MoveIt and
+       `ros2_control` plan and clamp against. `robot_safety`'s
+       `robot_safety/limits.yaml` `velocity.column: 0.15` is *policy* — how fast
+       this robot is allowed to move a lift through the height where hands are.
+       Policy must sit strictly **below** capability or the clamp is vacuous:
+       equal, it can never bind for anything that trusts the URDF; above, it
+       would be a cap the machine cannot reach.
+
+       Of those two, **the inversion (policy above capability) is the worse
+       one**, and it is worth ranking them rather than listing them. Equality
+       is a guard that has stopped guarding: nothing unsafe is commanded,
+       because the machine's own ceiling happens to sit exactly where policy
+       does. The inversion is a guard that is *wrong about the machine*:
+       whatever reads the cap — a planner, the brain's prompt, a future
+       controller — believes in a speed the lift does not have, so the
+       effective limiter silently becomes an unaudited number in a description
+       package instead of the file whose entire job is safety limits, and a
+       command issued at the permitted speed saturates the actuator and turns
+       into a tracking error at runtime rather than a refusal at the seam.
+
+       So this number's job is to clear 0.15 m/s with room for policy to be
+       tightened after an incident, and the gate asserts that relationship
+       (see SAFETY_COLUMN_SPEED_CAP_MPS in test_description.py).
+
+       Note the *height* bounds above are deliberately the opposite: there,
+       policy equals capability (`limits.yaml`'s `column.min/max_height` are
+       0.00/1.20 too), and that is correct — a position clamp's job is to stop
+       at the mechanical stop, not short of it.
+
+       Residue, since a placeholder that now carries a constraint invites
+       over-reading: 0.25 m/s is still a guess. If a real STS3215 through a real
+       lead screw turns out *slower* than the 0.15 policy cap, then it is the
+       cap or the mechanism that needs revisiting — not this property quietly
+       going back under it. PR6/PR7 own that. -->
+  <xacro:property name="column_lift_effort" value="120.0"/>
+  <xacro:property name="column_lift_velocity" value="0.25"/>
+
+  <!-- Derived, so that retuning any property above moves the whole column
+       instead of leaving one number behind. -->
+
+  <!-- Height of the rail's bottom face above `base_link`, m: the chassis
+       puck's top surface, computed from `base.xacro`'s own properties rather
+       than transcribed as 0.115. Rooting the mast at `base_link` (z = 0, axle
+       height) would bury its lower 115 mm inside the chassis solid — the D29
+       chassis/wheel bug again — and hardcoding the sum would leave the column
+       behind the next time the puck moves. -->
+  <xacro:property name="column_base_z" value="${chassis_z_offset + chassis_height / 2}"/>
+  <xacro:property name="column_travel" value="${max_column_height - min_column_height}"/>
+  <!-- The mast spans the travel *plus* the carriage it carries: at full
+       extension the carriage's top face must still be on the rail, not past the
+       end of it. -->
+  <xacro:property name="column_rail_length"
+                  value="${column_travel + column_carriage_height + column_rail_overtravel}"/>
+  <!-- The rail's collision/visual box is centred in its own link frame, so the
+       link frame sits half a rail above the bottom face. -->
+  <xacro:property name="column_rail_joint_z" value="${column_base_z + column_rail_length / 2}"/>
+  <!-- `column_lift`'s origin, in the rail's frame: the height the mount datum
+       sits at when the joint is at its *lower* limit, i.e. carriage resting on
+       the bottom of the rail with its top face one carriage-height up. Written
+       as "the datum's height in base_link, minus the rail frame's" so the
+       intent survives a retune of either. -->
+  <xacro:property name="column_lift_origin_z"
+                  value="${column_base_z + column_carriage_height - min_column_height
+                           - column_rail_joint_z}"/>
+
+  <!-- ==================================================================
+       Geometry
+       ================================================================== -->
+
+  <!-- The static mast. `base_link` (the root frame, declared in
+       robot.urdf.xacro) carries no geometry; the rail hangs off it exactly as
+       the chassis does. -->
+  <joint name="column_rail_joint" type="fixed">
+    <parent link="base_link"/>
+    <child link="column_rail_link"/>
+    <origin xyz="0 0 ${column_rail_joint_z}" rpy="0 0 0"/>
+  </joint>
+
+  <link name="column_rail_link">
+    <visual>
+      <geometry>
+        <box size="${column_rail_width} ${column_rail_depth} ${column_rail_length}"/>
+      </geometry>
+    </visual>
+    <collision>
+      <geometry>
+        <box size="${column_rail_width} ${column_rail_depth} ${column_rail_length}"/>
+      </geometry>
+    </collision>
+    <inertial>
+      <mass value="${column_rail_mass}"/>
+      <!-- Solid box about its own centre. -->
+      <inertia
+        ixx="${column_rail_mass * (column_rail_depth * column_rail_depth
+                                   + column_rail_length * column_rail_length) / 12}"
+        iyy="${column_rail_mass * (column_rail_width * column_rail_width
+                                   + column_rail_length * column_rail_length) / 12}"
+        izz="${column_rail_mass * (column_rail_width * column_rail_width
+                                   + column_rail_depth * column_rail_depth) / 12}"
+        ixy="0" ixz="0" iyz="0"/>
+    </inertial>
+  </link>
+
+  <!-- The lift itself: one prismatic joint, one STS3215 (D26). The axis is
+       written `0 0 1` under an identity rpy, so it is +z in the rail's frame
+       and — the rail joint being axis-aligned too — +z in `base_link`. It is
+       the *composition* that has to come out vertical, which is what the gate
+       asserts (D29's lesson applied to the column: a lift that travels sideways
+       satisfies "prismatic, limits 0.00-1.20" perfectly). -->
+  <joint name="column_lift" type="prismatic">
+    <parent link="column_rail_link"/>
+    <child link="column_top"/>
+    <origin xyz="0 0 ${column_lift_origin_z}" rpy="0 0 0"/>
+    <axis xyz="0 0 1"/>
+    <limit lower="${min_column_height}" upper="${max_column_height}"
+           effort="${column_lift_effort}" velocity="${column_lift_velocity}"/>
+  </joint>
+
+  <!-- The carriage. Its link frame origin is the **mount datum** — the top
+       face of the plate — so everything PR3.5/PR4 hang off `column_top` is
+       placed relative to a surface rather than to the middle of a solid. The
+       body itself therefore sits entirely below that origin, which is what the
+       -height/2 offsets say, and is why this link's shape is deliberately *not*
+       readable with the identity-origin helper the base's shapes use. -->
+  <link name="column_top">
+    <visual>
+      <origin xyz="0 0 ${-column_carriage_height / 2}" rpy="0 0 0"/>
+      <geometry>
+        <box size="${column_carriage_width} ${column_carriage_depth} ${column_carriage_height}"/>
+      </geometry>
+    </visual>
+    <collision>
+      <origin xyz="0 0 ${-column_carriage_height / 2}" rpy="0 0 0"/>
+      <geometry>
+        <box size="${column_carriage_width} ${column_carriage_depth} ${column_carriage_height}"/>
+      </geometry>
+    </collision>
+    <inertial>
+      <origin xyz="0 0 ${-column_carriage_height / 2}" rpy="0 0 0"/>
+      <mass value="${column_carriage_mass}"/>
+      <!-- Solid box about its own centre, which is half a carriage below the
+           mount datum: hence the <origin> above, without which the carriage
+           would swing about a point outside itself. -->
+      <inertia
+        ixx="${column_carriage_mass * (column_carriage_depth * column_carriage_depth
+                                       + column_carriage_height * column_carriage_height) / 12}"
+        iyy="${column_carriage_mass * (column_carriage_width * column_carriage_width
+                                       + column_carriage_height * column_carriage_height) / 12}"
+        izz="${column_carriage_mass * (column_carriage_width * column_carriage_width
+                                       + column_carriage_depth * column_carriage_depth) / 12}"
+        ixy="0" ixz="0" iyz="0"/>
+    </inertial>
+  </link>
+
 </robot>
