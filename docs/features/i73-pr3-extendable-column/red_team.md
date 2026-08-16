@@ -444,3 +444,205 @@ confirming that.
 
 **Mergeable, subject to the manager's judgment on the N+1 third pass**, with N4,
 N5, N8 and N9 routed to Sisyphus as follow-ups on the issue.
+
+---
+---
+
+# Red-team — #73 / PR3 — Extendable column. Round 3.
+
+Reviewing `56260fa` (manager-authored, comment-only) plus a second full pass
+over `origin/main..HEAD`, spent deliberately on what rounds 1 and 2 never
+attacked. Read-only on the worktree; all perturbations ran against a fresh
+scratch copy of the installed share tree at `/tmp/rt3/`, restored after each
+run. `git status --short` empty at the end.
+
+## Evidence base
+
+- `pixi run test` at this HEAD → **green**: 799 tests, 0 errors, 0 failures, 0
+  skipped; `robot_description` 27 collected / **24 non-lint, `vs-base +0`**.
+- 10 further perturbations (`/tmp/rt3/p.py`, `p2.py`) against the shipped
+  24-test suite.
+- `/tmp/rt3safe/`: `robot_safety` shadowed on `PYTHONPATH` with
+  `velocity.column` raised to 0.30, run against **all nine** packages.
+
+---
+
+# A. `56260fa`, claim by claim
+
+**Comment-only — VERIFIED, mechanically.** The `ast.dump()` of
+`test_description.py` at `627f6bd` and at `56260fa` is **byte-identical**
+(`sha cdbac64c81cad198` both sides), and so is the token stream with comments
+stripped. Since Python's AST carries docstrings and constant values, that rules
+out any change to an assertion, a constant, a docstring or control flow. This
+is a stronger check than reading the diff and it is the right one for a
+"comment-only" claim.
+
+| claim in the new comment | verdict |
+|---|---|
+| a cap *lowered* leaves the assertion "merely stricter" and the property holding | **VERIFIED.** Analytically: the test compares the URDF against the stale copy 0.15, so a real cap of 0.10 leaves `0.25 > 0.15` green while `0.10 < 0.25` holds. And "stricter" is demonstrable: with the URDF at 0.12 — legal under a 0.10 cap — the test goes **red** (`..._can_outrun_the_safety_layers_column_cap`), which is exactly a false red from an over-strict copy, not a missed defect. |
+| a cap *raised above capability* inverts policy vs capability and **this test still passes** | **VERIFIED** (round 2, re-confirmed). |
+| "raising the real cap to 0.30 leaves `robot_description` and `robot_safety` fully green, and **only** `robot_brain`'s prompt-envelope test objects — to the prompt, not to the URDF" | **VERIFIED, and now at the scope the sentence asserts.** My round-2 measurement only covered three packages, so the word "only" was inherited from a narrower experiment than it claims — the same shape as R10's `docs/design/`-only grep. I therefore re-ran **all nine** packages under a live 0.30 cap: `robot_backends` 74, `robot_description` 24, `robot_mcp` 82, `robot_safety` 176, `robot_skills` 106, `robot_world` 61 all pass; `robot_bringup`/`robot_perception` have no non-lint tests; `robot_brain` fails exactly one test, `TestSafetyEnvelope::test_the_stated_envelope_is_exactly_the_shipped_limits`, and its failure message is a set diff of the *prompt's* numbers (`0.15` extra on the left, `0.3` extra on the right) — i.e. it objects to the prompt. The claim is true as written. |
+| "the inversion `column.xacro` calls worse than the equality" | **FALSE as an attribution — see N10.** |
+| "Nothing closes that but reading the cap live, which would cost the dependency edge above" | true of the option it names, but it forecloses one it does not — see N10. |
+
+---
+
+# B. Fresh pass: interactions, vacuity, helpers
+
+- **No new test makes another vacuous, and the three that overlap are jointly
+  load-bearing.** Writing `o` for the carriage shape's z-offset and `h` for its
+  height: the datum test forces `datum = rail_foot + h`; the span test's lower
+  clause then reduces to `o >= −h/2`; `test_column_top_is_the_arm_mount_datum`
+  independently forces `o <= −h/2`. Together they pin `o = −h/2` exactly, and
+  no one of them implies another — confirmed by perturbation across the three
+  rounds, each failing alone (centred carriage → mount-datum only; slid lift
+  origin → datum only; shortened mast → span only).
+- **Helpers/fixtures re-read fresh.** `expansion`, `parsed_model`, `share_dir`
+  are module-scoped and no test mutates the parsed model; `_limit_attributes`
+  re-parses the raw expansion and is the one deliberate exception to
+  "assert against the parsed model", correctly documented; `_joint_z`,
+  `_joint_rpy`, `_box_geometry` are all `None`-safe; `_axis_in_base_link`'s
+  chain walk was proven by inserting a rotated intermediate link (round 2).
+  Nothing new here.
+- **Every velocity restatement is consistent** after the fix round —
+  `implementation.md` §3's table row, §5's perturbation row, §6's residue,
+  `column.xacro`, D31 and the test constant all agree on 0.25 capability /
+  0.15 policy. No stale `0.15` survives as a claim about the URDF.
+
+---
+
+# BLOCK
+
+## B5 — Every x and y coordinate in the column is ungated: a mast standing 5 m from the robot passes all 24 tests, with `test_column_rail_stands_on_the_chassis` green — **VERIFIED**
+
+Each of these is a single edit to the scratch `column.xacro`, and each leaves
+**all 24 tests passing**:
+
+| perturbation | what the model then describes | result |
+|---|---|---|
+| `column_rail_joint` origin `xyz="0.5 0 z"` | the mast stands in mid-air beside the robot, its foot at the right *height* and over nothing | **all 24 green** |
+| same at `xyz="5.0 0 z"` | the mast is in the next room | **all 24 green** |
+| same at `xyz="0 0.5 z"` | not an x-only gap | **all 24 green** |
+| `column_lift` origin `xyz="0.5 0 z"` | the carriage rides 0.5 m to the side of its rail and never touches it | **all 24 green** |
+| the rail's shape `<origin xyz="0.5 0 0">` on visual **and** collision | the mast's solid is displaced from the frame the arithmetic measures | **all 24 green** |
+| the carriage's shape offset `x=0.5` on visual, collision **and** inertial | the carriage body hangs beside its own mount datum | **all 24 green** |
+| carriage `0.02 × 0.02` on a `0.06 × 0.06` rail | a carriage narrower than the mast it "wraps" | **all 24 green** |
+
+Every column assertion in the file reads a **z** — `_joint_z` by name,
+`rail_size[2]`, `carriage_offset[2]`, `_collision_cylinder`'s length.
+`_axis_aligned_joint` refuses a rotation and `_box_geometry` refuses a rotated
+shape, so the *orientation* is gated; the *translation* is not, at any of the
+four places the column has one.
+
+Two things make this a BLOCK rather than a NOTE:
+
+1. **A test asserts by name a property it does not check.**
+   `test_column_rail_stands_on_the_chassis` — docstring: "The mast is a fixed
+   child of `base_link` whose foot clears the chassis puck" — is green for a
+   mast 5 m away. Contrast the base's own analogous check, which discloses its
+   scope in so many words: "it requires the puck to sit entirely above the
+   wheels and **ignores radial separation**" (`test_description.py:1337`). The
+   column's says nothing of the kind, and — unlike the wheels, whose x/y are
+   pinned absolutely by the 120°-spacing and driver-matrix tests — the column
+   has *nothing* else pinning its x/y. PR2 was allowed a z-only clearance check
+   because it disclosed the limit and the coordinate was covered elsewhere;
+   here neither is true.
+2. **It falsifies D31's own central mechanical claim, silently.** Clause 3
+   rests on the carriage and the mast being in permanent contact — "a measured
+   0.06 × 0.06 × 0.08 m overlap prism at every reachable joint value". Move the
+   lift joint 0.5 m in x and that sentence becomes false about the shipped
+   model while the gate stays green. The decision this PR ratifies is
+   unenforced in exactly the dimension the fix round spent its effort making
+   honest.
+
+Failure scenario that is not hypothetical: **PR3.5 and PR4 are the next two
+PRs, and both add lateral offsets to this subtree** — a head camera and two
+shoulders at ±`shoulder_offset_y = 0.18` off `column_top`. A column deliberately
+set back on the deck to make room for the arms is a realistic, sensible edit;
+one made with the sign wrong, or with the offset put on `column_rail_joint`
+instead of the arm mount, produces a robot whose mast stands off the edge of its
+own chassis, supported by nothing, and the gate whose stated purpose is
+"geometry is the part a reviewer cannot eyeball" says nothing.
+
+**Fix direction** — two relational assertions in the established style, both
+reading numbers off the model:
+
+- In `test_column_rail_stands_on_the_chassis`, add the footprint clause its
+  name already promises: the mast's collision footprint lies within the puck it
+  stands on. `hypot(rail_joint.x + rail_offset[0], rail_joint.y + rail_offset[1])
+  + hypot(rail_size[0], rail_size[1]) / 2 <= chassis_radius`, with
+  `chassis_radius` read from `_collision_cylinder('base_chassis_link')`. That
+  reds every mast perturbation above and stays true under a retuned puck or a
+  deliberately off-centre column, which is the point of doing it relationally
+  rather than asserting `x == y == 0`.
+- Pin the carriage to the rail laterally — the cheapest honest form is the one
+  D31 already claims: the rail's cross-section footprint lies inside the
+  carriage's, composed through `column_lift`'s own origin. That reds both the
+  displaced-lift and the too-narrow-carriage cases and turns "the carriage
+  wraps the mast" from prose into an assertion.
+
+If the manager would rather not grow the gate now, the *minimum* acceptable
+alternative is PR2's precedent: state in both docstrings that these checks are
+z-only and that the column's lateral placement is ungated, and route the
+assertion as a follow-up. I do not recommend it — the assertion is ~6 lines and
+the next two PRs are the ones that will move this subtree sideways — but it
+would at least stop a test from claiming more than it checks.
+
+---
+
+# NOTE
+
+**N10 — the new comment attributes a ranking to `column.xacro` that
+`column.xacro` does not make, and forecloses a cheaper option than PR6 —
+VERIFIED.** The comment says "the inversion `column.xacro` calls worse than the
+equality this constant was added to catch". `column.xacro:153-155` states both
+failure modes without ranking them: "equal, it can never bind for anything that
+trusts the URDF; above, it would be a cap the machine cannot reach." The
+comparative — "the reverse … would be worse" — is `status.md` R14's, an
+**ephemeral doc deleted at merge**, so after merge the source file will cite a
+judgement no surviving artifact makes. **The provenance is mine:** I wrote that
+phrasing in round 2's N9 and the manager copied it in good faith; it is the
+N+1th instance of the same defect family this feature keeps producing — prose
+asserting what a neighbouring artifact says, unchecked against the artifact.
+One-word fix: drop the attribution, or move the ranking into `column.xacro`
+where the comment says it lives.
+
+Second clause, same sentence: "Nothing closes that but reading the cap live,
+**which would cost the dependency edge above**." The first half is right; the
+second forecloses an option that exists — a live cross-check from a *third*
+place (the workspace-tooling suite in `scripts/tests/`, or PR8's bringup, which
+will legitimately depend on both) closes it with no edge from
+`robot_description` to `robot_safety` at all. Worth naming, because the
+sentence currently reads as "impossible before PR6" when it is "impossible
+*here* before PR6".
+
+*Deferred and not re-raised:* N4, N5, N8, N9 (ruled to Sisyphus as follow-ups).
+*Considered and not raised:* the `visuals[0]`-only reads shared by the three
+"drawn as it collides" tests (pre-existing pattern, not introduced here).
+
+---
+
+# Verdict
+
+**Round 3 is not clean: one BLOCK (B5) and one NOTE (N10).** The N+1 rule is
+therefore not yet satisfied — a fix round is needed, followed by two clean
+passes.
+
+This is the rule earning its keep rather than a reversal of round 2. Round 2's
+verdict was accurate for what it examined: it verified the fix diff
+exhaustively and re-checked the invariants. B5 was invisible to it because
+rounds 1 and 2 both attacked the column along the axis the column moves along —
+every perturbation either changed a height, a limit, a type, a parent or a
+rotation. Nothing in three rounds had asked what the gate knows about *where*
+the column stands, and the answer is nothing. That is precisely the
+"self-consistent wrong model" class the whole gate exists to catch, and it is
+the fourth time in this feature that the defect was a claim nobody had
+executed — this time a claim made by a **test name**.
+
+`56260fa` itself is sound: comment-only proven by AST identity, and three of
+its four factual claims verified, one of them re-measured at nine packages
+because the sentence claimed a scope my round-2 evidence did not cover. The
+fourth is a mis-citation I introduced.
+
+**Not mergeable as-is.** B5 is ~6 lines of assertion in the file's existing
+idiom; N10 is a phrase.
