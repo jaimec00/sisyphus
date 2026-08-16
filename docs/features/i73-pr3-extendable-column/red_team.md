@@ -646,3 +646,227 @@ fourth is a mis-citation I introduced.
 
 **Not mergeable as-is.** B5 is ~6 lines of assertion in the file's existing
 idiom; N10 is a phrase.
+
+---
+---
+
+# Red-team — #73 / PR3 — Extendable column. Round 4.
+
+Reviewing the B5 fix (`f6d1b6c`, `b285c17`, `6d6d5d3`) and then a second full
+pass over `origin/main..HEAD`. Read-only on the worktree; all perturbations ran
+against a fresh scratch copy of the installed share tree at `/tmp/rt4/`,
+restored after each run. `git status --short` empty at the end.
+
+## Evidence base
+
+- `pixi run test` at this HEAD → **green**: 800 tests, 0 errors, 0 failures, 0
+  skipped; `robot_description` 28 collected / **25 non-lint, `vs-base +0`**.
+- 29 perturbations in three batches (`/tmp/rt4/p.py`, `p2.py`, `p3.py`) against
+  the shipped 25-test suite, including edits to the scratch **`base.xacro`**
+  (the chassis-centred clause) — a file no previous round perturbed.
+
+---
+
+# A. Is the lateral gate tight, or merely non-empty?
+
+**Tight.** All eight of round 3's lateral perturbations now red, each naming
+its own clause and nothing else:
+
+| perturbation | now |
+|---|---|
+| mast joint `x = 0.5` / `x = 5.0` / `y = 0.5` | **red** — `..._rail_stands_on_the_chassis` (1 test) |
+| lift joint `x = 0.5` | **red** — `..._carriage_wraps_the_mast` (1) |
+| carriage body `x = 0.5` on all three shapes | **red** — `..._carriage_wraps_the_mast` (1) |
+| rail shape offset `x = 0.5` | **red** — wrap **and** footprint (2) |
+| carriage `0.02 × 0.02` on a `0.06` rail | **red** — `..._carriage_wraps_the_mast` (1) |
+
+And the cases the implementer did **not** choose:
+
+- **Negatives** — `x = −0.5`, `x = −0.13`, lift `y = −0.5`: all red. The
+  footprint clause uses `abs()` per axis, so sign is handled.
+- **Split offsets that compound** — this is the one I most expected to slip
+  through. Mast joint `x = 0.07` alone: **green** (legal, 70 mm < the 117 mm
+  edge). Rail *shape* offset `x = 0.07` alone: **red**, but on the *wrap*
+  clause, not the footprint — the shape moves within the rail frame, so the
+  carriage stops containing it. Both together: **red on both clauses**, because
+  the footprint clause sums `joint.xyz + shape.offset` before taking the corner.
+  The compounding attack fails; the composition is done in the right place.
+- **The chassis rather than the column** — `base_chassis_joint` at `x = 0.05`:
+  **red**, on the new centred assertion. Not vacuous, and worth noting it is a
+  *bonus catch for PR2*: a laterally displaced puck was previously ungated
+  anywhere in the suite (`test_solid_links_have_visual_and_collision_geometry`
+  checks the chassis's rpy and z only).
+- **Wraps in x but misses in y** — carriage `0.14 × 0.02`: **red**, and the
+  message names the `y` interval. The clause is per-axis, not a single radius.
+- **A second `<collision>`** — see N12; pre-existing and disclosed.
+
+**Largest lateral displacement that still passes everything:** the mast may sit
+anywhere its footprint is entirely on the deck — **116.97 mm** along an axis,
+**76.07 mm** on the diagonal. That is defensible, and it is the disclosed
+intent: the docstring says the clause is "a containment, **not a placement**",
+justified by PR4 plausibly wanting an off-centre column. A consequence worth
+stating: at the legal extreme the *carriage* (0.14 × 0.10) overhangs the puck,
+which is also disclosed ("nothing says the carriage may not overhang the deck —
+which is correct for a body that spends its life in the air"), and which I
+confirmed is green (mast at `x = 0.11`, carriage spanning to `x = 0.18` on a
+0.15 m puck).
+
+## The boundary is where the arithmetic puts it, not merely between the two probes
+
+The implementer reports `x = 0.08` green and `x = 0.13` red. Both reproduce —
+but that brackets an 50 mm window, so I derived the edge instead. With
+`chassis_radius = 0.15` and a `0.06` square section, the corner constraint
+`hypot(|x| + 0.03, 0.03) ≤ 0.15` gives `|x| ≤ 0.116969`:
+
+| probe | predicted | measured |
+|---|---|---|
+| `x = 0.1169` | inside | **green** |
+| `x = 0.1170` | outside | **red** |
+| `x = y = 0.0760` | inside (edge 0.076066) | **green** |
+| `x = y = 0.0761` | outside | **red** |
+
+Verified to 0.1 mm on **both** the axis and the diagonal, which is the check
+that distinguishes the true box corner from the two approximations the comment
+says it rejected: `max(per-axis)` would put the axis edge at 0.12 and the
+diagonal edge at 0.12 too, and `hypot(centre) + half-diagonal` would put them at
+0.1076 and 0.1076. Neither matches; the shipped formula does. The comment's
+claim to use "the corner — hypot of the two per-axis extremes, not the larger of
+them, and not hypot(centre) + half-diagonal" is exactly right.
+
+---
+
+# B. The cross-test dependency, and the two self-caught counts
+
+**The wrap clause degrades precisely as its docstring says.** It claims
+q-independence *borrowed* from `test_column_lift_axis_is_vertical_in_base_link`.
+Breaking that premise (lift `<axis>` set to `1 0 0`, so the carriage travels
+sideways and leaves the rail at any `q > 0`): **only the axis test reds; the
+wrap clause stays green**, confirming it is genuinely about one configuration
+and that the pair catches the fault between them. The docstring names the
+dependency rather than leaving it for a reader to discover, which is the right
+handling; I could not find a fault the pair misses.
+
+**Both self-caught stale numbers verified independently**, not credited:
+
+- rotated lift origin now reds **4** — `..._lift_axis_is_vertical_in_base_link`,
+  `..._rail_spans_the_carriage_travel`,
+  `..._datum_rests_on_the_mast_foot_at_the_lower_limit` and (new)
+  `..._carriage_wraps_the_mast`, which also routes through
+  `_axis_aligned_joint`. D31 says "three or four each"; the mast rooted at
+  `z = 0` is still **3**, so the range is right and both endpoints are real.
+- `velocity="0"` reds **2** (positive-limits *and* the safety-cap clause), so
+  removing it from the single-cause list was correct; `effort="0"` reds **1**,
+  so its replacement is correct. I re-ran the whole single-cause list — retype,
+  re-parent, retuned bound, zeroed effort, centred carriage, slimmed visual,
+  mast moved sideways: **1 each**. `<limit>` deleted: **7**.
+
+**Counts.** `git diff origin/main..HEAD`: **11** added `def test_`, **0**
+removed, **9** helpers; `test_baseline.json` `robot_description: 25`; my green
+run reports 25 non-lint `+0 ok`. D31's "the gate grew by eleven" and
+`implementation.md`'s "9 new helpers, 11 new tests" both match the diff.
+
+---
+
+# C. N10's resolution, and the scope disclosures
+
+**N10 is properly resolved, and the cited file's new claim is itself true** —
+which was the right thing to be suspicious of. `column.xacro:156-166` now ranks
+the two failure modes and gives a reason, and the reason is correct on the
+merits: under equality "nothing unsafe is commanded, because the machine's own
+ceiling happens to sit exactly where policy does"; under inversion "whatever
+reads the cap … believes in a speed the lift does not have, so the effective
+limiter silently becomes an unaudited number in a description package instead of
+the file whose entire job is safety limits, and a command issued at the
+permitted speed saturates the actuator and turns into a tracking error at
+runtime rather than a refusal at the seam." That is a sound ranking — under
+equality the system is merely un-guarded; under inversion the guard is *wrong
+about the machine* and the binding limit migrates to an estimate. The test
+comment's citation now resolves to a durable file. The second half of N10 is
+also fixed, and hedged correctly: the third-place option is named as "an option,
+not a plan, and nobody owns it".
+
+**The scope disclosures are accurate and none is over-broad.** I tested each
+against the assertion rather than reading it: the footprint clause really does
+reject a cantilevered mast (`x = 0.117` red), really does *not* pin placement
+(`x = 0.1169` green), and really does leave the carriage's own footprint
+unbounded above (a `0.40` m-wide carriage on a `0.30` m deck is green). The wrap
+clause really says nothing about z and nothing about `base_link` position. No
+disclaimer disclaims more than the assertion misses.
+
+**`implementation.md` §7's "still ungated" list is complete and honest.** I
+went looking for omissions and found none: the two gaps I discovered
+independently this round — a second `<collision>` being invisible, and the
+carriage overhanging the deck — are both already on it, and it correctly marks
+the first as pre-existing rather than introduced here. It also names two I had
+not tested (inertia tensors never checked against the geometry they are computed
+from; lateral position not pinned to a value) and it re-asks B2's question of
+`effort`. That last one I tried to falsify at the scope that burned R10: I
+grepped **all** of `src/` and `docs/` for force/torque/newton/stall figures and
+found exactly one — `limits.yaml`'s `gripper.max_force: 40.0`, a jaw force with
+nothing to do with the lift. `effort` is genuinely unconstrained; the claim
+survives.
+
+---
+
+# BLOCK
+
+**None.**
+
+# NOTE
+
+**N11 — `column.xacro` over-attributes the whole overlap prism to one test —
+VERIFIED.** The header now reads "a 0.06 × 0.06 × 0.08 m prism at every
+reachable joint value — **asserted by `test_column_carriage_wraps_the_mast`**,
+not just measured here". That test asserts the *cross-section* half
+(0.06 × 0.06); the depth half — that the carriage's 0.08 m of z overlaps the
+rail at every `q` — comes from `..._rail_spans_the_carriage_travel` and
+`..._datum_rests_on_the_mast_foot_at_the_lower_limit`. The parenthetical is true
+of the **suite** (I could not construct a model where all 25 pass and the prism
+is absent: the span clauses force the carriage inside the rail's z range at both
+ends), so this is a precision point, not a correctness one — but it is one test
+being credited with a conjunction, in a durable file, in the same family of
+claim this feature has now corrected four times. Fix: "asserted by
+`test_column_carriage_wraps_the_mast` in x/y and by the span and datum tests in
+z".
+
+**N12 — two items on §7's ungated list have no durable home — VERIFIED.**
+`implementation.md` is deleted at merge. Of its four honest "still ungated"
+items, two are recorded durably (the carriage overhang and the
+placement-vs-containment call are both in the footprint clause's docstring) and
+two are not: that every geometric clause reads `collisions[0]`/`visuals[0]`, so
+a second shape on a link is invisible (measured: a 0.4 m cube bolted to the mast
+5 m away, and one 3 m above the carriage, each pass all 25 tests), and that
+`test_moving_links_have_inertia` never checks a tensor against the geometry it
+is supposed to be computed from. Both are pre-existing limits inherited from
+PR1/PR2 and neither is worth gating in this PR — but the helper docstrings say
+only "a link's **first** collision box", which names the behaviour without
+naming the consequence. One sentence in `_collision_box`/`_collision_cylinder`
+and one in the inertia test would move the knowledge from a file that gets
+deleted into files that do not. This is the same lesson the new footprint
+docstring itself states — "ask of each geometric assertion which coordinates it
+silently ignores" — with *shapes* substituted for *coordinates*.
+
+*Deferred and not re-raised:* N4, N5, N8, N9.
+
+---
+
+# Verdict
+
+**Round 4 is clean: no BLOCKs.** That is clean pass #1 of the two required
+after round 3's B5.
+
+The B5 fix is not merely non-empty, which was the thing to check: the boundary
+lands within 0.1 mm of where the corner arithmetic puts it on both the axis and
+the diagonal, the split-offset compounding attack fails because the composition
+is done before the corner is taken, the chassis-centred clause fires and
+incidentally closes a PR2 gap nobody had noticed, the per-axis wrap clause
+catches a miss in y while x is fine, and the one cross-test dependency the new
+docstring admits to behaves exactly as admitted. Every count D31 now states —
+eleven tests, three/four/seven-test perturbations, seven single-cause cases — I
+re-measured rather than credited, and all of them hold. N10's resolution passes
+the specific test the manager set for it: the cited file's new claim is itself
+true, and its reasoning is good.
+
+The two NOTES are both about *where knowledge lives* rather than about anything
+being wrong: one test credited with a conjunction, and two honest caveats
+recorded only in a doc that will be deleted. Neither blocks.
