@@ -199,8 +199,19 @@ ROBOT_MODEL_MAX_COLUMN_HEIGHT_M = 1.20
 #: deliberately the same trade: no `robot_safety` test dependency (a
 #: description package must not grow an edge to the safety layer to check one
 #: inequality), so this is a hand-typed copy that can drift from `limits.yaml`.
-#: Drift makes the assertion weaker, never wrong: it can only compare against a
-#: cap that is no longer policy.
+#: Drift is not symmetric, and the direction that matters is the one this
+#: assertion exists to prevent. A cap *lowered* in `limits.yaml` leaves this
+#: comparing against a stale, higher number -- the assertion is merely stricter
+#: than it needs to be, and the property still holds. A cap *raised above the
+#: URDF's capability* is the failure: policy would then exceed capability (the
+#: inversion `column.xacro` calls worse than the equality this constant was
+#: added to catch) and **this test would still pass**, because it compares
+#: against the copy rather than against `limits.yaml`. Measured: raising the
+#: real cap to 0.30 leaves `robot_description` and `robot_safety` fully green,
+#: and only `robot_brain`'s prompt-envelope test objects -- to the prompt, not
+#: to the URDF. Nothing closes that but reading the cap live, which would cost
+#: the dependency edge above; PR6/PR7, which give the lift a real actuator
+#: model, are where to revisit the trade.
 SAFETY_COLUMN_SPEED_CAP_MPS = 0.15
 
 #: Links that are pure frames and so carry no mass: the root and the ground
