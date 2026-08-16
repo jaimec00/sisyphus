@@ -260,10 +260,137 @@ behavior until PR6".
   Cite it as the *concept* crib (per D26) and mark every number PR3 invents as
   ESTIMATED. Do not attribute a number to Nori Bot.
 
+## Round-2 rulings (R13–R18) — issued against red-team round 1
+
+Round 1 returned **4 BLOCKs and 8 NOTEs** (`red_team.md`). The shipped *model*
+was upheld: topology, geometry and all seven new tests fire under perturbation,
+and no acceptance criterion is unguarded. Every BLOCK is in the **durable
+prose**, plus one number. Two of my own round-1 rulings were falsified and are
+corrected here.
+
+### R13 — B1 + my step-9 finding: correct D31's arithmetic, and pin it with a test.
+
+**My R4 was wrong.** It asserted `column_top`'s height above `base_link` is "the
+rail joint's offset plus *q*". The implementer then (correctly, and recorded in
+`implementation.md` §4.1) centred the rail box, which puts `column_lift`'s origin
+at −0.585 in the rail frame. The true datum height is
+
+```
+column_rail_joint.z + column_lift.origin.z + q
+  = chassis_top + column_carriage_height + (q − min_column_height)
+  = 0.195 + q          →  0.195 m … 1.395 m above base_link
+```
+
+The wrong formula (`0.78 + q`) propagated from my ruling into `column.xacro:81`
+and into **D31**, on the one sentence PR6 is told to reconcile against
+`RobotModel` — a 585 mm error in the append-only log. Fix it in all three places
+(D31, the xacro comment, R4 above).
+
+**And pin it**, per the red-team's suggestion: assert the identity the whole
+column rests on — at the lower limit the datum sits at `rail_foot +
+column_carriage_height`, i.e. the carriage rests on the mast's foot. Nothing
+asserts it directly today, which is exactly why the prose could drift from it.
+
+### R14 — B2: `column_lift_velocity` is **capability** and must sit strictly above the safety cap.
+
+R10's premise was false. The grep behind it (`context.md` Q4) covered
+`docs/design/` only; `src/robot_safety/robot_safety/limits.yaml:36` has
+`velocity.column: 0.15` — **verified by the manager** — and the URDF shipped the
+same 0.15.
+
+The ruling: the two numbers are **different quantities** and must not be equal.
+URDF `<limit velocity>` is what the mechanism *can* do; `limits.yaml`'s
+`velocity.column` is what policy *allows*. Policy equal to capability makes the
+safety clamp vacuous the moment anything trusts the URDF — a quiet weakening of
+invariant 3, and the reverse (policy above capability) would be worse.
+
+Therefore:
+1. Raise `column_lift_velocity` to a value **strictly greater** than the cap
+   (0.25 m/s unless the implementer has a better-argued estimate). Keep it
+   ESTIMATED — this is still a guess, just no longer a colliding one.
+2. Rewrite its comment to say what it is, cite `limits.yaml`'s `velocity.column`
+   as the floor it must clear, and state the capability-vs-policy distinction.
+3. **Gate the relationship.** Add `SAFETY_COLUMN_SPEED_CAP_MPS = 0.15` to
+   `test_description.py` in the `DRIVER_*` / `ROBOT_MODEL_*` transcription style,
+   citing `robot_safety/robot_safety/limits.yaml`, and assert
+   `column_lift.limit.velocity > SAFETY_COLUMN_SPEED_CAP_MPS`. Same transcription
+   residue as R5 — say so in the comment; do **not** add a `robot_safety`
+   test dependency.
+4. Correct R10 above and `context.md` Q4's "nowhere in this repo" claim, naming
+   the scope error that produced it. A wrong premise recorded as fact is the
+   thing that made this defect possible.
+
+### R15 — B3: my R2 rationale was partly wrong. Demote it to reasoning with an expiry.
+
+The red-team upheld R2's **premise** (it measured a 0.06 × 0.06 × 0.08 m overlap
+prism between mast and carriage at every reachable *q*) and upheld the parenting.
+It falsified the *justification* I gave: a **fixed** rail joint is likely fused
+into `base_link` at MJCF time (`fusestatic`), in which case the carriage's MuJoCo
+parent is `base_link`'s body either way and the parent/child exclusion I credited
+buys nothing. The MoveIt half is also softer than I claimed — there is no default
+ACM without an SRDF, and the Setup Assistant disables *always-in-collision* pairs
+as well as adjacent ones, which would cover siblings too.
+
+Keep the parenting: it is the honest kinematic description of a carriage on a
+rail, which is reason enough. Rewrite the justification everywhere it appears
+(**D31 clause 3, `column.xacro:44-53`, `README.md`, `spec.md:127-129`**) as
+*expected* behavior, explicitly **unverified until PR7 builds the MJCF**, and
+name the `fusestatic` caveat so PR7 checks it rather than inherits it. An
+unexecutable claim stated as measurement is precisely what D30's rationale warns
+about, and it landed in the very next entry.
+
+### R16 — B4: drop the "and only that test" overclaim.
+
+Five of eight perturbations fail 2–5 tests, and the extra failures are *correct*.
+Fix D31 clause 6 and `implementation.md` §5 to claim only what was measured:
+"at least that test; in the six single-cause cases, only that test."
+
+### R17 — the six/seven count (manager's step-9 finding).
+
+D31 clause 6 says "the gate grew by **six**". It grew by **seven** —
+`test_baseline.json` 14 → 21 settles it, and the clause's own enumeration lists
+all seven. The red-team's verdict repeats the error, because both were written
+from the prose rather than from `git diff`. Fix D31; the note in `red_team.md`
+already records it against the report itself.
+
+### R18 — NOTES: fix these five now, defer three.
+
+**Fix in this PR** — all cheap, and this PR either owns the defect or introduced it:
+- **N1** — assert `lower` explicitly (URDF defaults an omitted `lower` to 0, so
+  deleting it today leaves the suite green and the acceptance criterion is only
+  declaratively enforced for `upper`). Read it off the raw expansion.
+- **N2** — guard the degenerate mast (`column_rail_width = 0` passes everything;
+  the chassis and carriage both already have positive-dimension guards).
+- **N3** — assert the mast's `<visual>` matches its `<collision>`, as the chassis
+  and carriage already do ("what a reviewer sees must be what the planner hits").
+- **N6** — re-pad `urdf-mjcf-pr-breakdown.md:175`; this PR's own `(done)` marker
+  shifted the ASCII merge-order graph so it now reads as PR3.5/PR6 hanging off
+  PR4/PR5.
+- **N7** — `spec.md:33` claims a `head_camera_link` the URDF does not have. PR3 is
+  the D30 sweep of that section and `column_top` now exists, which makes the
+  sentence read as current fact. Reword to PR3.5's future tense.
+
+**Follow-up comment on the issue, not this PR:**
+- **N4** — the mast's foot is *coplanar* with the chassis top (zero margin), and
+  the carriage's underside is coplanar with it too at `q = 0`. Not a penetration,
+  and structurally permanent via `column_base_z` — but the base gave its wheels
+  5 mm for the same reason, and "clears" is the wrong word in `spec.md`/README/
+  the test name. Worth a `column_foot_clearance` estimate; not worth blocking.
+- **N5** — the transcription pin is one-directional (drifting `RobotModel` to 1.50
+  leaves every package green). Inherent to R5, honestly documented, retired by
+  PR6. State it in the PR description so nobody misreads it as a live pin.
+- **N8** — ~1.495 m tall on a 0.25 m wheel circle, CoM ≈ 0.38 m, static tip angle
+  ≈ 18° before PR4's arms. Both drivers are inherited (LeKiwi's `base_radius`,
+  `RobotModel`'s travel), so it is not a PR3 defect — but it is a real stability
+  question for PR4/PR7 and should not be discovered from a MuJoCo tip-over.
+
 ## Blockers
 
-None.
+None outstanding. Round-1 BLOCKs B1–B4 are ruled on above (R13–R17) and are in
+the fix round.
 
 ## Escalations
 
-None.
+None. Two manager rulings (R4's arithmetic, R2's MJCF rationale) were falsified
+by the red-team and corrected here rather than defended — which is the loop
+working as intended, not a fork for Sisyphus.

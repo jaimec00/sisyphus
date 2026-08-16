@@ -54,7 +54,13 @@ the chassis are tied together *relationally* -- the rail must clear the chassis
 it stands on and must span the travel its own carriage is allowed, both read
 off the model, so retuning any of them keeps the constraint. The lift's axis is
 checked after composing every rpy between it and ``base_link``, because a
-column that lifts sideways satisfies "prismatic, 0.00-1.20" perfectly.
+column that lifts sideways satisfies "prismatic, 0.00-1.20" perfectly. Two
+column assertions exist because a review round caught the claim they now pin:
+the datum's height at zero travel (stated in three documents with one of the
+two joint origins left out, and wrong by 585 mm) and the lift's velocity limit
+against ``SAFETY_COLUMN_SPEED_CAP_MPS`` (shipped equal to the safety layer's
+own cap, which makes that cap unable to bind). Both were prose nothing
+executed.
 
 The **absolute** wheel layout gets its own assert on top of those, and the
 distinction matters more than it looks: every check above compares the wheels
@@ -175,6 +181,27 @@ DRIVER_MATRIX_TOL = 1e-9
 #: copy disappears rather than needing to be maintained.
 ROBOT_MODEL_MIN_COLUMN_HEIGHT_M = 0.0
 ROBOT_MODEL_MAX_COLUMN_HEIGHT_M = 1.20
+
+#: The safety layer's column speed cap, transcribed from `velocity.column` in
+#: `src/robot_safety/robot_safety/limits.yaml` -- the *policy* limit on how
+#: fast this robot may move its lift, m/s.
+#:
+#: It is here because the URDF's `<limit velocity>` is a different quantity
+#: pointing at the same axis: capability, i.e. what the mechanism can do and
+#: what MoveIt and ros2_control plan and clamp against. Policy has to sit
+#: strictly *below* capability or the clamp cannot bind -- set them equal and
+#: the safety layer stops constraining anything that trusts the URDF, with
+#: nothing anywhere going red. That is not hypothetical: this description
+#: shipped 0.15 for exactly one review round, having independently guessed the
+#: cap's own value.
+#:
+#: Same transcription residue as the ROBOT_MODEL_* constants above, and
+#: deliberately the same trade: no `robot_safety` test dependency (a
+#: description package must not grow an edge to the safety layer to check one
+#: inequality), so this is a hand-typed copy that can drift from `limits.yaml`.
+#: Drift makes the assertion weaker, never wrong: it can only compare against a
+#: cap that is no longer policy.
+SAFETY_COLUMN_SPEED_CAP_MPS = 0.15
 
 #: Links that are pure frames and so carry no mass: the root and the ground
 #: projection. Every *other* link must have a real inertial (see
@@ -454,6 +481,28 @@ def _joint_rpy(joint):
     if joint.origin is None or joint.origin.rpy is None:
         return (0.0, 0.0, 0.0)
     return tuple(float(value) for value in joint.origin.rpy)
+
+
+def _limit_attributes(expansion, joint_name):
+    """Return the attributes a joint's ``<limit>`` element *literally declares*.
+
+    Read off the raw expansion rather than the parsed model, because URDF --
+    and faithfully, ``urdf_parser_py`` -- fills in defaults: an omitted
+    ``lower`` comes back as ``0.0``, indistinguishable from a stated ``0.0``.
+    Everywhere else in this file the parsed model is the right thing to assert
+    against; this is the exception, because the claim being gated is that the
+    description *states* a bound, not that something downstream infers the same
+    number from a default.
+    """
+    root = ElementTree.fromstring(_require_expansion(expansion))
+    for joint in root.iter('joint'):
+        if joint.get('name') == joint_name:
+            limit = joint.find('limit')
+            assert limit is not None, (
+                '%s declares no <limit> element; see '
+                'test_check_urdf_parses_the_expansion.' % joint_name)
+            return dict(limit.attrib)
+    pytest.fail("the expansion contains no joint named '%s'" % joint_name)
 
 
 def _lift_limit(model):
@@ -883,11 +932,15 @@ def test_column_lift_is_the_models_only_prismatic_joint(parsed_model):
     (a column that cannot lift), renamed (decoupling the URDF from the
     ``column_lift`` key `RobotModel`/PR6 and the skill layer speak), or
     re-parented onto ``base_link`` -- which is kinematically identical while
-    ``column_rail_joint`` is fixed and is exactly why it needs asserting: made
-    siblings, the carriage and the mast are two solids in permanent contact
-    that *nothing* filters, since MoveIt's default ACM disables adjacent pairs
-    and MuJoCo excludes parent/child bodies. That is D29's chassis-vs-wheels
-    bug one subassembly up, and it passes ``check_urdf`` and
+    ``column_rail_joint`` is fixed and is exactly why it needs asserting: the
+    carriage wraps the mast, so the two solids interpenetrate at every joint
+    value, and only the parent/child arrangement describes that honestly. It is
+    also the arrangement collision tooling is *expected* to filter (a generated
+    MoveIt ACM disables adjacent pairs; MuJoCo excludes parent/child bodies),
+    where siblings under ``base_link`` would be filtered by neither -- but that
+    half is **unverified until PR7 builds the MJCF**, and a fixed rail joint may
+    be fused into ``base_link`` there anyway, so it is not what this assertion
+    rests on. All three faults pass ``check_urdf`` and
     ``robot_state_publisher`` without complaint.
 
     The uniqueness clause is a deliberate ratchet in the same spirit as
@@ -905,13 +958,14 @@ def test_column_lift_is_the_models_only_prismatic_joint(parsed_model):
     lift = parsed_model.joint_map['column_lift']
     assert lift.parent == 'column_rail_link' and lift.child == 'column_top', (
         'column_lift must carry column_top along column_rail_link; it is wired '
-        '%s -> %s. Parenting the carriage to the mast it rides is what makes '
-        'the pair adjacent, so their permanent contact is filtered by MoveIt '
-        'and MuJoCo instead of by nothing at all.' % (lift.parent, lift.child))
+        '%s -> %s. A carriage rides its own mast: the two interpenetrate by '
+        'construction, and only the parent/child arrangement says so -- as '
+        'siblings under base_link the model states no relationship between two '
+        'solids that are always in contact.' % (lift.parent, lift.child))
 
 
-def test_column_lift_limits_are_the_robot_model_column_bounds(parsed_model):
-    """``column_lift``'s travel limits equal `RobotModel`'s column bounds exactly.
+def test_column_lift_limits_are_the_robot_model_column_bounds(parsed_model, expansion):
+    """``column_lift``'s travel limits equal `RobotModel`'s column bounds, and say so.
 
     The first place this description owns a number that belongs to something
     outside it, and therefore the column's answer to D29's lesson: a gate built
@@ -923,9 +977,16 @@ def test_column_lift_limits_are_the_robot_model_column_bounds(parsed_model):
     is the travel the Mock backend validates commands against, the safety
     layer clamps to, and the brain's prompt quotes at the planner.
 
-    Asserted against transcribed constants, not against the raw file, and not
-    against a live import (see ROBOT_MODEL_*_COLUMN_HEIGHT_M for why the copy
-    and what retires it).
+    Asserted against transcribed constants, not against a live import (see
+    ROBOT_MODEL_*_COLUMN_HEIGHT_M for why the copy and what retires it).
+
+    Both bounds are then checked a second time **as attributes of the raw
+    expansion**, which is not belt-and-braces: URDF defaults an omitted
+    ``lower`` to 0, so deleting ``lower="${min_column_height}"`` from the
+    ``<limit>`` leaves the parsed model reading 0.0 and this whole suite green
+    while the description no longer *states* the bound at all. The acceptance
+    criterion is that the URDF owns these two numbers, and a number that is
+    only true by someone else's default is not owned.
     """
     limit = _lift_limit(parsed_model)
     bounds = ((limit.lower, ROBOT_MODEL_MIN_COLUMN_HEIGHT_M, 'lower'),
@@ -937,9 +998,18 @@ def test_column_lift_limits_are_the_robot_model_column_bounds(parsed_model):
         "column_lift's limits disagree with RobotModel's column travel "
         '(min_column_height / max_column_height in '
         "robot_backends/mock_world.py): %s. These are the carriage's travel "
-        "along the rail, measured from the joint's own origin -- the mount "
-        "height above base_link is the rail joint's offset and is "
-        'deliberately not folded in.' % wrong)
+        "along the rail, measured from the joint's own origin; the datum's "
+        'height above base_link is both joint origins plus the joint value '
+        '(0.195 + q today), and that mount offset is deliberately not folded '
+        'into the limits.' % wrong)
+
+    declared = _limit_attributes(expansion, 'column_lift')
+    missing = [name for name in ('lower', 'upper') if name not in declared]
+    assert not missing, (
+        "column_lift's <limit> does not declare %s. URDF defaults an omitted "
+        'lower to 0, which happens to equal the bound today, so the model '
+        'parses to the right number without stating it -- and would keep '
+        'parsing to 0 if RobotModel ever moved.' % missing)
 
 
 def test_column_lift_declares_positive_effort_and_velocity_limits(parsed_model):
@@ -967,6 +1037,36 @@ def test_column_lift_declares_positive_effort_and_velocity_limits(parsed_model):
         'column_lift needs a positive effort and velocity limit: %s. Both are '
         'estimates (see the xacro), but a zero or negative one is a joint no '
         'planner or controller will move.' % faults)
+
+
+def test_column_lift_can_outrun_the_safety_layers_column_cap(parsed_model):
+    """The lift's *capability* is strictly faster than the safety layer's *policy*.
+
+    Two numbers about the same axis that mean different things: the URDF's
+    ``<limit velocity>`` is what the mechanism can do (what MoveIt and
+    ros2_control plan and clamp against), while ``limits.yaml``'s
+    ``velocity.column`` is how fast this robot is *allowed* to move a lift
+    through the height where hands are. A clamp only does something if there is
+    something above it to clamp; capability equal to policy makes the safety
+    layer's column cap vacuous for every consumer that believes the
+    description, and capability *below* policy makes the cap unreachable
+    instead. Neither shows up anywhere else -- the positive-limits test next
+    door is happy with any positive number, and the safety layer's own suite
+    never reads the URDF.
+
+    Not hypothetical: this file shipped ``velocity="0.15"`` -- the cap's exact
+    value, arrived at independently as an estimate -- for one review round.
+    That is the D29 wheel-radius shape (two packages agreeing by coincidence
+    with nothing asserting it), pointed at invariant 3.
+    """
+    velocity = _lift_limit(parsed_model).velocity
+    assert velocity > SAFETY_COLUMN_SPEED_CAP_MPS, (
+        'the column lift declares a top speed of %r m/s, which does not exceed '
+        "the safety layer's column cap of %r m/s "
+        '(robot_safety/robot_safety/limits.yaml, velocity.column). The URDF '
+        'states capability and the cap states policy: policy at or above '
+        'capability is a clamp that can never bind.' % (
+            velocity, SAFETY_COLUMN_SPEED_CAP_MPS))
 
 
 def test_column_lift_axis_is_vertical_in_base_link(parsed_model):
@@ -998,11 +1098,10 @@ def test_column_rail_stands_on_the_chassis(parsed_model):
     its wheels, and it exists because that one does not generalise: its second
     half names ``base_chassis_link`` and the wheels explicitly. Root the mast
     at ``base_link``'s own z (axle height, which is where a joint origin with
-    no offset puts it) and its lower 115 mm sit inside the chassis solid --
-    they are siblings, so nothing filters that contact either, and the model
-    starts a simulation in deep penetration while every other assertion here
-    stays green. That is the exact bug D29's red-team round found buried in the
-    base's own wheels.
+    no offset puts it) and its lower 115 mm sit inside the chassis solid -- two
+    solids in a penetration the model states no relationship about (they are
+    siblings), and every other assertion here stays green. That is the exact
+    bug D29's red-team round found buried in the base's own wheels.
 
     Both heights are read off the parsed model and compared as a
     *relationship*, never against the literal that satisfies them today
@@ -1022,7 +1121,12 @@ def test_column_rail_stands_on_the_chassis(parsed_model):
         'root frame; its parent is %r' % rail_joints[0].parent)
 
     rail_joint = _axis_aligned_joint(parsed_model, rail_joints[0].name)
-    (_x, _y, rail_length), rail_offset = _collision_box(parsed_model, 'column_rail_link')
+    rail_size, rail_offset = _collision_box(parsed_model, 'column_rail_link')
+    assert all(dimension > 0 for dimension in rail_size), (
+        'the mast collision box is degenerate: %s. A zero-thickness or '
+        'zero-length mast satisfies every height relationship in this file '
+        'while describing no solid at all.' % (list(rail_size),))
+    rail_length = rail_size[2]
     rail_foot = _joint_z(rail_joint) + rail_offset[2] - rail_length / 2.0
 
     chassis_joint = _axis_aligned_joint(parsed_model, 'base_chassis_joint')
@@ -1030,10 +1134,11 @@ def test_column_rail_stands_on_the_chassis(parsed_model):
     chassis_top = _joint_z(chassis_joint) + chassis_height / 2.0
 
     assert rail_foot >= chassis_top - PLACEMENT_TOL_M, (
-        "the column intersects the base: the mast's foot sits at z = %.4f "
-        "while the chassis puck's top surface is at z = %.4f. They are "
-        'siblings under base_link, so this contact is filtered nowhere; the '
-        "rail joint's z must be at least chassis_top + rail_length/2 = %.4f." % (
+        "the column sinks into the base: the mast's foot sits at z = %.4f "
+        "while the chassis puck's top surface is at z = %.4f. They are in "
+        'different subtrees, so the model states no relationship between two '
+        "solids that would then overlap; the rail joint's z must be at least "
+        'chassis_top + rail_length/2 = %.4f.' % (
             rail_foot, chassis_top, chassis_top + rail_length / 2.0))
 
 
@@ -1081,6 +1186,76 @@ def test_column_rail_spans_the_carriage_travel(parsed_model):
         'at its lower limit the carriage reaches down to z = %.4f while the '
         'mast starts at z = %.4f: the bottom of the travel hangs off the foot '
         'of the rail' % (carriage_bottom_at_rest, rail_centre - rail_length / 2.0))
+
+
+def test_column_mast_is_drawn_as_it_collides(parsed_model):
+    """The mast's ``<visual>`` box is the same box as its ``<collision>``.
+
+    The chassis and the carriage each carry this assertion under the same
+    principle -- what a reviewer sees must be what the planner hits -- and the
+    mast was the one solid in the description that did not. Both boxes come
+    from the same xacro properties today, so divergence takes a deliberate
+    edit; that is equally true of the carriage, which is gated, and the reason
+    to gate it is that the visual is the *only* part of this model a human
+    reviewer actually looks at. A mast drawn slim and colliding fat (or the
+    reverse) is a robot whose renders and whose planner disagree about where
+    the column is, with nothing else here objecting.
+    """
+    collision_size, collision_offset = _collision_box(parsed_model, 'column_rail_link')
+    visuals = parsed_model.link_map['column_rail_link'].visuals
+    assert visuals, 'column_rail_link has no <visual>'
+    visual_size, visual_offset = _box_geometry(
+        visuals[0], "column_rail_link's <visual>")
+    assert (all(abs(visual_size[i] - collision_size[i]) < PLACEMENT_TOL_M
+                for i in range(3))
+            and all(abs(visual_offset[i] - collision_offset[i]) < PLACEMENT_TOL_M
+                    for i in range(3))), (
+        'the mast is drawn as a box of %s at %s but collides as %s at %s' % (
+            list(visual_size), list(visual_offset),
+            list(collision_size), list(collision_offset)))
+
+
+def test_column_datum_rests_on_the_mast_foot_at_the_lower_limit(parsed_model):
+    """At zero travel the mount datum sits exactly one carriage above the mast's foot.
+
+    This is the identity every height claim about this robot is derived from,
+    and until it was written down nothing asserted it -- which is precisely how
+    the durable docs came to state the datum height with ``column_lift``'s own
+    origin left out, overstating it by 585 mm on the one sentence PR6 is told
+    to reconcile against ``RobotModel``. Prose drifts from arithmetic that no
+    test performs.
+
+    What it pins: the *zero of the travel* is the carriage resting on the
+    bottom of the rail, so the datum's height above ``base_link`` at joint
+    value q is ``column_rail_joint.z + column_lift.origin.z + q`` -- both
+    origins, not just the rail's -- and equals
+    ``chassis_top + column_carriage_height + (q - lower)``. The span test next
+    door only requires the carriage to be *somewhere* on the rail at both ends,
+    so it tolerates sliding the lift joint's origin by as much as the mast's
+    over-travel (measured: up to +0.05 m stays green there, +0.06 m does not)
+    while every height PR3.5, PR4 and PR6 compute from this datum moves by the
+    same amount. This one catches +0.02 m. Read as a relationship between
+    numbers off the model, so retuning the chassis, the mast or the carriage
+    keeps it.
+    """
+    limit = _lift_limit(parsed_model)
+    rail_joint = _axis_aligned_joint(
+        parsed_model, parsed_model.parent_map['column_rail_link'][0])
+    lift_joint = _axis_aligned_joint(parsed_model, 'column_lift')
+    rail_size, rail_offset = _collision_box(parsed_model, 'column_rail_link')
+    carriage_size, _carriage_offset = _collision_box(parsed_model, 'column_top')
+
+    rail_foot = _joint_z(rail_joint) + rail_offset[2] - rail_size[2] / 2.0
+    datum_at_rest = _joint_z(rail_joint) + _joint_z(lift_joint) + limit.lower
+    expected = rail_foot + carriage_size[2]
+    assert abs(datum_at_rest - expected) < PLACEMENT_TOL_M, (
+        'at the lower limit (%.4f) the mount datum sits at z = %.4f above '
+        "base_link, but the mast's foot is at %.4f and the carriage is %.4f "
+        'tall, so a carriage resting on the foot puts the datum at %.4f. '
+        'Either the carriage is floating above the bottom of its own travel or '
+        'it starts below the mast; both make every height derived from '
+        'column_top wrong by the difference.' % (
+            limit.lower, datum_at_rest, rail_foot, carriage_size[2], expected))
 
 
 def test_column_top_is_the_arm_mount_datum(parsed_model):

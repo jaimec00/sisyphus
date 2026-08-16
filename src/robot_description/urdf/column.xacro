@@ -35,15 +35,23 @@
     body, the modelling artifact D29 refused to import from LeKiwi's CAD chain.
 
   - **The prismatic joint's parent is the rail, not `base_link`.** Kinematically
-    identical while `column_rail_joint` is fixed, but the carriage *wraps* the
-    rail — the two solids below deliberately interpenetrate, which is what a
-    carriage on a mast does — and made siblings under `base_link` that contact
-    is filtered *nowhere*: MoveIt's default ACM disables adjacent pairs and
-    MuJoCo excludes parent/child bodies, neither of which covers siblings. That
-    is the same trap D29's red-team round found between the chassis and the
-    wheels; parenting the carriage to its own rail removes it structurally
-    rather than by shaving the two solids apart into a mechanism that would
-    fall over.
+    identical while `column_rail_joint` is fixed. What decides it is that the
+    carriage *wraps* the rail: the two solids below deliberately interpenetrate
+    (a measured 0.06 × 0.06 × 0.08 m prism at every reachable joint value),
+    which is what a carriage on a mast does, and shaving them apart would
+    describe a mechanism that falls over. Parenting the carriage to the rail it
+    rides is simply the honest kinematic description of that, and it is the
+    arrangement collision tooling is *expected* to filter — MoveIt's generated
+    ACM disables adjacent pairs, MuJoCo excludes parent/child bodies — where
+    two siblings under `base_link` would be filtered by neither.
+
+    That expectation is **unverified and stays so until PR7 builds the MJCF**:
+    there is no SRDF in this repo (so there is no ACM yet), and a *fixed* rail
+    joint is a strong candidate for MuJoCo's `fusestatic`, which would fuse
+    `column_rail_link` into `base_link`'s body and make the carriage's MuJoCo
+    parent `base_link` either way — in which case the filtering comes from body
+    fusion, not from this parenting. **PR7 should check that rather than
+    inherit it.** The parenting stands on kinematic honesty alone.
 
   Recorded contradiction (D31): D26 paraphrases the crib as a "~600 mm linear
   rail" while `RobotModel` demands **1.20 m of travel**. A single-stage carriage
@@ -77,13 +85,24 @@
 
        These are the carriage's **travel along the rail**, measured from
        `column_lift`'s own origin: they are not heights above `base_link` and
-       not heights above the floor. `column_top`'s height above `base_link` at
-       joint value q is `column_rail_joint`'s z plus q (plus nothing else, since
-       the carriage's link frame is the mount datum). The roadmap's table maps
-       these two fields straight onto the lower/upper limit values with no
-       additive term, so the mount offset is deliberately *not* folded in.
-       Which of the two `RobotModel.column_height` itself means is PR6's to
-       reconcile (D31). -->
+       not heights above the floor. The mount datum's height above `base_link`
+       at joint value q is **both** joint origins plus q:
+
+         column_rail_joint.z + column_lift.origin.z + q
+           = chassis_top + column_carriage_height + (q - min_column_height)
+           = 0.195 + q       ->  0.195 m ... 1.395 m today
+
+       i.e. at the bottom of the travel the carriage rests on the mast's foot
+       and its top face — the datum — is one carriage-height up. `column_lift`'s
+       own origin is *negative* (-0.585 today) because the rail's box is centred
+       in its link frame, so leaving that term out overstates the datum by more
+       than half a metre; the gate pins the identity in
+       test_column_datum_rests_on_the_mast_foot_at_the_lower_limit.
+
+       The roadmap's table maps these two fields straight onto the lower/upper
+       limit values with no additive term, so the mount offset is deliberately
+       *not* folded into the limits. Which of the two `RobotModel.column_height`
+       itself means is PR6's to reconcile (D31). -->
   <xacro:property name="min_column_height" value="0.00"/>
   <xacro:property name="max_column_height" value="1.20"/>
 
@@ -123,9 +142,33 @@
        therefore placeholders with the right order of magnitude for a lift that
        must hold two arms and a payload against gravity, owed a real actuator
        model when PR6/PR7 give the servo one. Deliberately not dressed up as a
-       datasheet number (D29). -->
+       datasheet number (D29).
+
+       The velocity is a placeholder with a **constraint on it**, which is why
+       it is not simply the roundest number to hand. A URDF `<limit velocity>`
+       is *capability* — what the mechanism can do, and what MoveIt and
+       `ros2_control` plan and clamp against. `robot_safety`'s
+       `robot_safety/limits.yaml` `velocity.column: 0.15` is *policy* — how fast
+       this robot is allowed to move a lift through the height where hands are.
+       Policy must sit strictly **below** capability or the clamp is vacuous:
+       equal, it can never bind for anything that trusts the URDF; above, it
+       would be a cap the machine cannot reach. So this number's job is to clear
+       0.15 m/s with room for policy to be tightened after an incident, and the
+       gate asserts that relationship (see SAFETY_COLUMN_SPEED_CAP_MPS in
+       test_description.py).
+
+       Note the *height* bounds above are deliberately the opposite: there,
+       policy equals capability (`limits.yaml`'s `column.min/max_height` are
+       0.00/1.20 too), and that is correct — a position clamp's job is to stop
+       at the mechanical stop, not short of it.
+
+       Residue, since a placeholder that now carries a constraint invites
+       over-reading: 0.25 m/s is still a guess. If a real STS3215 through a real
+       lead screw turns out *slower* than the 0.15 policy cap, then it is the
+       cap or the mechanism that needs revisiting — not this property quietly
+       going back under it. PR6/PR7 own that. -->
   <xacro:property name="column_lift_effort" value="120.0"/>
-  <xacro:property name="column_lift_velocity" value="0.15"/>
+  <xacro:property name="column_lift_velocity" value="0.25"/>
 
   <!-- Derived, so that retuning any property above moves the whole column
        instead of leaving one number behind. -->
