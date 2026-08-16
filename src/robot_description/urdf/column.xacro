@@ -37,8 +37,10 @@
   - **The prismatic joint's parent is the rail, not `base_link`.** Kinematically
     identical while `column_rail_joint` is fixed. What decides it is that the
     carriage *wraps* the rail: the two solids below deliberately interpenetrate
-    (a 0.06 × 0.06 × 0.08 m prism at every reachable joint value — asserted by
-    test_column_carriage_wraps_the_mast, not just measured here), which is what
+    (a 0.06 × 0.06 × 0.08 m prism at every reachable joint value — gated, not
+    just measured here, though by the suite rather than by one test:
+    test_column_carriage_wraps_the_mast pins the 0.06 × 0.06 cross-section,
+    while the 0.08 m of depth follows from the datum and span tests), which is what
     a carriage on a mast does, and shaving them apart would describe a
     mechanism that falls over. Parenting the carriage to the rail it rides is
     simply the honest kinematic description of that, and it is the

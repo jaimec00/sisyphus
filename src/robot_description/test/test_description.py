@@ -92,6 +92,29 @@ allowed to grow silently stops being a gate. The asset assert is still over an
 *empty* set: PR2 authored the base from primitives and vendored no meshes
 (D29), so it costs nothing until the first PR that lands real geometry
 files -- expected to be the arms -- and bites from that moment on.
+
+What this gate still does **not** know, recorded here because it is the file a
+later PR reads and because the alternative -- a list in a `docs/features/` doc
+-- is deleted at merge. None of these is introduced by the column; all four are
+places where a wrong model is currently self-consistent, which is the failure
+class D29 named and PR3's own review round hit twice:
+
+1. **Inertia tensors are checked only for positive ``ixx``/``iyy``/``izz``,
+   never against the geometry they are supposed to be computed from.** A rail
+   carrying a wheel's tensor passes. Inherited from PR2; it bites in PR7's
+   MJCF, not before.
+2. **Every "drawn as it collides" assertion reads ``visuals[0]`` and
+   ``collisions[0]`` only**, so a *second* shape on a link is invisible.
+   Measured: a 0.4 m cube bolted to the mast five metres out passes the whole
+   suite.
+3. **The carriage's own footprint may overhang the chassis deck** -- the
+   footprint clause covers the mast only, deliberately (see
+   ``test_column_rail_stands_on_the_chassis``).
+4. **Nothing pins the column's lateral position to a *value*.** The gate
+   constrains the mast to stand somewhere on the deck and the carriage to wrap
+   it; both are containments, not placements. Deliberate -- but worth
+   re-taking when PR4 mounts shoulders at ±``shoulder_offset_y`` off this
+   carriage, since a laterally displaced column moves both arms with it.
 """
 
 import math
