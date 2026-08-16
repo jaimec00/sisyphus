@@ -16,12 +16,18 @@ Layout — everything here is installed to `share/robot_description/`:
 - `urdf/column.xacro` — the extendable column (D26/D31): a static
   `column_rail_link` mast fixed to `base_link` with its foot on the chassis
   puck's top surface, and a `column_top` carriage riding it on the prismatic
-  `column_lift` (limits 0.00–1.20 m, `RobotModel`'s column travel). Two
-  properties of it bind later PRs: `column_top`'s **link frame origin is the
-  arm/head mount datum** — the carriage body hangs below it — and the lift's
-  parent is the rail, not `base_link`, so the carriage/mast contact is filtered
-  as a parent-child pair rather than as unfiltered siblings. The mount height is
-  *computed* from `base.xacro`'s properties, so this file only expands after
+  `column_lift` (limits 0.00–1.20 m, `RobotModel`'s column travel). Three
+  properties of it bind later PRs. `column_top`'s **link frame origin is the
+  arm/head mount datum** — the carriage body hangs below it, and the datum sits
+  at `column_rail_joint.z + column_lift.origin.z + q` = `0.195 + q` above
+  `base_link`, i.e. **both** joint origins plus the joint value. The lift's
+  parent is the rail, not `base_link`, because the carriage wraps the mast and
+  only that arrangement describes the overlap honestly (whether it also buys
+  collision filtering is expected but **unverified until PR7's MJCF** — a fixed
+  rail joint may be fused into `base_link` there). And its `<limit velocity>` is
+  *capability*, deliberately held above `robot_safety`'s `velocity.column`
+  *policy* cap, since a cap equal to capability can never bind. The mount height
+  is *computed* from `base.xacro`'s properties, so this file only expands after
   `base.xacro` (reversing the include order fails loudly at expansion).
 - `urdf/arm.xacro` — subassembly, empty for now; geometry lands in PR4 of the
   URDF roadmap.
@@ -53,13 +59,17 @@ not a pure frame has a real inertial; and that `robot_state_publisher` loads
 the model (it builds a KDL tree, so it rejects models `check_urdf` accepts);
 and — added with the column — that `column_lift` is the model's *only*
 prismatic joint and carries `column_top` along the rail; that its limits equal
-`RobotModel`'s column bounds (transcribed as `ROBOT_MODEL_*` constants rather
-than imported — PR6 inverts that correspondence and retires the copy); that its
-effort and velocity limits are positive; that its axis is +z in `base_link`
-once every rpy above it is composed; that the mast clears the chassis and
-contains its own carriage over the whole travel; and that the carriage's body
-sits below its mount datum, so what PR3.5/PR4 mount there does not start inside
-it.
+`RobotModel`'s column bounds and are *declared* rather than left to URDF's
+defaults (transcribed as `ROBOT_MODEL_*` constants rather than imported — PR6
+inverts that correspondence and retires the copy); that its effort and velocity
+limits are positive and its velocity clears `SAFETY_COLUMN_SPEED_CAP_MPS`, the
+safety layer's policy cap, which a capability equal to it could never bind;
+that its axis is +z in `base_link` once every rpy above it is composed; that
+the mast is a non-degenerate solid which clears the chassis, contains its own
+carriage over the whole travel and is drawn as it collides; and that the
+carriage's body sits below its mount datum — one carriage-height above the
+mast's foot at zero travel, the identity every height on this robot is derived
+from — so what PR3.5/PR4 mount there does not start inside it.
 Extend `EXPECTED_LINKS` and `FILE_BEARING_TAGS` as the description grows —
 both are module-level constants for that reason.
 Status: package + gate + mobile base + column; arms, grippers, head camera and

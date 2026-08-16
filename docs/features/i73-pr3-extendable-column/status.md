@@ -79,6 +79,11 @@ to the issue's link list, not a contradiction of it — the issue itself says
 
 ### R2 — Parent of the prismatic joint: **`column_rail_link`, not `base_link`.**
 
+> **Ruling upheld, justification superseded by R15.** The red-team measured the
+> mast/carriage overlap and upheld the parenting, but falsified the
+> filtering argument below: it is unexecutable in this repo, and MuJoCo's
+> `fusestatic` may make it moot. Read R15 for what the shipped docs now say.
+
 The issue's "prismatic joint `column_lift` from `base_link`" is honored in
 *intent* — the column assembly hangs off `base_link` via
 `column_rail_joint`, and the same bullet says "the column mounts on the PR2
@@ -124,9 +129,23 @@ finds both ends of the correspondence.
 
 **The limits are the carriage's *travel along the rail*, measured from
 `column_lift`'s own origin — not an absolute height above `base_link` or the
-floor.** `column_top`'s height above `base_link` at joint value *q* is
-`column_rail_joint.origin.z + q` (+ nothing else, since the carriage link frame
-is the datum). Do **not** fold the mount offset into the limits: the roadmap
+floor.**
+
+> **Corrected by R13 (this ruling was wrong).** The datum's height is *both*
+> joint origins plus the joint value, not the rail joint's alone:
+>
+> ```
+> column_rail_joint.z + column_lift.origin.z + q
+>   = chassis_top + column_carriage_height + (q - min_column_height)
+>   = 0.195 + q          ->  0.195 m ... 1.395 m above base_link
+> ```
+>
+> `column_lift`'s origin is -0.585 because the rail's box is centred in its
+> link frame, so the omitted term is worth 585 mm. The gate now pins the
+> identity underneath it (the carriage rests on the mast's foot at the lower
+> limit).
+
+Do **not** fold the mount offset into the limits: the roadmap
 table (`urdf-mjcf-pr-breakdown.md:25-26`) maps `min/max_column_height` onto the
 lower/upper **limit values** with no additive term, and the issue's acceptance
 criterion asserts the literal 0.00 / 1.20.
@@ -200,6 +219,17 @@ Also assert `column_lift` is the model's **only** prismatic joint, by exact set
 comparison, so a second lift cannot appear unnoticed.
 
 ### R10 — `effort` / `velocity`: mandatory, and honestly marked ESTIMATED.
+
+> **Premise corrected by R14 (this ruling was wrong on the facts).** "No
+> STS3215 torque/speed figure, and no lead-screw or belt ratio, is recorded
+> anywhere in this repo" is false for speed: `src/robot_safety/robot_safety/
+> limits.yaml:36` carries `velocity.column: 0.15`. The premise came from a
+> grep scoped to `docs/design/` (`context.md` Q4) whose result was then
+> restated as being about the whole repo — a **scope error in the evidence,
+> promoted to a fact in a ruling**, which is what let the URDF ship a
+> "nothing constrains it" estimate that silently equalled a safety cap.
+> `limits.yaml` is *policy*, the URDF `<limit>` is *capability*; see R14 for
+> the distinction and the fix.
 
 The context-explorer verified empirically that both `check_urdf` and
 `urdf_parser_py` **reject** a prismatic `<limit>` missing either attribute.

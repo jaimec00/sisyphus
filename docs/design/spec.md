@@ -30,7 +30,7 @@ model, one MJCF, one bus, and a forked simulator rather than an authored one.
 | **Column** | **Linear-rail STS3215 lift on the arm bus**, Nori-style; **one prismatic joint** (`column_lift`), travel **0.00–1.20 m** | D26 (supersedes D1's belt drive and the "custom, no reference" framing); limits per D23's `RobotModel` |
 | **Arms** | **2× SO-101** (Feetech STS3215, 6-DOF); authored as a **swappable xacro macro** (`prefix`/`side` + mount transform) | D26 |
 | **Gripper** | **Stock SO-101 parallel-jaw** (STS3215, the arm's 6th DOF); **fingertip is a swappable link** so fin-ray/compliant fingers are a geometry swap, not a re-model | D26; aperture/`grasped` semantics per D19 |
-| **Head camera** | **One head-mounted RGB-D.** URDF reserves a `head_camera_link` + REP-103 optical frame on `column_top`; **buy nothing yet** — Mock and MuJoCo run on ground-truth poses | D26, D21, D3 |
+| **Head camera** | **One head-mounted RGB-D.** PR3.5 will add a `head_camera_link` + REP-103 optical frame on `column_top` (which exists as of D31; the camera link does **not** yet); **buy nothing yet** — Mock and MuJoCo run on ground-truth poses | D26, D21, D3 |
 
 **Penciled real-hardware parts (not committed, nothing purchased):** **PiPER**
 (Agilex, CAN bus) as the arm payload upgrade — note it *breaks* the single bus,
@@ -125,9 +125,15 @@ end-effector decision); wrist cameras; microphone (D26).
   the first number the URDF owns on another package's behalf. Two things about
   it bind later PRs: `column_top`'s **link frame origin is the arm/head mount
   datum** (the carriage body hangs below it), so PR3.5's camera and PR4's
-  shoulders are placed against a surface; and the lift's parent is the **rail**,
-  not `base_link`, so the carriage/mast contact is filtered as a parent-child
-  pair instead of as unfiltered siblings. The limits are **travel along the
+  shoulders are placed against a surface (the datum sits at `0.195 + q` above
+  `base_link` — **both** joint origins plus the joint value); and the lift's
+  parent is the **rail**, not `base_link`, because the carriage wraps the mast
+  and only that arrangement describes the overlap honestly. Whether it also
+  buys collision filtering is *expected* but **unverified until PR7's MJCF**
+  (a fixed rail joint may be fused into `base_link` there). The lift's
+  `<limit velocity>` is **capability** and is held strictly above
+  `robot_safety`'s `velocity.column` **policy** cap, or the clamp could never
+  bind. The limits are **travel along the
   rail**, not a height above `base_link` or the floor. Every dimension is an
   `<xacro:property>`; only the two travel bounds are sourced (from
   `RobotModel`), the rest are marked estimates — Nori Bot is cribbed as a
@@ -153,11 +159,14 @@ end-effector decision); wrist cameras; microphone (D26).
   **`robot_state_publisher` loads the model** — it builds a KDL tree, so it
   rejects models `check_urdf` accepts (D29); and, from the column on, that
   `column_lift` is the model's only prismatic joint and is wired rail →
-  carriage, that its limits equal `RobotModel`'s bounds (transcribed, not
-  imported — PR6 retires the copy), that its effort/velocity are positive, that
-  its axis is +z once every rpy above it is composed, that the mast clears the
-  chassis and contains its carriage over the whole travel, and that the carriage
-  sits below its own mount datum (D31).
+  carriage, that its limits equal `RobotModel`'s bounds *and are declared, not
+  defaulted* (transcribed, not imported — PR6 retires the copy), that its
+  effort/velocity are positive and its velocity clears the safety layer's
+  column cap, that its axis is +z once every rpy above it is composed, that the
+  mast is a real solid which clears the chassis, contains its carriage over the
+  whole travel and is drawn as it collides, and that the carriage sits below its
+  own mount datum, one carriage-height above the mast's foot at zero travel
+  (D31).
 - **`RobotModel` is still in code** and will later be read *from* the URDF —
   the URDF is canonical for kinematics/geometry, MJCF carries a thin sim-only
   physics layer on top (D23; roadmap in

@@ -499,6 +499,16 @@ open question the docs do not answer**, not a fact this document is
 withholding.
 
 ### Q4 — `effort`/`velocity` values: required (confirmed, §3), but sourced from where?
+
+> **Scope error, found by red-team round 1 (B2/R14).** The claim below says
+> "anywhere in this repo" on the strength of a grep of **`docs/design/`
+> only**. `src/robot_safety/robot_safety/limits.yaml:36` records
+> `velocity.column: 0.15` — a *policy* cap on the same axis, distinct from
+> the URDF's *capability* limit but very much a number in this repo. The
+> implementation then estimated 0.15 independently and shipped a cap that
+> could never bind. A search that covers one directory must say so in its
+> conclusion; this one did not, and the conclusion became a manager ruling.
+
 Confirmed both attributes are mandatory for any parseable `<limit>`
 (empirically, §3). No STS3215 torque/speed spec, nor any linear-rail
 lead-screw ratio, is recorded anywhere in this repo (grepped `docs/design/`

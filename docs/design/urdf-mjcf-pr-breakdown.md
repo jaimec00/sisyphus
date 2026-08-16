@@ -91,13 +91,23 @@ numbers the URDF must eventually *own* (current literal defaults):
   leaves a block floating over nothing, invisible to Nav2/MoveIt and absent from
   PR7's MJCF), plus `column_top` as the carriage itself — whose **link frame
   origin is the arm/head mount datum**, with the body offset below it, so PR3.5
-  and PR4 mount against a surface rather than into a solid. And `column_lift`'s
+  and PR4 mount against a surface rather than into a solid. The datum's height
+  above `base_link` is **both** joint origins plus the joint value — `0.195 + q`
+  today (0.195 m … 1.395 m) — not the rail joint's alone. And `column_lift`'s
   parent is **`column_rail_link`, not `base_link`**: kinematically identical
-  while the rail joint is fixed, but as siblings the carriage and the mast are
-  two permanently-touching solids whose contact nothing filters — D29's
-  chassis-vs-wheels bug one subassembly up. The mast's mount height is
-  *computed* from `base.xacro`'s `chassis_z_offset`/`chassis_height`, which
-  makes `column.xacro` include-order dependent (loudly, at expansion).
+  while the rail joint is fixed, but the carriage wraps the mast (a measured
+  0.06 × 0.06 × 0.08 m overlap prism at every joint value), and only the
+  parent/child arrangement describes that honestly. **PR7 owes a check here:**
+  whether MuJoCo's `fusestatic` folds the fixed-jointed rail into `base_link`,
+  in which case the contact filtering this arrangement is *expected* to buy
+  comes from body fusion instead — unverified until the MJCF exists. The mast's
+  mount height is *computed* from `base.xacro`'s
+  `chassis_z_offset`/`chassis_height`, which makes `column.xacro` include-order
+  dependent (loudly, at expansion).
+- **Also owned here now:** the lift's `<limit velocity>` is *capability* and
+  must stay strictly above `robot_safety`'s `velocity.column` *policy* cap, or
+  the clamp cannot bind. PR3 shipped them equal for one review round; the gate
+  now asserts the inequality (D31).
 - **Recorded contradiction:** D26 paraphrases the crib as a "~600 mm linear
   rail" while `RobotModel` demands 1.20 m of *travel*; a single-stage carriage
   cannot do both, so the travel bound wins and the mast is authored longer than
@@ -171,8 +181,9 @@ numbers the URDF must eventually *own* (current literal defaults):
 
 ## Merge order & dependency graph
 ```
+(done) (done) (done)
 PR1 ─► PR2 ─► PR3 ─► PR4 ─► PR5 ─► PR7
-      (done) (done)   │       └─► PR6 (after PR4; optional column-only slice after PR3)
+               │       └─► PR6 (after PR4; optional column-only slice after PR3)
                └─► PR3.5 head camera link (after PR3; arm-independent)
 ```
 Strictly sequential; no safe intra-package parallel pair. One dispatch slot.
