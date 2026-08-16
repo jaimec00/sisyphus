@@ -54,13 +54,16 @@ the chassis are tied together *relationally* -- the rail must clear the chassis
 it stands on and must span the travel its own carriage is allowed, both read
 off the model, so retuning any of them keeps the constraint. The lift's axis is
 checked after composing every rpy between it and ``base_link``, because a
-column that lifts sideways satisfies "prismatic, 0.00-1.20" perfectly. Two
+column that lifts sideways satisfies "prismatic, 0.00-1.20" perfectly. Four
 column assertions exist because a review round caught the claim they now pin:
 the datum's height at zero travel (stated in three documents with one of the
-two joint origins left out, and wrong by 585 mm) and the lift's velocity limit
+two joint origins left out, and wrong by 585 mm); the lift's velocity limit
 against ``SAFETY_COLUMN_SPEED_CAP_MPS`` (shipped equal to the safety layer's
-own cap, which makes that cap unable to bind). Both were prose nothing
-executed.
+own cap, which makes that cap unable to bind); and the mast's footprint on the
+deck plus the carriage's wrap around the mast (the interpenetration three
+documents called *measured* -- which left every x and y in the column ungated,
+so a mast five metres from the base passed the whole suite). All four were
+prose nothing executed.
 
 The **absolute** wheel layout gets its own assert on top of those, and the
 distinction matters more than it looks: every check above compares the wheels
@@ -99,10 +102,15 @@ later PR reads and because the alternative -- a list in a `docs/features/` doc
 places where a wrong model is currently self-consistent, which is the failure
 class D29 named and PR3's own review round hit twice:
 
-1. **Inertia tensors are checked only for positive ``ixx``/``iyy``/``izz``,
-   never against the geometry they are supposed to be computed from.** A rail
-   carrying a wheel's tensor passes. Inherited from PR2; it bites in PR7's
-   MJCF, not before.
+1. **No physical scalar is checked for *magnitude*, only for sign.** Inertia
+   tensors are never compared against the geometry they are supposed to be
+   computed from -- a rail carrying the omniwheel's tensor, ~3500x too small,
+   passes -- and neither are masses or actuator limits: a 1 g mast, a 500 kg
+   carriage, and an ``effort`` of 0.001 N (a lift that cannot hold its own
+   carriage) are all green. Inherited from PR2, and widened here from
+   "tensors" to "scalars" after a review round measured the other three.
+   Positivity is genuinely all this gate knows; it bites in PR7's MJCF rather
+   than before it.
 2. **Every "drawn as it collides" assertion reads ``visuals[0]`` and
    ``collisions[0]`` only**, so a *second* shape on a link is invisible.
    Measured: a 0.4 m cube bolted to the mast five metres out passes the whole
@@ -988,7 +996,8 @@ def test_column_lift_is_the_models_only_prismatic_joint(parsed_model):
     where siblings under ``base_link`` would be filtered by neither -- but that
     half is **unverified until PR7 builds the MJCF**, and a fixed rail joint may
     be fused into ``base_link`` there anyway, so it is not what this assertion
-    rests on. All three faults pass ``check_urdf`` and
+    rests on. Those three -- retype, rename, re-parent -- plus the fourth the
+    uniqueness clause below catches all pass ``check_urdf`` and
     ``robot_state_publisher`` without complaint.
 
     The uniqueness clause is a deliberate ratchet in the same spirit as
