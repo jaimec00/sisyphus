@@ -81,8 +81,8 @@ read -r -d '' MSG <<EOF || true
 Run: kind=$KIND slug=$SLUG branch=$BRANCH ($EXIT_INFO). Repo: $REPO.
 
 Find the PR for branch \`$BRANCH\` (\`gh pr list --head $BRANCH --state all\`), then
-evaluate and act per the canonical merge policy at \`.claude/commands/run-merge-eval.md\`
-in $REPO. Read that file — it is the single source of truth for merge authority, how to
+evaluate and act per the canonical merge policy in `AGENTS.md` (Merge governance
+section) in $REPO. Read that file — it is the single source of truth for merge authority, how to
 judge a PR, operational scope, the merge steps, when to escalate, and the NO_REPLY
 silence contract. Do NOT re-run tests.
 EOF

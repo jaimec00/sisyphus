@@ -18,7 +18,7 @@ stack, or packaging fact lives in exactly one of the docs below; this file
 | **What the robot currently is** — body, brain, seams, stack, packaging | [`spec.md`](spec.md) |
 | **Why** any of it is that way — the append-only decision log (D1–D28) | [`decisions.md`](decisions.md) |
 | **How the body gets built** — URDF/MJCF roadmap + PR sequence | [`urdf-mjcf-pr-breakdown.md`](urdf-mjcf-pr-breakdown.md) |
-| How we work — agents, loop, worktrees, merges | [`../../DEVELOPMENT.md`](../../DEVELOPMENT.md), [`../../CLAUDE.md`](../../CLAUDE.md) |
+| How we work — agents, loop, worktrees, merges | [`../../AGENTS.md`](../../AGENTS.md) |
 
 `decisions.md` is the source of truth: **where any doc disagrees with it,
 `decisions.md` wins.** `spec.md` is the flattened HEAD of those decisions, and
