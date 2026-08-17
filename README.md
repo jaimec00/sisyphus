@@ -17,7 +17,7 @@ developed **sim-first** in MuJoCo.
   `robot_backends`, `robot_perception`, `robot_description`, `robot_bringup`.
 - `docs/design/` — architecture + decisions (source of truth).
 - `docs/features/` — per-feature briefs and reports.
-- `.claude/` — coding-agent roles and orchestration (see `DEVELOPMENT.md`).
+- `AGENTS.md` — canonical agent-rules file (roles, loop, invariants, merge policy).
 
 ## Getting started (laptop, headless-friendly)
 Requires [pixi](https://pixi.sh). ROS 2 Jazzy is provided via RoboStack.
@@ -46,8 +46,8 @@ writes.
 
 ## Development
 Built by a hierarchy of coding agents (context → implement → red-team → test →
-squash-merge). See [`DEVELOPMENT.md`](DEVELOPMENT.md); agent rules are canonical
-in [`CLAUDE.md`](CLAUDE.md).
+squash-merge). See [`AGENTS.md`](AGENTS.md) for the canonical agent rules and the
+development loop.
 
 ## License
 MIT — see [`LICENSE`](LICENSE).
