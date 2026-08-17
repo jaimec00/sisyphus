@@ -71,8 +71,10 @@ red-team + CI) are the gate; a green PR is mergeable. Two kinds:
 - **Operational/meta PRs** — briefs, docs, agent-rule / `.claude` tweaks, ops
   tooling — bypass the full loop, but Sisyphus no longer authors them
   directly. Sisyphus writes a change prompt and dispatches an **operational
-  agent** — `scripts/start-op.sh <slug> "<prompt>"`, driving the
-  `.claude/commands/run-op.md` loop — which authors the change and opens the PR.
+  agent** — (D32-ratified: an OpenClaw subagent on the laptop node `olivia`;
+  the legacy `scripts/start-op.sh <slug> "<prompt>"` + `.claude/commands/run-op.md`
+  path remains until the node proves out in a real worktree run, per
+  `DEVELOPMENT.md` dispatch section) — which authors the change and opens the PR.
   The operational agent does **not** merge: **Sisyphus squash-merges operational
   PRs** once CI is green, exactly as it does feature PRs. Operational scope only:
   `docs/`, root `*.md`, `.claude/`, `scripts/`, ops tooling — **never `src/`**

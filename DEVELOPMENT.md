@@ -167,7 +167,18 @@ merges, then pruned. The nightly job cleans stragglers.
   follow-ups, retros), squash-merges green PRs (escalating to Jaime only when a merge is genuinely tricky), answers escalations.
 
 ## Dispatch, push-notify, and merge flow
-How a run actually starts and how Sisyphus learns it finished.
+
+**D32 (ratified 2026-08-17): the laptop is now an OpenClaw node of the Pi gateway.**
+The target end-state is that runs begin and complete natively on the node — a worktree
+manager is spawned as an OpenClaw subagent on the laptop node (`olivia`), its completion
+is native, and no tmux/`EXIT=`-marker/backstop plumbing is needed. That infrastructure is
+validated (node `olivia` paired/approved, `tools.exec={host:node,mode:allowlist,node:olivia}`,
+a test subagent executed on it).
+
+The **legacy dispatch/notify machinery below is retained but is no longer the primary
+path** — it remains in place until the first real worktree feature run (implement →
+red-team → test → PR) proves out end-to-end on the node (D32 migration step 4). Until
+that lands, the legacy flow still exists for operational continuity:
 
 - **Dispatch (pull-started).** Runs begin from the Pi via
   `scripts/pi/dispatch.sh feature <issue> [slug]` or
