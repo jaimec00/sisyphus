@@ -125,6 +125,7 @@ class D29 named and PR3's own review round hit twice:
    carriage, since a laterally displaced column moves both arms with it.
 """
 
+import io
 import math
 import os
 import shutil
@@ -151,6 +152,8 @@ EXPECTED_LINKS = {
     'base_right_wheel_link',
     'column_rail_link',
     'column_top',
+    'head_camera_link',
+    'head_camera_optical_frame',
 }
 
 #: The base's three actuated joints. These names are *not* free: LeKiwi's URDF
@@ -261,7 +264,16 @@ SAFETY_COLUMN_SPEED_CAP_MPS = 0.15
 #: exempts it from *both* the geometry check and the inertia check with no
 #: other signal anywhere in this suite -- it is the one rug in the gate, which
 #: is why PR3's rail and carriage, both real solids, stayed out of it.
-MASSLESS_FRAME_LINKS = frozenset({'base_link', 'base_footprint'})
+#: ``head_camera_optical_frame`` joins on the same admission rule as the two
+#: root frames: it corresponds to **no physical body** and exists to serve an
+#: outside convention (a camera optical frame is the REP-103/REP-105 frame
+#: vision data is expressed in, exactly as `base_footprint` serves Nav2/RViz).
+#: The camera *body* that carries it, `head_camera_link`, is a real solid and
+#: must carry geometry and an inertial like any other -- it stays out of this
+#: set and `test_solid_links_have_visual_and_collision_geometry` and
+#: `test_moving_links_have_inertia` gate it in turn.
+MASSLESS_FRAME_LINKS = frozenset(
+    {'base_link', 'base_footprint', 'head_camera_optical_frame'})
 
 #: What robot_state_publisher logs once it has built its KDL tree. Reaching
 #: this line is the whole point of that test: the node accepted the model.
@@ -1468,6 +1480,151 @@ def test_column_top_is_the_arm_mount_datum(parsed_model):
         'the carriage is drawn as a box of %s at %s but collides as %s at %s; '
         'what a reviewer sees must be what the planner hits' % (
             list(visual_size), list(visual_offset), list(size), list(offset)))
+
+
+def test_head_camera_is_mounted_on_column_top(parsed_model, share_dir):
+    """``head_camera_link`` hangs off ``column_top`` on a fixed joint.
+
+    The mount pose is a tunable xacro ``<property>``, not a hard-coded
+    literal -- that is the PR3.5 requirement. The pose lives in the
+    ``head_camera_mount_xyz`` / ``head_camera_mount_rpy`` properties, so
+    retuning the camera is a property edit, never a geometry edit. Two reads
+    must agree before the test is green -- the properties declared in
+    ``column.xacro`` *and* the origin on the expanded ``head_camera_mount``
+    joint -- so a property declared but never consumed fails, and a joint
+    carrying a literal instead of the property fails too.
+    """
+    # The joint itself: fixed, column_top -> head_camera_link.
+    mount = parsed_model.joint_map.get('head_camera_mount')
+    assert mount is not None, (
+        'no joint named head_camera_mount; the head camera must ride the '
+        'column_top datum on a fixed joint.')
+    assert mount.type == 'fixed', (
+        'head_camera_mount is %r; it must be fixed (the datum is on the '
+        'carriage).' % mount.type)
+    assert (mount.parent, mount.child) == ('column_top', 'head_camera_link'), (
+        'head_camera_mount must connect column_top -> head_camera_link; it '
+        'is wired %r -> %r.' % (mount.parent, mount.child))
+
+    # Tunable xacro property -- read from the *unexpanded* installed source.
+    column_source = os.path.join(share_dir, 'urdf', 'column.xacro')
+    with io.open(column_source, 'r') as f:
+        text = f.read()
+    for prop in ('head_camera_mount_xyz', 'head_camera_mount_rpy'):
+        assert prop in text, (
+            'column.xacro no longer declares <xacro:property name="%s">; the '
+            'mount pose is supposed to be a tunable property, not a hard-coded '
+            'literal.' % prop)
+
+    # And the consumed origin equals the declared property (0 0 0.05 / 0 0 0).
+    xyz = tuple(mount.origin.xyz)
+    rpy = tuple(mount.origin.rpy)
+    assert xyz == (0.0, 0.0, 0.05), (
+        'head_camera_mount.origin.xyz is %s; expected (0, 0, 0.05) from '
+        'head_camera_mount_xyz.' % (xyz,))
+    assert all(abs(v) < PLACEMENT_TOL_M for v in rpy), (
+        'head_camera_mount pitches the camera (rpy=%s); the head is meant to '
+        'face +x (forward) today -- a later PR that wants it tipped down edits '
+        'the rpy property.' % (rpy,))
+
+
+def test_head_camera_optical_frame_is_rep103_optical(parsed_model):
+    """The optical frame is REP-103/REP-105: z forward, x right, y down.
+
+    The body frame of ``head_camera_link`` is REP-103 (x forward, y left, z
+    up). The optical frame -- the frame vision data is expressed in, and the
+    one every camera->base transform will publish detections in -- uses the
+    camera convention (z forward *out of the lens*, x right, y down). For a
+    housing whose depth/viewing axis is the body's +x (forward), the body to
+    optical transform that carries that meaning is rpy ``(0, -pi/2, +pi/2)``
+    under urdfdom's fixed-axis roll-pitch-yaw. ``_rotation_from_rpy`` turns
+    that into a matrix and we assert it maps the body axes onto the optical
+    ones. A wrong rpy here expands, parses, and publishes TF fine -- it only
+    corrupts every camera->base transform silently, which is exactly what this
+    gate is for.
+    """
+    optical = parsed_model.joint_map.get('head_camera_optical_joint')
+    assert optical is not None, (
+        'no joint named head_camera_optical_joint; the optical frame must hang '
+        'off the camera body on a fixed joint.')
+    assert optical.type == 'fixed', (
+        'head_camera_optical_joint is %r; it must be fixed.' % optical.type)
+    assert (optical.parent, optical.child) == (
+        'head_camera_link', 'head_camera_optical_frame'), (
+        'the optical joint must connect head_camera_link -> '
+        'head_camera_optical_frame; it is wired %r -> %r.' % (
+            optical.parent, optical.child))
+
+    rpy = tuple(optical.origin.rpy)
+    assert len(rpy) == 3 and all(isinstance(v, float) for v in rpy), (
+        'head_camera_optical_joint origin rpy is %r.' % (rpy,))
+    r = _rotation_from_rpy(rpy)
+    # Body axes expressed in the optical frame. With the optical convention
+    # (z fwd / x right / y down) the body's +x (forward) lands on +z, +y
+    # (left) on -x, and +z (up) on -y.
+    body_axes = {
+        '+x (forward)': (1.0, 0.0, 0.0),
+        '+y (left)': (0.0, 1.0, 0.0),
+        '+z (up)': (0.0, 0.0, 1.0),
+    }
+    expected = {
+        '+x (forward)': (0.0, 0.0, 1.0),
+        '+y (left)': (-1.0, 0.0, 0.0),
+        '+z (up)': (0.0, -1.0, 0.0),
+    }
+    observed = {name: _rotate(r, vec) for name, vec in body_axes.items()}
+    mismatch = [(name, observed[name], expected[name])
+                for name in body_axes
+                if not all(abs(observed[name][i] - expected[name][i])
+                           < PLACEMENT_TOL_M for i in range(3))]
+    assert not mismatch, (
+        'head_camera_optical_joint rpy=%s does not map the body axes onto the '
+        'REP-103 optical convention (z forward, x right, y down): %r. For a '
+        'housing with depth axis along +x the body->optical transform is '
+        '(0, -pi/2, +pi/2).' % (list(rpy), mismatch))
+
+
+def test_head_camera_optical_frame_origin_matches_the_mount(parsed_model):
+    """The optical frame sits exactly where the mount property places it.
+
+    The optical frame is a pure frame at the camera body's own origin (the
+    lens), so its placement on ``column_top`` is the mount origin plus the
+    optical joint's (identity) origin. Asserting the composite -- rather than
+    just the mount joint -- guarantees the whole head rides the datum at the
+    property's value, so a future PR that offsets the lens from the housing
+    keeps the relationship honest.
+    """
+    mount = parsed_model.joint_map['head_camera_mount']
+    optical = parsed_model.joint_map['head_camera_optical_joint']
+    mount_xyz = tuple(mount.origin.xyz)
+    # The optical joint is identity in position: the lens is the body origin.
+    opt_xyz = tuple(optical.origin.xyz or (0.0, 0.0, 0.0))
+    assert all(abs(v) < PLACEMENT_TOL_M for v in opt_xyz), (
+        'head_camera_optical_joint carries a position offset (%.4f, %.4f, '
+        '%.4f); the lens and the body origin are one and the same.' % opt_xyz)
+    composite = tuple(mount_xyz[i] + opt_xyz[i] for i in range(3))
+    assert composite == (0.0, 0.0, 0.05), (
+        'the optical frame lands at %s in column_top; expected (0, 0, 0.05), '
+        'the value of head_camera_mount_xyz.' % (composite,))
+
+
+def test_head_camera_frames_are_present_and_optical_frame_is_massless(parsed_model):
+    """Both frames exist and only the body carries mass.
+
+    ``EXPECTED_LINKS`` already pins the exact link set, so presence is covered
+    globally; this test exists to state the *reason* the two new links differ:
+    ``head_camera_link`` is a real solid (housing) while
+    ``head_camera_optical_frame`` is a pure frame -- it must carry no
+    inertial, and must be exempt from the geometry check. A frame with mass
+    would be wrong in exactly the way ``test_moving_links_have_inertia``
+    guards against in reverse.
+    """
+    camera = parsed_model.link_map['head_camera_link']
+    assert camera.inertial is not None and camera.inertial.mass, (
+        'head_camera_link must carry a positive mass (it is the housing body).')
+    optical = parsed_model.link_map['head_camera_optical_frame']
+    assert optical.inertial is None or optical.inertial.mass in (None, 0.0), (
+        'head_camera_optical_frame is a pure frame and must stay massless.')
 
 
 def test_solid_links_have_visual_and_collision_geometry(parsed_model):

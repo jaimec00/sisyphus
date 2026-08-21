@@ -215,6 +215,41 @@
                            - column_rail_joint_z}"/>
 
   <!-- ==================================================================
+       Head camera (D26): one head-mounted RGB-D, reserved now as a link +
+       REP-103 optical frame. Geometry + frames only — no sensor physics;
+       PR7 models the active-IR-stereo RGB-D and MuJoCo renders detections
+       from this pose. Mounted on `column_top`'s datum, so the whole head
+       rides the lift. It rides *with* the lift and faces +x (forward).
+       ================================================================== -->
+
+  <!-- ESTIMATED: the camera body, m, in the camera link frame (REP-103 body
+       convention: x forward, y left, z up). Depth is along x (the viewing
+       axis), width along y, height along z. Sized for the RealSense D435i /
+       Orbbec Gemini 335 class D26 pencils in, not for a specific part —
+       nothing is bought yet, so there is no part to measure (D26). -->
+  <xacro:property name="head_camera_depth" value="0.09"/>
+  <xacro:property name="head_camera_width" value="0.025"/>
+  <xacro:property name="head_camera_height" value="0.025"/>
+  <!-- ESTIMATED: camera mass, kg. A RealSense-class RGB-D module is ~0.075 kg;
+       a placeholder, rounded, that does not pretend to be a datasheet. -->
+  <xacro:property name="head_camera_mass" value="0.1"/>
+
+  <!-- The mount pose on `column_top`'s datum — the two properties PR3.5 makes
+       tunable. `head_camera_mount` places the camera link frame at this
+       xyz/rpy, and the optical frame hangs off it at the fixed REP-103
+       rotation, so retuning the head is a property edit, never a geometry
+       edit.
+
+       xyz: centred on the carriage in x/y, raised 0.05 m above the datum so
+       the body (half-height 0.0125) clears the carriage top. rpy: identity —
+       the camera faces +x (forward), the robot's driving direction, and the
+       body frame is already the REP-103 body convention. A later PR that
+       wants the camera pitched down to watch a table edits the rpy here, not
+       the link. -->
+  <xacro:property name="head_camera_mount_xyz" value="0.0 0.0 0.05"/>
+  <xacro:property name="head_camera_mount_rpy" value="0.0 0.0 0.0"/>
+
+  <!-- ==================================================================
        Geometry
        ================================================================== -->
 
@@ -302,5 +337,68 @@
         ixy="0" ixz="0" iyz="0"/>
     </inertial>
   </link>
+  <!-- The head camera: a body (the housing) plus the REP-103 optical frame.
+       The link frame is the REP-103 body convention (x forward, y left, z up)
+       and carries the drawn/collided housing; the optical frame is the frame
+       vision data is expressed in (z forward, x right, y down) and is a pure
+       frame — no body, no mass. The mount joint carries the tunable pose
+       defined above. -->
+  <joint name="head_camera_mount" type="fixed">
+    <parent link="column_top"/>
+    <child link="head_camera_link"/>
+    <origin xyz="${head_camera_mount_xyz}" rpy="${head_camera_mount_rpy}"/>
+  </joint>
+
+  <link name="head_camera_link">
+    <visual>
+      <geometry>
+        <box size="${head_camera_depth} ${head_camera_width} ${head_camera_height}"/>
+      </geometry>
+    </visual>
+    <collision>
+      <geometry>
+        <box size="${head_camera_depth} ${head_camera_width} ${head_camera_height}"/>
+      </geometry>
+    </collision>
+    <inertial>
+      <mass value="${head_camera_mass}"/>
+      <!-- Solid box about its own centre. -->
+      <inertia
+        ixx="${head_camera_mass * (head_camera_width * head_camera_width
+                                   + head_camera_height * head_camera_height) / 12}"
+        iyy="${head_camera_mass * (head_camera_depth * head_camera_depth
+                                   + head_camera_height * head_camera_height) / 12}"
+        izz="${head_camera_mass * (head_camera_depth * head_camera_depth
+                                   + head_camera_width * head_camera_width) / 12}"
+        ixy="0" ixz="0" iyz="0"/>
+    </inertial>
+  </link>
+
+  <!-- The REP-103 optical frame: z forward (out of the lens along the depth
+       axis), x right, y down. A pure frame at the camera link's own origin
+       (the lens), rotated so the camera's depth/viewing axis (the body's +x)
+       lands on optical +z with x right and y down.
+
+       That rotation is rpy "(0, -pi/2, +pi/2)" under urdfdom's fixed-axis
+       roll-pitch-yaw (R = Rx·Ry·Rz about the *link* X/Y/Z in Rz·Ry·Rx matrix
+       order), which maps body +x (depth, forward) -> optical +z, body +y
+       (left) -> optical -x (right), body +z (up) -> optical -y (down).
+       Verified numerically against the urdf_parser_py model in
+       test_head_camera_optical_frame_is_rep103_optical. The stock
+       "-pi/2 0 -pi/2" camera transform is correct only for a camera_link
+       whose viewing axis is *not* the link's +x; here the housing is drawn
+       with the depth axis along +x (forward), so the naive stock value would
+       leave the camera gazing off the robot's left flank. The rotation is a
+       property of the REP-105 convention, not a tunable.
+       It is the frame every camera->base transform will publish detections
+       in (D26: project detections to metric poses). -->
+  <joint name="head_camera_optical_joint" type="fixed">
+    <origin xyz="0 0 0" rpy="0 ${-pi/2} ${pi/2}"/>
+    <parent link="head_camera_link"/>
+    <child link="head_camera_optical_frame"/>
+  </joint>
+
+  <link name="head_camera_optical_frame"/>
+
 
 </robot>
