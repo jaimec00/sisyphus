@@ -1,0 +1,69 @@
+<!--
+  PR7 physics overlay for the derived MJCF (hand-authored — see R-PR7-4).
+
+  This is the ONLY hand-authored MJCF in the repo. It carries the bits a URDF
+  cannot: actuators, contact defaults, and the head camera sensor site at the
+  REP-103 optical frame. MuJoCo compiles a base MJCF from the shipped URDF
+  (via MjModel.from_xml_path + mj_saveLastXML, see mjcf_model.py) and splices
+  the blocks below into it before compiling. A generated MJCF is NEVER checked
+  in — the URDF stays the single source of truth (issue #89 / R-PR7-2).
+
+  A header comment marks the head-camera block because it does not live at the
+  MJCF root element: after fusestatic folds the massless head_camera_link /
+  head_camera_optical_frame away (R-PR7-5/6), the camera must be re-attached
+  to the column_top body. mjcf_model.py extracts the block between
+  PR7-HEAD-CAMERA-BEGIN/END and inserts it as the first child of column_top.
+-->
+<mujoco>
+  <!-- Sane contact defaults (sec R-PR7-4). Tuning is iterative — PR8 / roadmap #4. -->
+  <default>
+    <geom friction="1.0 0.4 0.02" solref="0.01 1.0" priority="1"/>
+  </default>
+
+  <actuator>
+    <!-- One placeholder motor per actuated joint so nu == actuated-count (18).
+         Placeholder gains only: real STS3215 gains are PR8 / roadmap #4. -->
+    <!-- mobile base (3 omniwheels) -->
+    <motor joint="base_left_wheel"/>
+    <motor joint="base_back_wheel"/>
+    <motor joint="base_right_wheel"/>
+    <!-- column lift -->
+    <motor joint="column_lift"/>
+    <!-- left arm (5 revolute) -->
+    <motor joint="left_shoulder_pan"/>
+    <motor joint="left_shoulder_lift"/>
+    <motor joint="left_elbow_flex"/>
+    <motor joint="left_wrist_flex"/>
+    <motor joint="left_wrist_roll"/>
+    <!-- right arm (5 revolute) -->
+    <motor joint="right_shoulder_pan"/>
+    <motor joint="right_shoulder_lift"/>
+    <motor joint="right_elbow_flex"/>
+    <motor joint="right_wrist_flex"/>
+    <motor joint="right_wrist_roll"/>
+    <!-- grippers (2 each) -->
+    <motor joint="left_gripper"/>
+    <motor joint="left_gripper_mirror"/>
+    <motor joint="right_gripper"/>
+    <motor joint="right_gripper_mirror"/>
+  </actuator>
+
+  <sensor>
+    <!-- Head camera sensor: a first-class framepos sensor on the camera site,
+         plus the site/camera themselves (below). RGB pixel output is
+         renderer-based in MuJoCo 3.12 (no XML RGB <sensor>), so the pinhole
+         camera + site here are what roadmap #4's RGB-D render pipeline consumes. -->
+    <framepos name="head_camera_pos" objtype="site" objname="head_camera_site"/>
+  </sensor>
+
+  <!-- PR7-HEAD-CAMERA-BEGIN
+  Head camera sensor site at the REP-103 optical frame, relative to column_top
+  (R-PR7-6): column_top -> head_camera_mount (xyz 0 0 0.05, rpy 0) ->
+  head_camera_link -> head_camera_optical_joint (xyz 0 0 0, rpy 0 -pi/2 +pi/2) ->
+  head_camera_optical_frame. So pos (0,0,0.05), euler (0, -pi/2, +pi/2).
+  -->
+  <camera name="head_camera" pos="0 0 0.05" euler="0 -1.5708 1.5708"
+          fovy="60" resolution="640 480"/>
+  <site name="head_camera_site" pos="0 0 0.05" euler="0 -1.5708 1.5708" size="0.01"/>
+  <!-- PR7-HEAD-CAMERA-END -->
+</mujoco>
