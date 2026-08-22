@@ -2173,11 +2173,6 @@ def test_so101_reach_is_within_the_robot_model_radius_and_not_degenerate(parsed_
                 side, reach, ARM_REACH_FLOOR))
 
 
-def _gripper_jaw_joints(model, side):
-    """Return the driven jaw joint and its mimic, in that order."""
-    return [model.joint_map['%s_%s' % (side, name)] for name in GRIPPER_JAW_JOINTS]
-
-
 def test_so101_gripper_joints_are_present_and_follow_the_gripper_key(parsed_model):
     """Each arm mounts a gripper whose driven joint follows the ``gripper`` motor key.
 
