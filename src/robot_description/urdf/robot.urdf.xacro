@@ -4,7 +4,7 @@
 
   This file is the single entry point every consumer expands (launch files,
   the MuJoCo conversion, the test gate in test/test_description.py); nothing
-  should ever include base/column/arm directly. It owns exactly two things:
+  should ever include base/column/arm/gripper directly. It owns exactly two things:
   the root frame, and the order the subassemblies are pulled in.
 
   `base_link` is declared *here*, not in base.xacro: it is the robot's root
@@ -21,6 +21,7 @@
   <xacro:include filename="base.xacro"/>
   <xacro:include filename="column.xacro"/>
   <xacro:include filename="arm.xacro"/>
+  <xacro:include filename="gripper.xacro"/>
 
   <!-- Root frame of the whole robot. Everything else hangs off this. -->
   <link name="base_link"/>

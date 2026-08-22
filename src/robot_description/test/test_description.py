@@ -166,6 +166,16 @@ EXPECTED_LINKS = {
     'right_lower_arm_link',
     'right_wrist_link',
     'right_wrist_roll_link',
+    'left_gripper_base_link',
+    'left_gripper_upper_jaw_link',
+    'left_gripper_lower_jaw_link',
+    'left_gripper_upper_tip_link',
+    'left_gripper_lower_tip_link',
+    'right_gripper_base_link',
+    'right_gripper_upper_jaw_link',
+    'right_gripper_lower_jaw_link',
+    'right_gripper_upper_tip_link',
+    'right_gripper_lower_tip_link',
 }
 
 #: The base's three actuated joints. These names are *not* free: LeKiwi's URDF
@@ -175,14 +185,16 @@ EXPECTED_LINKS = {
 #: silently decouple the two, which is why the set is asserted exactly.
 WHEEL_JOINTS = ('base_left_wheel', 'base_back_wheel', 'base_right_wheel')
 
-#: The SO-101 arm's five revolute joints (per arm, from the shoulder out), named
-#: after the so101_ros2 driver's motor keys (D26/D29, PR6/PR7 contract) -- the
-#: same rule the base's wheel joints follow the LeKiwi driver. ``gripper`` (id 6)
-#: is PR5, not here. The ``{prefix}_arm_mount_joint`` is a fixed mount and not a
-#: DOF, hence absent from this tuple. See the ``ARM_*`` names in
+#: The SO-101 arm's revolute joints (per arm, from the shoulder out) plus the
+#: gripper's two revolute jaw joints, all named after the so101_ros2 driver's
+#: motor keys (D26/D29, PR6/PR7 contract) -- the same rule the base's wheel
+#: joints follow the LeKiwi driver. The driven jaw follows the ``gripper`` key
+#: (id 6); the ``gripper_mirror`` is the mechanical follower it mimics. The
+#: ``{prefix}_arm_mount_joint``, the two fixed tip joints and the gripper's fixed
+#: mount are not DOFs, hence absent from this tuple. See the ``ARM_*`` names in
 #: ``test_column_lift_is_the_models_only_prismatic_joint``'s sibling.
 ARM_JOINTS = ('shoulder_pan', 'shoulder_lift', 'elbow_flex',
-              'wrist_flex', 'wrist_roll')
+              'wrist_flex', 'wrist_roll', 'gripper', 'gripper_mirror')
 
 #: The ``Arm`` joint-name prefixes the macro is instantiated under. Mirrors
 #: ``RobotModel.shoulder``'s LEFT/RIGHT semantics (mock_world.py): LEFT at +y,
@@ -190,10 +202,14 @@ ARM_JOINTS = ('shoulder_pan', 'shoulder_lift', 'elbow_flex',
 #: differ in.
 ARMS = ('left', 'right')
 
-#: The per-arm link chain, mount first, ending at the wrist-roll output that PR5
-#: mounts the gripper off. Each is a real solid (none in ``MASSLESS_FRAME_LINKS``).
+#: The per-arm link chain, mount first, through the arm to the wrist-roll output
+#: and on through the gripper bodies to the fingertips. Each is a real solid
+#: (none in ``MASSLESS_FRAME_LINKS``).
 ARM_LINKS = ('shoulder_link', 'shoulder_pitch_link', 'upper_arm_link',
-             'lower_arm_link', 'wrist_link', 'wrist_roll_link')
+             'lower_arm_link', 'wrist_link', 'wrist_roll_link',
+             'gripper_base_link', 'gripper_upper_jaw_link',
+             'gripper_lower_jaw_link', 'gripper_upper_tip_link',
+             'gripper_lower_tip_link')
 
 #: Transcribed from ``RobotModel`` in ``src/robot_backends/robot_backends/
 #: mock_world.py`` -- the numbers the Mock backend, the safety layer and the
@@ -212,6 +228,32 @@ ROBOT_MODEL_REACH_RADIUS = 0.85
 #: floor is set well below that so a retreat into a stub fails without
 #: over-constraining the design.
 ARM_REACH_FLOOR = 0.25
+
+#: The gripper's home grasp reference, transcribed from ``RobotModel`` in
+#: ``src/robot_backends/robot_backends/mock_world.py`` (``home_gripper_offset``)
+#: and added to the shoulder point at the zero (homing) pose: (0.35, 0, -0.05)
+#: metres forward / down from the shoulder. This is the number the Mock backend
+#: reports as the gripper's home grasp position, and which the URDF's gripper
+#: geometry must reproduce at q=0 -- see test_gripper_grasp_reference_matches_home_gripper_offset.
+GRIPPER_HOME_OFFSET = (0.35, 0.0, -0.05)
+
+#: The two driven-frame jaw joints per gripper, mirror-pair. ``gripper`` is the
+#: actuated joint (motor key ``gripper``, id 6); ``gripper_mirror`` is its
+#: mechanical follower, coupled by ``<mimic multiplier="-1">``. Both revolute
+#: (the whole model may hold exactly one prismatic joint -- the column).
+GRIPPER_JAW_JOINTS = ('gripper', 'gripper_mirror')
+
+#: The fixed (non-DOF) gripper joints: the mount off the wrist-roll output and
+#: the two fingertip mounts, per side. Present so the uniqueness/prefix gate can
+#: assert them too, without being mistaken for actuated DOFs.
+GRIPPER_FIXED_JOINTS = ('gripper_mount_joint', 'gripper_upper_tip_joint',
+                        'gripper_lower_tip_joint')
+
+#: The per-gripper link chain, base body first, two jaw bodies, then the two
+#: fingertips. All real solids (none massless).
+GRIPPER_LINKS = ('gripper_base_link', 'gripper_upper_jaw_link',
+                 'gripper_lower_jaw_link', 'gripper_upper_tip_link',
+                 'gripper_lower_tip_link')
 
 #: The LeRobot LeKiwi driver's own body->wheel kinematics, transcribed from
 #: `_body_to_wheel_raw` in `lerobot/robots/lekiwi/lekiwi.py`::
@@ -348,7 +390,7 @@ ANGLE_TOL_DEG = 1e-6
 #: Subassembly files the top level must include -- a wiring contract, not just
 #: a list of files that happen to be installed. Deleting an <xacro:include> is
 #: otherwise invisible here (the file stays installed and stays linted).
-SUBASSEMBLIES = ('base.xacro', 'column.xacro', 'arm.xacro')
+SUBASSEMBLIES = ('base.xacro', 'column.xacro', 'arm.xacro', 'gripper.xacro')
 
 #: xacro's namespace, needed to find <xacro:include> in the *unexpanded* file.
 XACRO_NS = 'http://www.ros.org/wiki/xacro'
@@ -663,6 +705,46 @@ def _axis_in_base_link(model, joint):
         vector = _rotate(_rotation_from_rpy(_joint_rpy(model.joint_map[joint_name])), vector)
         link = parent
     return vector
+
+
+def _link_origin_in_base_link(model, link_name):
+    """Return the position of ``link_name``'s frame origin in ``base_link`` coordinates.
+
+    Walks the parent chain from ``link_name`` up to ``base_link``, then composes
+    the transforms back down -- accumulating each joint's origin translation and
+    ``rpy`` rotation in root-to-tip order, exactly the way a forward-kinematics
+    consumer (robot_state_publisher's KDL tree, PR6/PR7) reads the model. Position
+    only -- orientation is not needed for the grasp-reference check.
+
+    This is the positional sibling of ``_axis_in_base_link`` (which composes a
+    joint *axis* to the root); it is needed because the gripper's grasp reference
+    is the midpoint between two fingertip frames, which is a *position* in the
+    root frame, not an axis direction.
+    """
+    identity = ((1.0, 0.0, 0.0), (0.0, 1.0, 0.0), (0.0, 0.0, 1.0))
+    chain = []
+    link = link_name
+    while link != 'base_link':
+        assert link in model.parent_map, (
+            '%r has no parent joint but is not base_link, so its origin cannot '
+            'be resolved into the root frame' % link)
+        joint_name, parent = model.parent_map[link]
+        chain.append((joint_name, link))
+        link = parent
+    rotation = identity
+    origin = (0.0, 0.0, 0.0)
+    for joint_name, _child in reversed(chain):
+        joint = model.joint_map[joint_name]
+        origin = tuple(origin[i] + _rotate(rotation, _joint_xyz(joint))[i]
+                       for i in range(3))
+        rotation = _multiply_rotation(rotation, _rotation_from_rpy(_joint_rpy(joint)))
+    return origin
+
+
+def _multiply_rotation(left, right):
+    """Return the 3x3 matrix product ``left @ right``."""
+    return tuple(tuple(sum(left[i][k] * right[k][j] for k in range(3))
+                       for j in range(3)) for i in range(3))
 
 
 def _wheel_radius(model):
@@ -2089,3 +2171,146 @@ def test_so101_reach_is_within_the_robot_model_radius_and_not_degenerate(parsed_
             '%s arm reach %.3f m is below the %.3f m floor -- a degenerate '
             'point-arm should not pass the reach bound' % (
                 side, reach, ARM_REACH_FLOOR))
+
+
+def test_so101_gripper_joints_are_present_and_follow_the_gripper_key(parsed_model):
+    """Each arm mounts a gripper whose driven joint follows the ``gripper`` motor key.
+
+    PR5's gripper is the tool PR4's wrist-roll reserved, and its driven joint
+    must be named after the so101_ros2 motor key (``gripper``, id 6) so PR6/PR7
+    can cash the same joint-state/command contract the arm joints already keep.
+    The mirror jaw is the mechanical follower named ``gripper_mirror``. Both are
+    revolute (the model may hold exactly one prismatic joint -- the column), and
+    both are ``{side}_`` prefixed so left/right never collide.
+    """
+    for side in ARMS:
+        for name in GRIPPER_JAW_JOINTS:
+            joint_name = '%s_%s' % (side, name)
+            assert joint_name in parsed_model.joint_map, (
+                'missing gripper joint %s -- does gripper.xacro name the driven '
+                'joint after the so101 driver key minus its %r prefix?' % (
+                    joint_name, side))
+            assert parsed_model.joint_map[joint_name].type == 'revolute', (
+                '%s must be revolute (a parallel jaw is a two-revolute scissor, '
+                'not a prismatic slide -- the column is the only prismatic '
+                'joint); found %r' % (
+                    joint_name, parsed_model.joint_map[joint_name].type))
+    # The driven joint names exactly follow the `gripper` key, no extra suffix.
+    for side in ARMS:
+        assert '%s_gripper' % side in parsed_model.joint_map, (
+            '%s_gripper absent (%s)' % (side, side))
+
+
+def test_so101_gripper_mirror_is_a_mimic_of_the_driven_joint(parsed_model, expansion):
+    """The mirror jaw declares ``<mimic>`` pointing at the driven joint, multiplier -1.
+
+    A mimic is read off the *raw expansion* (urdf_parser_py reports the follower
+    ``mimic`` attribute), and asserted to point at ``{side}_gripper`` with
+    ``multiplier=-1`` -- the equal-and-opposite coupling that makes a positive
+    drive close BOTH jaws symmetrically. The driven joint itself must NOT be a
+    mimic (it is the actuator); and together the pair is exactly one driven + one
+    follower, not two independent actuators (which would need two motor keys and
+    two states, and would contradict issue #85).
+    """
+    root = ElementTree.fromstring(_require_expansion(expansion))
+    for side in ARMS:
+        driven = root.find("./joint[@name='%s_gripper']" % side)
+        mirror = root.find("./joint[@name='%s_gripper_mirror']" % side)
+        assert driven is not None and mirror is not None, (
+            'missing %s gripper jaw joint(s) in the expansion' % side)
+        # The driven joint is not a follower
+        assert driven.find('mimic') is None, (
+            '%s_gripper must be the driven joint, not a mimic' % side)
+        # The mirror is a follower of the driven joint, multiplier -1
+        mimic = mirror.find('mimic')
+        assert mimic is not None, (
+            '%s_gripper_mirror must declare a <mimic> (it is a mechanical '
+            'follower, not an independent actuator)' % side)
+        assert mimic.get('joint') == '%s_gripper' % side, (
+            "%s_gripper_mirror's <mimic> must point at %s_gripper, not %r" % (
+                side, side, mimic.get('joint')))
+        assert float(mimic.get('multiplier', '0')) == -1.0, (
+            "%s_gripper_mirror's <mimic multiplier> must be -1 (symmetric "
+            'closing, not +1 which would move the jaws in parallel): %r' % (
+                side, mimic.get('multiplier')))
+    # And the parsed model agrees (the follower carries a mimic with the joint + multiplier).
+    for side in ARMS:
+        mirror = parsed_model.joint_map['%s_gripper_mirror' % side]
+        assert mirror.mimic is not None, (
+            'urdf_parser_py lost the mimic on %s_gripper_mirror' % side)
+        joint, multiplier = mirror.mimic.joint, mirror.mimic.multiplier
+        assert joint == '%s_gripper' % side and multiplier == -1.0, (
+            'parsed mimic for %s_gripper_mirror is (joint=%r, multiplier=%r)' % (
+                side, joint, multiplier))
+
+
+def test_so101_gripper_grasp_reference_matches_home_gripper_offset(parsed_model):
+    """At the zero pose, the grasp midpoint equals ``home_gripper_offset`` from the shoulder.
+
+    The grasp reference is the midpoint between the two fingertip link frame
+    origins. At the homing (zero) pose -- all arm and gripper joints 0, which is
+    the gripper's closed pose -- that midpoint must sit exactly at
+    ``home_gripper_offset`` (0.35, 0, -0.05) relative to the shoulder point, in
+    REP-103 (base_link) coordinates. Both arms are identical in internal
+    kinematics; this asserts the composed position for each.
+
+    The tolerance is PLACEMENT_TOL_M (not a looser one): a wrong mount or a wrong
+    reach/tuck would move the grasp point by centimetres, and D29's lesson is to
+    assert the absolute value rather than a self-consistent but wrong relationship.
+    """
+    for side in ARMS:
+        upper = _link_origin_in_base_link(
+            parsed_model, '%s_gripper_upper_tip_link' % side)
+        lower = _link_origin_in_base_link(
+            parsed_model, '%s_gripper_lower_tip_link' % side)
+        grasp = tuple((upper[i] + lower[i]) / 2.0 for i in range(3))
+        # The shoulder point is the arm_mount origin, i.e. the shoulder_link frame
+        # origin (the arm_mount joint is fixed and its child is the shoulder link;
+        # its origin places the shoulder at (0, +-shoulder_offset_y, shoulder_offset_z)
+        # in column_top).
+        shoulder = _link_origin_in_base_link(
+            parsed_model, '%s_shoulder_link' % side)
+        offset = tuple(grasp[i] - shoulder[i] for i in range(3))
+        expected = (GRIPPER_HOME_OFFSET[0], 0.0, GRIPPER_HOME_OFFSET[2])
+        assert all(abs(offset[i] - expected[i]) < PLACEMENT_TOL_M for i in range(3)), (
+            '%s gripper grasp reference is at %s relative to its shoulder, but '
+            'home_gripper_offset is %s (REP-103). A wrong mount or reach/tuck '
+            'moves the grasp point by centimetres -- this is asserted exactly.' % (
+                side, [round(v, 6) for v in offset], list(expected)))
+        # Sanity: the two tips really are symmetric about the grip plane at q=0
+        # (equal and opposite lateral separation), so the midpoint is legitimate.
+        sep = tuple(upper[i] - lower[i] for i in range(3))
+        assert all(abs(sep[i]) < 0.05 for i in range(3)), (
+            '%s tips are implausibly far apart at q=0 (closed): %s' % (
+                side, [round(v, 6) for v in sep]))
+
+
+def test_so101_gripper_fingertip_is_macro_parameterized(share_dir):
+    """The fingertip geometry is driven by a macro parameter, not hardcoded (R2).
+
+    Read from the *unexpanded* source: the fingertip link's box dimensions must
+    come from macro parameters threaded through the gripper macro. This is the
+    swap surface -- a compliant fin-ray fingertip later changes geometry alone
+    without re-modeling the joint or actuator. The assertion is deliberately
+    source-level (not parsed): the parsed model cannot tell a hardcoded box from
+    one that was a parameter, and that distinction is exactly what R2 gates.
+    """
+    gripper_path = os.path.join(share_dir, 'urdf', 'gripper.xacro')
+    assert os.path.isfile(gripper_path), (
+        'gripper.xacro not installed; was it added to the urdf glob (automatic) '
+        'and the SUBASSEMBLIES include?')
+    source = open(gripper_path).read()
+    # The fingertip sub-macro must take the box dimensions as parameters.
+    assert 'gripper_fingertip' in source and 'params="name fx fy fz mass"' in source, (
+        'the fingertip macro must be parameterized by its box dimensions; a '
+        'hardcoded box would defeat the R2 swap surface')
+    assert '<box size="${fx} ${fy} ${fz}"/>' in source, (
+        'the fingertip box size must reference the macro parameters (fx fy fz)')
+    # The gripper macro threads a tip size through to the fingertip macro.
+    assert 'tip_x' in source and 'tip_y' in source and 'tip_z' in source, (
+        'the gripper macro must thread fingertip dimensions as parameters (tip_x'
+        '/tip_y/tip_z) so a compliant fingertip can be swapped without re-modeling')
+    # And the default fingertips are real solids (box), not an empty *_tip frame.
+    assert 'fingertip_x' in source and 'fingertip_mass' in source, (
+        'the fingertip default must carry a real size and mass (the upstream '
+        'empty *_tip frame is exactly what R2 forbids copying)')

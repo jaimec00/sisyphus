@@ -18,7 +18,12 @@ arm's real layout rather than a guess at it). Both the `left` and `right` arm
 instantiations reference the same shared `meshes/arm/*.stl` files via
 `package://robot_description/meshes/arm/<file>.stl`.
 
-Gripper jaw meshes (`Fixed_Jaw*`, `Moving_Jaw*`) are PR5, not here.
+PR5 adds **`meshes/gripper/`** -- the SO-101 parallel-jaw body STLs
+(`Fixed_Jaw*`, `Moving_Jaw`) -- using the same `os.walk` install (already in
+`setup.py` since PR4) and the same XLeRobot Apache-2.0 source. See
+`meshes/gripper/README.md`. The gripper **fingertips** are NOT meshed: they are a
+macro-parameterized rigid-primitive link (swap for a compliant fin-ray fingertip
+later without re-modeling).
 
 This file is not a placeholder to delete -- it is what makes the top-level
 `meshes/` directory exist in the install tree.
