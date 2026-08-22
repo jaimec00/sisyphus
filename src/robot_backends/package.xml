@@ -9,6 +9,7 @@
 
   <buildtool_depend>ament_python</buildtool_depend>
   <depend>rclpy</depend>
+  <depend>robot_description</depend>
   <depend>robot_skills</depend>
   <depend>robot_world</depend>
 
