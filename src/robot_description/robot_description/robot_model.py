@@ -49,15 +49,14 @@ deployment that relocates ``urdf/`` away from the package would switch this to
 
 from __future__ import annotations
 
-import math
-import os
-import xml.etree.ElementTree as ElementTree
 from dataclasses import dataclass
+import math
 from pathlib import Path
 from typing import Tuple
+import xml.etree.ElementTree as ElementTree
 
-import xacro
 from urdf_parser_py.urdf import URDF
+import xacro
 
 __all__ = ['RobotModelConstants', 'load_robot_model']
 
@@ -164,21 +163,21 @@ def _multiply(left, right):
 
 
 def _joint_xyz(joint):
-    """A joint origin's xyz, treating a missing origin as no offset."""
+    """Return a joint origin's xyz, treating a missing origin as no offset."""
     if joint.origin is None or joint.origin.xyz is None:
         return (0.0, 0.0, 0.0)
     return tuple(float(value) for value in joint.origin.xyz)
 
 
 def _joint_rpy(joint):
-    """A joint origin's rpy, treating a missing origin as no rotation."""
+    """Return a joint origin's rpy, treating a missing origin as no rotation."""
     if joint.origin is None or joint.origin.rpy is None:
         return (0.0, 0.0, 0.0)
     return tuple(float(value) for value in joint.origin.rpy)
 
 
 def _link_origin(model, link_name):
-    """The position of ``link_name``'s frame in ``base_link`` coordinates.
+    """Return the position of ``link_name``'s frame in ``base_link`` coordinates.
 
     Composes the joint ``<origin>`` (xyz + rpy) along the parent chain from the
     root down, at the zero pose -- no joint *value*, so each joint contributes
