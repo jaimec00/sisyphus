@@ -1,10 +1,324 @@
 <?xml version="1.0"?>
 <!--
-  Arm: SO-101 (Feetech STS3215), instantiated twice as a swappable xacro
-  macro parameterized by prefix/side and mount transform (D26).
+  Arms: 2x SO-101, each a 5-DOF serial arm (shoulder_pan / shoulder_lift /
+  elbow_flex / wrist_flex / wrist_roll) authored as ONE swappable xacro macro,
+  instantiated left and right off the column_top datum (D26).
 
-  Deliberately empty: PR1 ships the package and the expand/parse gate only.
-  The macro and its two instantiations land in PR4.
+  Crib status, stated first because it decides what may be cited below (the
+  same rule D29 and D31 applied to the base and column): D26 names XLeRobot as
+  the geometric substrate for the arms and `so101_ros2` as the arm-in-ROS 2
+  layer. Measured against the two upstreams:
+
+  - `so101_ros2` (msf4-0) is the **driver layer only** —  feetech motor code
+    and joint-state pub/sub, **no URDF and no meshes**. What it contributes is
+    the **motor keys / joint names** (its `.cache/so101_follower.json`):
+    `shoulder_pan`, `shoulder_lift`, `elbow_flex`, `wrist_flex`, `wrist_roll`,
+    `gripper` (ids 1..6). Those names are the contract PR6/PR7 cash in, so the
+    joints here are named after them —  the same rule the base's wheel joints
+    follow the LeKiwi driver (D26/D29).
+
+  - `Vector-Wangel/XLeRobot` (Apache-2.0) `simulation/Maniskill/assets/xlerobot/
+    xlerobot.urdf` holds the actual SO-101 arm: its links, revolute joints,
+    limits, meshes, masses. The geometry below (joint origins/rpy/axis, limits,
+    mesh filenames, link masses) is cribbed from there, with the differences
+    recorded, in the D29 "facts-not-files" sense —  no third-party file is
+    vendored other than the STL meshes themselves (Apache-2.0, in
+    meshes/arm/, attributed there).
+
+  The two arms are **identical in internal kinematics**: in XLeRobot both arms
+  use the same joint origins/rpy/axis and differ only in mount position. Our
+  macro keeps that —  `prefix`/`side` only change the mount transform, never the
+  arm's own chain —  which is exactly what "swappable macro parameterized by
+  prefix/side + mount transform" asks for. Do not invent a left/right mirror the
+  substrate does not have.
+
+  Shape (per arm, all joints revolute; the fixed mount is not a DOF):
+
+      column_top —fixed (<side>_arm_mount_joint)→ <side>_shoulder_link
+      <side>_shoulder_link —revolute (<side>_shoulder_pan)→ <side>_shoulder_pitch_link
+      <side>_shoulder_pitch_link —revolute (<side>_shoulder_lift)→ <side>_upper_arm_link
+      <side>_upper_arm_link —revolute (<side>_elbow_flex)→ <side>_lower_arm_link
+      <side>_lower_arm_link —revolute (<side>_wrist_flex)→ <side>_wrist_link
+      <side>_wrist_link —revolute (<side>_wrist_roll)→ <side>_wrist_roll_link
+
+  Deliberate scope notes, read them before arguing (rulings R2/R10):
+  - PR4 ships the arm's **5 revolute DOFs** (shoulder_pan..wrist_roll). The
+    wrist_roll is motor key id 5, an *arm* DOF; its output link here is a small
+    ESTIMATED spool (the future gripper mount) because there is no arm-only mesh
+    for it. The **gripper** (Jaw joint id 6 + Fixed_Jaw/Moving_Jaw + tips) is
+    PR5 and mounts off <side>_wrist_roll_link.
+  - The mount transform: the fixed <side>_arm_mount_joint carries the shoulder
+    frame at rpy (0,0,pi/2), which —  measured by composing every rpy up to
+    base_link —  orients each arm with its shoulder_pan axis vertical and its
+    pitch axes horizontal, so both arms sweep in the vertical forward plane
+    (+x) off their shoulder at y=+-shoulder_offset_y. The shoulder frame ORIGIN
+    (x,y,z)=(0, +-shoulder_offset_y, shoulder_offset_z) is the "shoulder" the
+    gate asserts (acceptance criterion, RobotModel.shoulder semantics: LEFT +y,
+    RIGHT -y).
+
+  The gate owns the numbers a reviewer cannot eyeball: the arm joints' axes
+  composed into base_link (shoulder_pan vertical, pitch horizontal), the
+  shoulder frame origins, and the reach bound —  all asserted in
+  test/test_description.py (see test_so101_* there).
 -->
 <robot xmlns:xacro="http://www.ros.org/wiki/xacro">
+
+  <!-- ==================================================================
+       Dimensions. The two shoulder offsets are SOURCED (RobotModel, D23);
+       reach_radius likewise. The rest are cribbed from XLeRobot numbers or
+       marked ESTIMATED, each per where it came from.
+       ================================================================== -->
+
+  <!-- SOURCED (robot_backends, mock_world.py —  RobotModel): the lateral and
+       vertical placement of each shoulder off the column_top datum, m. These
+       are the numbers the Mock backend, the safety layer and the brain's
+       prompt already enforce (RobotModel.shoulder_offset_y / shoulder_offset_z),
+       and the gate asserts the arm mount origins equal them. Deliberately
+       spelled with RobotModel's field names (not prefixed) so PR6 —  which
+       inverts this and makes RobotModel read the URDF —  greps one identifier
+       and finds both ends of it, exactly as the column's travel bounds are. -->
+  <xacro:property name="shoulder_offset_y" value="0.18"/>
+  <xacro:property name="shoulder_offset_z" value="0.50"/>
+  <!-- SOURCED (robot_backends, mock_world.py —  RobotModel): the radius of the
+       workspace sphere around each shoulder, m. Every point a gripper may reach
+       must be within it; the gate asserts the arm's own reach does not exceed
+       it. -->
+  <xacro:property name="reach_radius" value="0.85"/>
+
+  <!-- ESTIMATED: the <side>_wrist_roll_link driver spool (a cube of this side),
+       m, and its mass, kg. There is no arm-only mesh for the wrist-roll output
+       in the substrate (in XLeRobot the wrist_roll drives the gripper's fixed
+       jaw, whose meshes are PR5), so this is a small cube standing in for the
+       wrist-roll driver flange (per side), sized to look like the wrist tip. It
+       is what PR5's gripper mounts off. -->
+  <xacro:property name="wrist_roll_spool_xyz" value="0.03"/>
+  <xacro:property name="wrist_roll_spool_mass" value="0.05"/>
+
+  <!-- SOURCED / ESTIMATED: per-arm-link masses, kg, from XLeRobot xlerobot.urdf
+       (Apache-2.0, attributed in meshes/arm/README.md). wrist_roll_spool_mass is
+       ESTIMATED (above). The inertias are NOT copied from the CAD export
+       (opaque, no provenance —  the D29 "number nobody can eyeball" shape);
+       they are computed below from a solid box of the given extents (W=width/x,
+       D=depth/y, H=height/z, measured from each STL's bounding-box probe,
+       metre-native, no scale) —  so a retuned mass cannot leave a stale tensor
+       behind (D29).
+       ================================================================== -->
+  <xacro:property name="shoulder_link_mass"        value="0.193"/>
+  <xacro:property name="shoulder_pitch_link_mass" value="0.119"/>
+  <xacro:property name="upper_arm_link_mass"      value="0.162"/>
+  <xacro:property name="lower_arm_link_mass"      value="0.148"/>
+  <xacro:property name="wrist_link_mass"          value="0.066"/>
+
+  <!-- Measured STL extents (W=x, D=y, H=z), m. -->
+  <xacro:property name="shoulder_link_W"        value="0.1110"/>
+  <xacro:property name="shoulder_link_D"        value="0.0959"/>
+  <xacro:property name="shoulder_link_H"        value="0.0835"/>
+  <xacro:property name="shoulder_pitch_link_W"  value="0.0524"/>
+  <xacro:property name="shoulder_pitch_link_D"  value="0.0863"/>
+  <xacro:property name="shoulder_pitch_link_H"  value="0.0628"/>
+  <xacro:property name="upper_arm_link_W"       value="0.0700"/>
+  <xacro:property name="upper_arm_link_D"       value="0.1421"/>
+  <xacro:property name="upper_arm_link_H"       value="0.0280"/>
+  <xacro:property name="lower_arm_link_W"       value="0.0612"/>
+  <xacro:property name="lower_arm_link_D"       value="0.0369"/>
+  <xacro:property name="lower_arm_link_H"       value="0.1307"/>
+  <xacro:property name="wrist_link_W"           value="0.0633"/>
+  <xacro:property name="wrist_link_D"           value="0.0744"/>
+  <xacro:property name="wrist_link_H"           value="0.0320"/>
+
+  <!-- ==================================================================
+       The arm macro. Instantiates the whole 5-DOF arm under a fixed mount.
+       ================================================================== -->
+
+  <!--
+    `name` (the joint-name prefix) doubles as the arm instance label. `mount_xyz`
+    is the shoulder frame origin in `column_top` —  (0, +-shoulder_offset_y,
+    shoulder_offset_z). `mount_rpy` is the fixed shoulder orientation; the
+    (0,0,pi/2) default is what makes the arm reach forward (+x) with a vertical
+    shoulder_pan and horizontal pitch plane (verified by the gate).
+    `meshes_dir` = 'package://robot_description/meshes/arm', so the same shared
+    STL set serves both instances.
+  -->
+  <xacro:macro name="so101_arm"
+               params="name mount_xyz mount_rpy meshes_dir">
+    <joint name="${name}_arm_mount_joint" type="fixed">
+      <parent link="column_top"/>
+      <child link="${name}_shoulder_link"/>
+      <origin xyz="${mount_xyz}" rpy="${mount_rpy}"/>
+    </joint>
+
+    <link name="${name}_shoulder_link">
+      <visual><geometry><mesh filename="${meshes_dir}/Base.stl"/></geometry></visual>
+      <visual><geometry><mesh filename="${meshes_dir}/Base_Motor.stl"/></geometry></visual>
+      <collision><geometry><mesh filename="${meshes_dir}/Base.stl"/></geometry></collision>
+      <collision><geometry><mesh filename="${meshes_dir}/Base_Motor.stl"/></geometry></collision>
+      <inertial>
+        <mass value="${shoulder_link_mass}"/>
+        <!-- Solid box of shoulder_link_W/D/H about its centre. -->
+        <inertia
+          ixx="${shoulder_link_mass * (shoulder_link_D * shoulder_link_D + shoulder_link_H * shoulder_link_H) / 12}"
+          iyy="${shoulder_link_mass * (shoulder_link_W * shoulder_link_W + shoulder_link_H * shoulder_link_H) / 12}"
+          izz="${shoulder_link_mass * (shoulder_link_W * shoulder_link_W + shoulder_link_D * shoulder_link_D) / 12}"
+          ixy="0" ixz="0" iyz="0"/>
+      </inertial>
+    </link>
+
+    <!-- shoulder_pan: yaw the arm about a vertical axis (XLeRobot `Rotation`,
+         id 1). Origin/axis from xlerobot.urdf; limits see arm_joint_* below. -->
+    <joint name="${name}_shoulder_pan" type="revolute">
+      <parent link="${name}_shoulder_link"/>
+      <child link="${name}_shoulder_pitch_link"/>
+      <origin xyz="0 -0.0452 0.0165" rpy="${pi/2} 0 0"/>
+      <axis xyz="0 -1 0"/>
+      <limit lower="-2.1" upper="2.1"
+             effort="${arm_joint_effort}" velocity="${arm_joint_velocity}"/>
+    </joint>
+
+    <link name="${name}_shoulder_pitch_link">
+      <visual><geometry><mesh filename="${meshes_dir}/Rotation_Pitch.stl"/></geometry></visual>
+      <visual><geometry><mesh filename="${meshes_dir}/Rotation_Pitch_Motor.stl"/></geometry></visual>
+      <collision><geometry><mesh filename="${meshes_dir}/Rotation_Pitch.stl"/></geometry></collision>
+      <collision><geometry><mesh filename="${meshes_dir}/Rotation_Pitch_Motor.stl"/></geometry></collision>
+      <inertial>
+        <mass value="${shoulder_pitch_link_mass}"/>
+        <inertia
+          ixx="${shoulder_pitch_link_mass * (shoulder_pitch_link_D * shoulder_pitch_link_D + shoulder_pitch_link_H * shoulder_pitch_link_H) / 12}"
+          iyy="${shoulder_pitch_link_mass * (shoulder_pitch_link_W * shoulder_pitch_link_W + shoulder_pitch_link_H * shoulder_pitch_link_H) / 12}"
+          izz="${shoulder_pitch_link_mass * (shoulder_pitch_link_W * shoulder_pitch_link_W + shoulder_pitch_link_D * shoulder_pitch_link_D) / 12}"
+          ixy="0" ixz="0" iyz="0"/>
+      </inertial>
+    </link>
+
+    <!-- shoulder_lift: raise the upper arm (XLeRobot `Pitch`, id 2). -->
+    <joint name="${name}_shoulder_lift" type="revolute">
+      <parent link="${name}_shoulder_pitch_link"/>
+      <child link="${name}_upper_arm_link"/>
+      <origin xyz="0 0.1025 0.0306" rpy="${pi/2} 0 0"/>
+      <axis xyz="-1 0 0"/>
+      <limit lower="-0.1" upper="3.45"
+             effort="${arm_joint_effort}" velocity="${arm_joint_velocity}"/>
+    </joint>
+
+    <link name="${name}_upper_arm_link">
+      <visual><geometry><mesh filename="${meshes_dir}/Upper_Arm.stl"/></geometry></visual>
+      <visual><geometry><mesh filename="${meshes_dir}/Upper_Arm_Motor.stl"/></geometry></visual>
+      <collision><geometry><mesh filename="${meshes_dir}/Upper_Arm.stl"/></geometry></collision>
+      <collision><geometry><mesh filename="${meshes_dir}/Upper_Arm_Motor.stl"/></geometry></collision>
+      <inertial>
+        <mass value="${upper_arm_link_mass}"/>
+        <inertia
+          ixx="${upper_arm_link_mass * (upper_arm_link_D * upper_arm_link_D + upper_arm_link_H * upper_arm_link_H) / 12}"
+          iyy="${upper_arm_link_mass * (upper_arm_link_W * upper_arm_link_W + upper_arm_link_H * upper_arm_link_H) / 12}"
+          izz="${upper_arm_link_mass * (upper_arm_link_W * upper_arm_link_W + upper_arm_link_D * upper_arm_link_D) / 12}"
+          ixy="0" ixz="0" iyz="0"/>
+      </inertial>
+    </link>
+
+    <!-- elbow_flex: fold the forearm (XLeRobot `Elbow`, id 3). -->
+    <joint name="${name}_elbow_flex" type="revolute">
+      <parent link="${name}_upper_arm_link"/>
+      <child link="${name}_lower_arm_link"/>
+      <origin xyz="0 0.11257 0.028" rpy="${-pi/2} 0 0"/>
+      <axis xyz="1 0 0"/>
+      <limit lower="-0.2" upper="3.14159"
+             effort="${arm_joint_effort}" velocity="${arm_joint_velocity}"/>
+    </joint>
+
+    <link name="${name}_lower_arm_link">
+      <visual><geometry><mesh filename="${meshes_dir}/Lower_Arm.stl"/></geometry></visual>
+      <visual><geometry><mesh filename="${meshes_dir}/Lower_Arm_Motor.stl"/></geometry></visual>
+      <collision><geometry><mesh filename="${meshes_dir}/Lower_Arm.stl"/></geometry></collision>
+      <collision><geometry><mesh filename="${meshes_dir}/Lower_Arm_Motor.stl"/></geometry></collision>
+      <inertial>
+        <mass value="${lower_arm_link_mass}"/>
+        <inertia
+          ixx="${lower_arm_link_mass * (lower_arm_link_D * lower_arm_link_D + lower_arm_link_H * lower_arm_link_H) / 12}"
+          iyy="${lower_arm_link_mass * (lower_arm_link_W * lower_arm_link_W + lower_arm_link_H * lower_arm_link_H) / 12}"
+          izz="${lower_arm_link_mass * (lower_arm_link_W * lower_arm_link_W + lower_arm_link_D * lower_arm_link_D) / 12}"
+          ixy="0" ixz="0" iyz="0"/>
+      </inertial>
+    </link>
+
+    <!-- wrist_flex: pitch the wrist (XLeRobot `Wrist_Pitch`, id 4). -->
+    <joint name="${name}_wrist_flex" type="revolute">
+      <parent link="${name}_lower_arm_link"/>
+      <child link="${name}_wrist_link"/>
+      <origin xyz="0 0.0052 0.1349" rpy="${-pi/2} 0 0"/>
+      <axis xyz="1 0 0"/>
+      <limit lower="-1.8" upper="1.8"
+             effort="${arm_joint_effort}" velocity="${arm_joint_velocity}"/>
+    </joint>
+
+    <link name="${name}_wrist_link">
+      <visual><geometry><mesh filename="${meshes_dir}/Wrist_Pitch_Roll.stl"/></geometry></visual>
+      <visual><geometry><mesh filename="${meshes_dir}/Wrist_Pitch_Roll_Motor.stl"/></geometry></visual>
+      <collision><geometry><mesh filename="${meshes_dir}/Wrist_Pitch_Roll.stl"/></geometry></collision>
+      <collision><geometry><mesh filename="${meshes_dir}/Wrist_Pitch_Roll_Motor.stl"/></geometry></collision>
+      <inertial>
+        <mass value="${wrist_link_mass}"/>
+        <inertia
+          ixx="${wrist_link_mass * (wrist_link_D * wrist_link_D + wrist_link_H * wrist_link_H) / 12}"
+          iyy="${wrist_link_mass * (wrist_link_W * wrist_link_W + wrist_link_H * wrist_link_H) / 12}"
+          izz="${wrist_link_mass * (wrist_link_W * wrist_link_W + wrist_link_D * wrist_link_D) / 12}"
+          ixy="0" ixz="0" iyz="0"/>
+      </inertial>
+    </link>
+
+    <!-- wrist_roll: roll the tool/wrist output (XLeRobot `Wrist_Roll`, id 5; an
+         arm DOF —  the gripper id 6 + jaws are PR5). Output link is the small
+         ESTIMATED spool PR5 mounts the jaw off. -->
+    <joint name="${name}_wrist_roll" type="revolute">
+      <parent link="${name}_wrist_link"/>
+      <child link="${name}_wrist_roll_link"/>
+      <origin xyz="0 -0.0601 0" rpy="0 ${pi/2} 0"/>
+      <axis xyz="0 -1 0"/>
+      <limit lower="-3.14159" upper="3.14159"
+             effort="${arm_joint_effort}" velocity="${arm_joint_velocity}"/>
+    </joint>
+
+    <link name="${name}_wrist_roll_link">
+      <visual><geometry><box size="${wrist_roll_spool_xyz} ${wrist_roll_spool_xyz} ${wrist_roll_spool_xyz}"/></geometry></visual>
+      <collision><geometry><box size="${wrist_roll_spool_xyz} ${wrist_roll_spool_xyz} ${wrist_roll_spool_xyz}"/></geometry></collision>
+      <inertial>
+        <mass value="${wrist_roll_spool_mass}"/>
+        <!-- Solid cube of side wrist_roll_spool_xyz about its centre. -->
+        <inertia
+          ixx="${wrist_roll_spool_mass * 2 * wrist_roll_spool_xyz * wrist_roll_spool_xyz / 12}"
+          iyy="${wrist_roll_spool_mass * 2 * wrist_roll_spool_xyz * wrist_roll_spool_xyz / 12}"
+          izz="${wrist_roll_spool_mass * 2 * wrist_roll_spool_xyz * wrist_roll_spool_xyz / 12}"
+          ixy="0" ixz="0" iyz="0"/>
+      </inertial>
+    </link>
+  </xacro:macro>
+
+  <!-- ==================================================================
+       ESTIMATED: the arm joints' effort (N-m) and velocity (rad/s) limits.
+       Both are mandatory (check_urdf and urdf_parser_py refuse a <limit>
+       missing either), and the upstream xlerobot.urdf ships effort=0
+       velocity=0 on every arm joint —  which is a joint no planner or
+       controller will move, so it is NOT cribbed. No STS3215 stall-torque
+       figure is recorded in this repo to derive real values, so these are
+       purposeful order-of-magnitude stand-ins for a Feetech STS3215 class
+       servo (each SO-101 joint is one STS3215, D26), owed a real actuator
+       model when PR6/PR7 give the servo one (D29: don't dress a guess up as
+       a datasheet number).
+       ================================================================== -->
+  <xacro:property name="arm_joint_effort" value="3.0"/>
+  <xacro:property name="arm_joint_velocity" value="3.5"/>
+
+  <!-- ==================================================================
+       Instantiations. Left at +shoulder_offset_y, right at -shoulder_offset_y,
+       both at shoulder_offset_z above the column_top datum, both with the
+       (0,0,pi/2) mount that makes them reach forward. `side` mirrors the
+       RobotModel.shoulder(LEFT=+y, RIGHT=-y) convention.
+       ================================================================== -->
+  <xacro:so101_arm name="left"
+                   mount_xyz="0 ${shoulder_offset_y} ${shoulder_offset_z}"
+                   mount_rpy="0 0 ${pi/2}"
+                   meshes_dir="package://robot_description/meshes/arm"/>
+  <xacro:so101_arm name="right"
+                   mount_xyz="0 ${-shoulder_offset_y} ${shoulder_offset_z}"
+                   mount_rpy="0 0 ${pi/2}"
+                   meshes_dir="package://robot_description/meshes/arm"/>
+
 </robot>
