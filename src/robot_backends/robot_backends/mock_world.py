@@ -27,9 +27,11 @@ rather than reaching into a backend's internals.
 """
 
 from dataclasses import dataclass, field
+from functools import lru_cache
 from types import MappingProxyType
 from typing import Mapping
 
+from robot_description.robot_model import load_robot_model
 from robot_skills import Point, Pose, Side
 from robot_skills.validation import as_finite_float, as_identifier
 from robot_world import default_seed_document, WorldDocument, WorldObject
@@ -65,6 +67,18 @@ class ObjectSpec:
                 f'ObjectSpec.graspable must be a bool, got {type(self.graspable).__name__}')
 
 
+@lru_cache(maxsize=1)
+def _urdf_defaults():
+    """Load the shipped URDF's kinematic constants once and memoize them (D23).
+
+    Cached because it expands ``xacro`` and parses the model: the cost is
+    a one-time import-time hit, not a per-:class:`RobotModel` one.  The loader
+    lives in ``robot_description`` -- this package depends on it one-way, and
+    the description never imports back, so there is no cycle (see status.md R1).
+    """
+    return load_robot_model()
+
+
 @dataclass(frozen=True)
 class RobotModel:
     """A deliberately crude kinematic stand-in for the two-arm robot.
@@ -77,14 +91,28 @@ class RobotModel:
     Distances are metres.  A shoulder sits ``shoulder_offset_y`` to the side of
     the base and ``shoulder_offset_z`` above the top of the lift column; a
     gripper may be anywhere within ``reach_radius`` of its own shoulder.
+
+    Since D23's payoff (PR6) the *defaults* come from the shipped URDF, read by
+    :func:`_urdf_defaults`, rather than from literals here -- so Mock and the
+    future MuJoCo backend share one source of truth.  Each field is a
+    ``default_factory`` reading that one value, which is what keeps the
+    dataclass an explicit-override surface: ``RobotModel(reach_radius=0.5)``
+    still works, and only the fields the caller leaves out fall back to the
+    URDF.
     """
 
-    shoulder_offset_y: float = 0.18
-    shoulder_offset_z: float = 0.50
-    reach_radius: float = 0.85
-    home_gripper_offset: Point = Point(0.35, 0.0, -0.05)
-    min_column_height: float = 0.0
-    max_column_height: float = 1.20
+    shoulder_offset_y: float = field(
+        default_factory=lambda: _urdf_defaults().shoulder_offset_y)
+    shoulder_offset_z: float = field(
+        default_factory=lambda: _urdf_defaults().shoulder_offset_z)
+    reach_radius: float = field(
+        default_factory=lambda: _urdf_defaults().reach_radius)
+    home_gripper_offset: Point = field(
+        default_factory=lambda: Point(*_urdf_defaults().home_gripper_offset))
+    min_column_height: float = field(
+        default_factory=lambda: _urdf_defaults().min_column_height)
+    max_column_height: float = field(
+        default_factory=lambda: _urdf_defaults().max_column_height)
 
     def __post_init__(self) -> None:
         for name in ('shoulder_offset_y', 'shoulder_offset_z', 'reach_radius'):
