@@ -10,8 +10,16 @@
   <buildtool_depend>ament_python</buildtool_depend>
 
   <!-- The description is XML, not code: this package ships no rclpy node.
-       xacro is what expands robot.urdf.xacro wherever it is consumed. -->
+       xacro is what expands robot.urdf.xacro wherever it is consumed.
+
+       The robot_model loader (robot_model.py, PR6) reads the constants at
+       *runtime* for robot_backends and (later) MuJoCo, so the two tools it
+       uses — xacro to expand, urdfdom_py (urdf_parser_py) to parse — are
+       exec_depend here, not merely test_depend. They are ROS-free (no rclpy /
+       ament_index), which is what keeps robot_backends' "no ROS import at
+       runtime" invariant intact. -->
   <exec_depend>xacro</exec_depend>
+  <exec_depend>urdfdom_py</exec_depend>
 
   <!-- The expand/parse gate (test/test_description.py) shells out to the
        xacro and check_urdf CLIs and parses the result with urdf_parser_py,
@@ -24,7 +32,6 @@
   <test_depend>ament_index_python</test_depend>
   <test_depend>robot_state_publisher</test_depend>
   <test_depend>urdfdom</test_depend>
-  <test_depend>urdfdom_py</test_depend>
   <test_depend>xacro</test_depend>
 
   <test_depend>ament_copyright</test_depend>
