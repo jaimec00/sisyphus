@@ -167,6 +167,34 @@ Three internal-seam calls from the mock-skill-api run (#17, #18, #20), settled b
 - The issue-as-brief model; `docs/features/<slug>/` ephemeral docs; the red-team↔fix N+1 loop; manager rulings; test-integrity guard + ratchet (`pixi run test`); the laptop as the test gate; merge authority in Sisyphus (`run-merge-eval.md`); `docs/design/decisions.md` as canonical truth.
 - `pixi + RoboStack` as the robot env; `pixi run test` as the authoritative suite.
 
+
+## 2026-08-22 — PR7 pays the D31 fusestatic debt (URDF→MJCF derived model, issue #89)
+
+**Recorded, not decided — this is the D31 answer PR7 owed, logged so the assumption is no longer inherited.** PR7
+built the derived MJCF (`robot_description.mjcf_model.load_mjcf_model`: URDF → MuJoCo import →
+`mj_saveLastXML` → a hand-authored `mjcf/overlay.xml` spliced in → recompile). Uppermost result, verified by
+execution against the shipped model (mujoco 3.12.0, laptop node):
+
+- **MuJoCo's default `fusestatic` DOES fold the fixed-jointed `column_rail_link` into the base — and further
+  than D31 anticipated: the entire static trunk collapses into the `world` body.** `base_link`,
+  `base_chassis_link`, `column_rail_link`, `base_footprint` and the massless `head_camera_link`/optical frame
+  are all fused away; their geoms (chassis puck, column mast) appear as direct `<worldbody>` children. The
+  derived model has **19 bodies** against the URDF's 32 links.
+- **The carriage's prismatic `column_lift` gets parent = the fused base (world in this static import), not
+  `column_rail_link`.** This confirms D31's own prediction verbatim — *"column_rail_link is attached by a
+  fixed joint, a strong candidate for fusestatic, which would fuse it into base_link's body and make the
+  carriage's MuJoCo parent base_link either way — in which case the filtering comes from body fusion."*
+  **Body fusion, not joint parenting, is what filters the column-rail/carriage contact pair.** The URDF's
+  parenting (`column_lift` → `column_rail_link`) is a physics no-op once fused; it stays because it states
+  the mechanism better. Not a bug.
+- The issue brief's joint inventory was stale: the URDF currently has **13 fixed** joints (not "9 fixed"),
+  18 non-fixed DOF → `nq = nv = nu = 18`. The MJCF derivation imposes the URDF's counts on itself.
+- D29's wheel-radius discrepancy carries into the MJCF as-is (derived, not hand-modeled) — expected, recorded,
+  not a defect.
+
+The PR7 gate asserts `nbody == 19` (the fusestatic number), `nq == nv == nu == 18`, a NaN-free `mj_step`
+smoke, and the head camera at the REP-103 optical frame relative to `column_top`.
+
 ### Open items (decided by Jaime, not assumed)
 *Resolved 2026-08-16:*
 1. **DeepSeek provider route — RESOLVED (Jaime):** DeepSeek **native API** at `https://api.deepseek.com` (already this gateway's `baseUrl`), **not** an OpenAI-compatible router/proxy. Gateway-routed.

@@ -20,6 +20,13 @@
        runtime" invariant intact. -->
   <exec_depend>xacro</exec_depend>
   <exec_depend>urdfdom_py</exec_depend>
+  <!-- The PR7 MJCF loader (mjcf_model.py, issue #89) imports `mujoco` at
+       runtime to derive the MJCF from the URDF. MuJoCo stays ROS-free (no
+       rclpy / ament_index), preserving robot_backends' "no ROS import at
+       runtime" invariant; it is declared here as exec_depend and pinned in
+       pixi.toml so the test gate (which invokes the loader) does not depend
+       on a transitive closure. -->
+  <exec_depend>mujoco</exec_depend>
 
   <!-- The expand/parse gate (test/test_description.py) shells out to the
        xacro and check_urdf CLIs and parses the result with urdf_parser_py,
