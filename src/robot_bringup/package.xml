@@ -10,10 +10,28 @@
   <buildtool_depend>ament_python</buildtool_depend>
   <depend>rclpy</depend>
 
+  <exec_depend>robot_description</exec_depend>
+  <exec_depend>robot_state_publisher</exec_depend>
+  <!-- joint_state_publisher is RSP's standard companion and is what makes
+       the FULL tree observable: without a /joint_states source RSP publishes
+       only the static tree and leaves the movable-joint frames (wheels,
+       column_lift, arm joints) unpublished, so no joint-state source means
+       the brief's "every link present / tree connects" cannot hold. JSP with
+       an empty source_list reads the URDF's initial joint values, so the
+       whole tree is published at the home config. In-scope for bringup; not a
+       controller (those land with PR8b). -->
+  <exec_depend>joint_state_publisher</exec_depend>
+  <exec_depend>xacro</exec_depend>
+  <exec_depend>launch</exec_depend>
+  <exec_depend>launch_ros</exec_depend>
+  <exec_depend>ament_index_python</exec_depend>
+
   <test_depend>ament_copyright</test_depend>
   <test_depend>ament_flake8</test_depend>
   <test_depend>ament_pep257</test_depend>
   <test_depend>python3-pytest</test_depend>
+  <test_depend>ament_index_python</test_depend>
+  <test_depend>tf2_ros</test_depend>
 
   <export>
     <build_type>ament_python</build_type>

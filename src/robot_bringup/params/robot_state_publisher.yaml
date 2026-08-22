@@ -1,0 +1,7 @@
+# robot_state_publisher parameters (the robot_description itself is injected
+# by launch/robot.launch.py from the ament-installed xacro — D27/D24; keeping
+# it out of this file avoids a hand-maintained copy of the XML).
+robot_state_publisher:
+  ros__parameters:
+    publish_frequency: 50.0
+    use_tf_static: true
