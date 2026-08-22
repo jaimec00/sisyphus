@@ -28,8 +28,9 @@ used in `<visual>` and `<collision>`:
 
 The `meshes/` parent `README.md` documents that this `arm/` subdirectory is what
 activated the `os.walk` install rewrite in `setup.py` (a nested subdir cannot be
-copied by the flat `glob('meshes/*')`, D27/D29). Gripper jaw meshes are **PR5**,
-not here.
+copied by the flat `glob('meshes/*')`, D27/D29). The gripper's parallel-jaw
+meshes (`Fixed_Jaw*`, `Moving_Jaw`) landed in **`meshes/gripper/`** in PR5; see
+that directory's README.
 
 ## Masses
 Link masses are sourced from the same XLeRobot URDF (Base 0.193, Rotation_Pitch
