@@ -154,6 +154,18 @@ EXPECTED_LINKS = {
     'column_top',
     'head_camera_link',
     'head_camera_optical_frame',
+    'left_shoulder_link',
+    'left_shoulder_pitch_link',
+    'left_upper_arm_link',
+    'left_lower_arm_link',
+    'left_wrist_link',
+    'left_wrist_roll_link',
+    'right_shoulder_link',
+    'right_shoulder_pitch_link',
+    'right_upper_arm_link',
+    'right_lower_arm_link',
+    'right_wrist_link',
+    'right_wrist_roll_link',
 }
 
 #: The base's three actuated joints. These names are *not* free: LeKiwi's URDF
@@ -162,6 +174,44 @@ EXPECTED_LINKS = {
 #: directly comparable between driver and model. Renaming them here would
 #: silently decouple the two, which is why the set is asserted exactly.
 WHEEL_JOINTS = ('base_left_wheel', 'base_back_wheel', 'base_right_wheel')
+
+#: The SO-101 arm's five revolute joints (per arm, from the shoulder out), named
+#: after the so101_ros2 driver's motor keys (D26/D29, PR6/PR7 contract) -- the
+#: same rule the base's wheel joints follow the LeKiwi driver. ``gripper`` (id 6)
+#: is PR5, not here. The ``{prefix}_arm_mount_joint`` is a fixed mount and not a
+#: DOF, hence absent from this tuple. See the ``ARM_*`` names in
+#: ``test_column_lift_is_the_models_only_prismatic_joint``'s sibling.
+ARM_JOINTS = ('shoulder_pan', 'shoulder_lift', 'elbow_flex',
+              'wrist_flex', 'wrist_roll')
+
+#: The ``Arm`` joint-name prefixes the macro is instantiated under. Mirrors
+#: ``RobotModel.shoulder``'s LEFT/RIGHT semantics (mock_world.py): LEFT at +y,
+#: RIGHT at -y. ``side``/``prefix`` are the one thing the two instantiations may
+#: differ in.
+ARMS = ('left', 'right')
+
+#: The per-arm link chain, mount first, ending at the wrist-roll output that PR5
+#: mounts the gripper off. Each is a real solid (none in ``MASSLESS_FRAME_LINKS``).
+ARM_LINKS = ('shoulder_link', 'shoulder_pitch_link', 'upper_arm_link',
+             'lower_arm_link', 'wrist_link', 'wrist_roll_link')
+
+#: Transcribed from ``RobotModel`` in ``src/robot_backends/robot_backends/
+#: mock_world.py`` -- the numbers the Mock backend, the safety layer and the
+#: brain's prompt already enforce, and which the URDF's shoulder mounts must
+#: equal. ``shoulder_offset_z`` is measured above the ``column_top`` datum per
+#: the roadmap (the column's own test pins that datum). ``reach_radius`` bounds
+#: the workspace sphere around each shoulder. Metres.
+ROBOT_MODEL_SHOULDER_OFFSET_Y = 0.18
+ROBOT_MODEL_SHOULDER_OFFSET_Z = 0.50
+ROBOT_MODEL_REACH_RADIUS = 0.85
+
+#: The arm's minimum meaningful reach, metres. ``reach_radius`` is an upper
+#: bound; a *degenerate* point-arm (no forearm, all joints co-located) would
+#: satisfy it trivially, so the reach test also requires the arm to actually
+#: reach out a useful distance. The SO-101 pitch chain sums to ~0.35 m; the
+#: floor is set well below that so a retreat into a stub fails without
+#: over-constraining the design.
+ARM_REACH_FLOOR = 0.25
 
 #: The LeRobot LeKiwi driver's own body->wheel kinematics, transcribed from
 #: `_body_to_wheel_raw` in `lerobot/robots/lekiwi/lekiwi.py`::
@@ -1867,3 +1917,175 @@ def test_robot_is_named(expansion):
     """The model carries the robot's name, so downstream tooling can identify it."""
     robot = URDF.from_xml_string(_require_expansion(expansion))
     assert robot.name == 'sisyphus', 'unexpected robot name: %r' % robot.name
+
+
+def _arm_joints(model, side):
+    """Return the five revolute arm joints of ``side``, in mount-to-tip order."""
+    return [model.joint_map['%s_%s' % (side, joint)] for joint in ARM_JOINTS]
+
+
+def test_so101_two_arms_mount_off_column_top_at_the_robot_model_shoulders(parsed_model):
+    """Both arms mount off ``column_top`` at the shoulder origin `RobotModel` enforces.
+
+    The fixed ``{side}_arm_mount_joint``'s origin is the shoulder frame in
+    ``column_top`` coordinates, so it must equal ``RobotModel.shoulder``'s: LEFT
+    at +``shoulder_offset_y``, RIGHT at -``shoulder_offset_y``, both at
+    ``shoulder_offset_z`` above the datum (mock_world.py). The ``side`` sign
+    convention is exactly the acceptance criterion for PR4 (RoboModel.shoulder's
+    LEFT=+y / RIGHT=-y), so a sign error here is caught by name.
+    """
+    expected = {
+        'left': (ROBOT_MODEL_SHOULDER_OFFSET_Y, ROBOT_MODEL_SHOULDER_OFFSET_Z),
+        'right': (-ROBOT_MODEL_SHOULDER_OFFSET_Y, ROBOT_MODEL_SHOULDER_OFFSET_Z),
+    }
+    for side in ARMS:
+        joint = parsed_model.joint_map['%s_arm_mount_joint' % side]
+        assert joint.type == 'fixed', (
+            '%s_arm_mount_joint must be a fixed mount, not %r' % (
+                side, joint.type))
+        origin = joint.origin
+        xyz = tuple(origin.xyz or (0.0, 0.0, 0.0))
+        want_y, want_z = expected[side]
+        assert (abs(xyz[0]) < PLACEMENT_TOL_M
+                and abs(xyz[1] - want_y) < PLACEMENT_TOL_M
+                and abs(xyz[2] - want_z) < PLACEMENT_TOL_M), (
+            '%s_arm_mount_joint is at %s in column_top; expected '
+            '(0, %s, %s) (RobotModel.shoulder).' % (
+                side, list(xyz), want_y, want_z))
+        assert joint.parent == 'column_top', (
+            '%s mounts off %s, not column_top' % (side, joint.parent))
+        assert joint.child == '%s_shoulder_link' % side, (
+            '%s_arm_mount_joint must child %s_shoulder_link, not %s' % (
+                side, side, joint.child))
+
+
+def test_so101_joint_names_are_unique_across_the_two_arms(parsed_model):
+    """No left/right collision: every arm joint/link names the side it is on.
+
+    The two arms are two instances of one macro; the macro parameter vs a
+    misspelt prefix is exactly the error a reviewer cannot eyeball (a single arm
+    expanded twice silently). Assert the map keys for the full per-arm sets are
+    disjoint and fit the ``{side}_*`` scheme, so a name that forgets its side is
+    caught as a key that no side claims.
+    """
+    for side in ARMS:
+        for joint in ARM_JOINTS:
+            name = '%s_%s' % (side, joint)
+            assert name in parsed_model.joint_map, (
+                'missing arm joint %s -- does arm.xacro name it after the '
+                'so101 driver key minus its %r prefix?' % (name, side))
+        for link in ARM_LINKS:
+            name = '%s_%s' % (side, link)
+            assert name in parsed_model.link_map, (
+                'missing arm link %s' % name)
+
+
+def test_so101_arm_joints_are_revolute_and_preserve_the_only_prismatic_gate(parsed_model):
+    """All 10 arm joints are revolute; ``column_lift`` stays the only prismatic.
+
+    The SO-101 arm is all-revolute (XLeRobot xlerobot.urdf), so this and the
+    column gate each assert half of the same invariant. If a later PR needs a
+    prismatic arm joint, it must carry its own design decision -- the existing
+    ``test_column_lift_is_the_models_only_prismatic_joint`` will not silently
+    allow it.
+    """
+    for side in ARMS:
+        for joint in _arm_joints(parsed_model, side):
+            assert joint.type == 'revolute', (
+                '%s must be revolute, found %r' % (joint.name, joint.type))
+    # The shared gate still holds -- the two assertions are companions.
+    prismatic = {joint.name for joint in parsed_model.joints
+                 if joint.type == 'prismatic'}
+    assert prismatic == {'column_lift'}, (
+        'arm PR changed the prismatic set to %s; column_lift must remain the '
+        'only prismatic joint.' % sorted(prismatic))
+
+
+def test_so101_arm_joint_limits_declare_positive_effort_and_velocity(expansion, parsed_model):
+    """Every arm joint's <limit> states positive effort and velocity.
+
+    The upstream xlerobot.urdf ships effort=0 velocity=0 on every arm joint -- a
+    joint no planner or controller will move -- which check_urdf accepts without
+    complaint and the positive-limit gate would not. The parsed limit must be
+    positive (a zero budget is unmoveable), and the raw expansion must declare
+    the attributes (URDF would otherwise default them permissively).
+    """
+    for side in ARMS:
+        for joint in _arm_joints(parsed_model, side):
+            limit = joint.limit
+            assert limit is not None, (
+                '%s declares no <limit>' % joint.name)
+            assert limit.effort and limit.effort > 0, (
+                '%s needs a positive effort: %r' % (joint.name, limit.effort))
+            assert limit.velocity and limit.velocity > 0, (
+                '%s needs a positive velocity: %r' % (joint.name, limit.velocity))
+        for joint_name in ('%s_%s' % (side, j) for j in ARM_JOINTS):
+            attrs = _limit_attributes(expansion, joint_name)
+            for required in ('effort', 'velocity'):
+                assert required in attrs and float(attrs[required]) > 0, (
+                    '%s <limit> must declare %s explicitly, got %r' % (
+                        joint_name, required, attrs))
+
+
+def test_so101_shoulder_pan_axis_is_vertical_and_pitch_axes_horizontal(parsed_model):
+    """Composed into base_link, each shoulder_pan is vertical and each pitch axis horizontal.
+
+    The mount rpy=(0,0,pi/2) is what orients each arm so it sweeps in the
+    vertical forward plane; a wrong mount rpy (or a spindle axis left lying in
+    the horizontal) turns the arm into a design that reaches sideways instead of
+    up-and-forward. Compose each joint's axis all the way to base_link (the D29
+    lesson of the column's axis test) rather than trusting the mount rpy to be
+    right -- that is exactly what this gate exists to check.
+    """
+    for side in ARMS:
+        pan = _axis_in_base_link(
+            parsed_model, parsed_model.joint_map['%s_shoulder_pan' % side])
+        # unit axis; vertical means it is ±z
+        z_mag = abs(pan[2])
+        assert z_mag > 1.0 - ANGLE_TOL_DEG, (
+            '%s_shoulder_pan axis in base_link is %s, not vertical' % (
+                side, pan))
+        for pitch_name in ('shoulder_lift', 'elbow_flex', 'wrist_flex'):
+            axis = _axis_in_base_link(
+                parsed_model,
+                parsed_model.joint_map['%s_%s' % (side, pitch_name)])
+            assert abs(axis[2]) < ANGLE_TOL_DEG, (
+                '%s_%s axis in base_link is %s, not horizontal' % (
+                    side, pitch_name, axis))
+
+
+def test_so101_reach_is_within_the_robot_model_radius_and_not_degenerate(parsed_model):
+    """The arm's maximum kinematic reach is within reach_radius and above a floor.
+
+    Reach is measured as the sum of the per-joint origin-offset lengths along
+    the arm (the segment lengths that add to the end-effector's distance when
+    fully extended) plus the wrist-roll spool's own span -- read off the model
+    rather than hardcoded, so retuning a link keeps the bound enforced. The
+    floor stops a degenerate point-arm (all origins coincident) from passing
+    just by being no longer than the radius. The SO-101 pitch chain sums to
+    ~0.35 m, comfortably inside (0.25, 0.85).
+    """
+    for side in ARMS:
+        reach = 0.0
+        joints = _arm_joints(parsed_model, side)
+        for joint in joints:
+            origin = joint.origin
+            xyz = tuple(origin.xyz or (0.0, 0.0, 0.0)) if origin is not None else (0.0, 0.0, 0.0)
+            reach += math.hypot(*xyz) if len(xyz) == 2 else math.sqrt(
+                xyz[0] * xyz[0] + xyz[1] * xyz[1] + xyz[2] * xyz[2])
+        # the wrist-roll output link adds its own extent
+        spool = parsed_model.link_map['%s_wrist_roll_link' % side]
+        spool_size = None
+        for collision in spool.collisions:
+            g = collision.geometry
+            if hasattr(g, 'size'):
+                spool_size = g.size
+        if spool_size is not None:
+            reach += math.sqrt(sum(v * v for v in spool_size)) / 2.0
+        assert reach <= ROBOT_MODEL_REACH_RADIUS + PLACEMENT_TOL_M, (
+            '%s arm reach %.3f m exceeds reach_radius %.3f m' % (
+                side, reach, ROBOT_MODEL_REACH_RADIUS))
+        assert reach >= ARM_REACH_FLOOR, (
+            '%s arm reach %.3f m is below the %.3f m floor -- a degenerate '
+            'point-arm should not pass the reach bound' % (
+                side, reach, ARM_REACH_FLOOR))

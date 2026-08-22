@@ -3,15 +3,22 @@
 Collision and visual geometry for the robot description, installed to
 `share/robot_description/meshes/`.
 
-Still empty by design, and it is not the base's doing: PR2 authored the
-3-omniwheel base from primitives rather than vendoring LeKiwi's meshes (the
-upstream omniwheel STL is 15 MB and referenced three times; convex primitives
-are the better collision geometry for a mobile base anyway) — see **D29**. The
-first real mesh set is therefore expected with the arms (PR4), cribbed from
-the LeRobot/XLeRobot lineage per D26, and that is also the PR that owes the
-`os.walk` install rewrite D27 deferred.
+**PR4 is the first mesh-bearing PR.** PR2 authored the 3-omniwheel base from
+primitives rather than vendoring LeKiwi's meshes (the upstream omniwheel STL is
+15 MB and referenced three times; convex primitives are the better collision
+geometry for a mobile base anyway) -- see **D29**. The first real mesh set is the
+SO-101 arm STLs in **`arm/`**, cribbed from `Vector-Wangel/XLeRobot` (Apache-2.0,
+see `arm/README.md`).
 
-This file is not a placeholder to delete — it is what makes the directory
-exist. `setup.py` installs `glob('meshes/*')`, and `glob()` skips dotfiles, so
-a `.gitkeep` would leave the installed directory missing and the gate's
-layout assertion red.
+The nested `arm/` subdirectory is exactly why `setup.py` replaced its flat
+`glob('meshes/*')` (PR1–PR3) with an `os.walk` form: `data_files` cannot copy a
+directory, so a `meshes/<subdir>/x.stl` needs the walk (D27 recorded it, D29
+deferred it to the first PR that actually lands meshes -- PR4, written against the
+arm's real layout rather than a guess at it). Both the `left` and `right` arm
+instantiations reference the same shared `meshes/arm/*.stl` files via
+`package://robot_description/meshes/arm/<file>.stl`.
+
+Gripper jaw meshes (`Fixed_Jaw*`, `Moving_Jaw*`) are PR5, not here.
+
+This file is not a placeholder to delete -- it is what makes the top-level
+`meshes/` directory exist in the install tree.
