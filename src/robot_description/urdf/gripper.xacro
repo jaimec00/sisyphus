@@ -1,0 +1,298 @@
+<?xml version="1.0"?>
+<!--
+  Grippers: 2x SO-101 parallel-jaw grippers (one driven jaw + one mimic jaw),
+  authored as ONE swappable xacro macro, instantiated left and right off each
+  arm's <side>_wrist_roll_link (D26/R1). This is PR5, the tool PR4's arm
+  reserved its wrist-roll spool for.
+
+  Crib status (same stated-first rule as arm.xacro): D26 names XLeRobot as the
+  geometric substrate; the SO-101 gripper geometry is cribbed from
+  Vector-Wangel/XLeRobot's xlerobot.urdf (Apache-2.0, in meshes/gripper/,
+  attributed there). The motor key for this joint is `gripper` (id 6,
+  so101_ros2 .cache/so101_follower.json), so the driven joint is named
+  `<side>_gripper` — the contract PR6/PR7 cash in, exactly like the arm joints
+  above it.
+
+  Deliberate re-model (R1, read it before arguing): upstream XLeRobot models the
+  SO-101 as a SINGLE revolute `Jaw` (Moving_Jaw swings on a pivot on Fixed_Jaw),
+  with NO <mimic>. Issue #85 requires one driven + one mimicked joint, so this
+  re-models the gripper as a symmetric two-jaw parallel (scissor) gripper:
+
+    <side>_gripper          = driven revolute joint (motor key `gripper`).
+    <side>_gripper_mirror   = revolute joint on the facing jaw, declared with
+                              <mimic joint="<side>_gripper" multiplier="-1"/>,
+                              so a positive drive closes BOTH jaws symmetrically.
+
+  Both jaw joints are REVOLUTE (REQUIRED: the gate allows exactly one prismatic
+  joint in the whole model — the column — so translatory jaws are impossible).
+
+  Kinematics note (the one deliberate correction to R1's wording, flagged in
+  implementation.md): R1 offers "both axis anti-parallel (or the mirror origin
+  rotated pi)". An anti-parallel axis pair with <mimic multiplier="-1"> makes the
+  two joints rotate in the SAME physical direction (composition: axis -y by
+  angle -q == axis +y by angle +q), which is parallel — not symmetric — motion.
+  The symmetric parallel jaw is realized with BOTH jaw axes +y (same direction)
+  and the mirror jaw's pivot + lever reflected across the x-y grip plane, so
+  <mimic multiplier="-1"> gives equal-and-opposite tip motion. This is the
+  standard scissor-mimic realization, verified by composition (a positive drive
+  narrows the gap; the tips meet the grasp reference at q=0).
+
+  Shape (per side, all joints revolute except the fixed mount and fixed tips):
+
+      <side>_wrist_roll_link —fixed (<side>_gripper_mount_joint)→ <side>_gripper_base_link
+      <side>_gripper_base_link —revolute (<side>_gripper, axis +y, driven)→ <side>_gripper_upper_jaw_link
+      <side>_gripper_base_link —revolute (<side>_gripper_mirror, axis +y, mimic)→ <side>_gripper_lower_jaw_link
+      <side>_gripper_upper_jaw_link —fixed (<side>_gripper_upper_tip_joint)→ <side>_gripper_upper_tip_link
+      <side>_gripper_lower_jaw_link —fixed (<side>_gripper_lower_tip_joint)→ <side>_gripper_lower_tip_link
+
+  The gripper_base frame == the wrist_roll_link frame (the fixed mount is the
+  identity). Grip axis is +x (toward the fingers, which point DOWN the wrist in
+  the world — arm.xacro's wrist-roll note: the wrist +x points straight down).
+  The grasp reference — the midpoint between the two fingertip frames at q=0
+  (closed) — is placed at (grip_reach, tuck, 0) in this frame so that the FULL
+  shoulder->fingertip chain at the zero (homing) pose lands the grasp point at
+  home_gripper_offset (0.35, 0, -0.05) relative to the shoulder (R3), i.e. the
+  wrist-frame point (+0.1462, +0.03337, 0) R3 measured. grip_reach/tuck are
+  SOURCED from that measurement and are checked exactly by the gate.
+
+  The fingertip is a macro parameter (R2): a rigid box by default
+  (visual + collision + inertial, a real solid — NOT the empty *_tip frame
+  upstream ships), swappable for a compliant fin-ray fingertip LATER by changing
+  geometry alone, without re-modeling the joint or actuator.
+-->
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro">
+
+  <!-- ==================================================================
+       Dimensions. grip_reach/tuck are SOURCED (measured composition, R3);
+       the jaw pivot placement and fingertip size/mass are ESTIMATED (see
+       each). Masses of the Fixed_Jaw / Moving_Jaw bodies are SOURCED from
+       xlerobot.urdf (R4, D29). Inertias are computed from solid prisms
+       matching the STL extents (PR4's arm.xacro rule) — never the vendored
+       CAD tensors.
+       ================================================================== -->
+
+  <!-- SOURCED (R3, measured composition): the grasp reference in the gripper
+       base (= wrist) frame — the grip-axis reach (+x, down) and the aft tuck
+       (+y) that put the grasp midpoint at home_gripper_offset (0.35,0,-0.05)
+       relative to the shoulder at the zero pose. Metres. These two numbers ARE
+       the home_gripper_offset placement; the gate asserts them exactly. -->
+  <xacro:property name="gripper_grip_reach" value="0.1462"/>
+  <xacro:property name="gripper_tuck" value="0.03337"/>
+
+  <!-- ESTIMATED: the jaw pivot placement in the gripper base frame. The two jaw
+       pivots sit mirrored across the grip plane (z=0): +pivot_z (upper) /
+       -pivot_z (lower), at x=pivot_x in the palm, y=the tuck. The fingertip
+       contact then lands at (grip_reach, tuck, +-tip_half) with a forward lever
+       arm of grip_reach - pivot_x. Chosen to look like the SO-101 jaw (the
+       upstream Jaw pivot sits ~0.020-0.024 m aft of the Fixed_Jaw tip), not a
+       datasheet number. -->
+  <xacro:property name="gripper_pivot_x" value="0.05"/>
+  <xacro:property name="gripper_pivot_z" value="0.05"/>
+
+  <!-- SOURCED (xlerobot.urdf, R4 / D29): the body masses, kg. -->
+  <xacro:property name="fixed_jaw_mass" value="0.0929859131176897"/>
+  <xacro:property name="moving_jaw_mass" value="0.0202443794940372"/>
+
+  <!-- Measured STL extents (W=x, D=y, H=z), m, for the computed prisms.
+       Fixed_Jaw ~0.065 x 0.106 x 0.048; Moving_Jaw ~0.022 x 0.092 x 0.048
+       (meshes/gripper/README.md bounding-box probes). -->
+  <xacro:property name="fixed_jaw_W" value="0.065"/>
+  <xacro:property name="fixed_jaw_D" value="0.106"/>
+  <xacro:property name="fixed_jaw_H" value="0.048"/>
+  <xacro:property name="moving_jaw_W" value="0.022"/>
+  <xacro:property name="moving_jaw_D" value="0.092"/>
+  <xacro:property name="moving_jaw_H" value="0.048"/>
+
+  <!-- ESTIMATED: the fingertip pad, a rigid box (R2's default), metres
+       (x=forward, y=width, z=thickness). The z thinness is the jaws' closed
+       gap: at q=0 the two pads' faces touch, so their centres sit +-half this
+       apart. Mass is a small estimate (no fingertip mass is recorded upstream
+       — the upstream tips are empty frames, which is exactly what R2 forbids
+       us to copy). -->
+  <xacro:property name="fingertip_x" value="0.02"/>
+  <xacro:property name="fingertip_y" value="0.02"/>
+  <xacro:property name="fingertip_z" value="0.01"/>
+  <xacro:property name="fingertip_mass" value="0.01"/>
+
+  <!-- ESTIMATED joint limits (D29/D31 style: positive effort+velocity, nothing
+       dressed up as a datasheet number). Same order as arm.xacro's STS3215
+       stand-ins. lower=-1.5 upper=0: q=0 is fully closed (tips meet), the
+       gripper opens toward -1.5 rad, so a positive drive (toward 0) closes. -->
+  <xacro:property name="gripper_joint_effort" value="3.0"/>
+  <xacro:property name="gripper_joint_velocity" value="3.5"/>
+  <xacro:property name="gripper_joint_lower" value="-1.5"/>
+  <xacro:property name="gripper_joint_upper" value="0.0"/>
+
+  <!-- ==================================================================
+       The fingertip sub-macro. A single rigid box link with a real
+       visual + collision + inertial, parameterized by its size and mass. R2's
+       swap surface: a compliant fin-ray fingertip later replaces this box
+       (or this macro) without touching the jaw joint or actuator.
+       ================================================================== -->
+  <xacro:macro name="gripper_fingertip" params="name fx fy fz mass">
+    <link name="${name}">
+      <visual><geometry><box size="${fx} ${fy} ${fz}"/></geometry></visual>
+      <collision><geometry><box size="${fx} ${fy} ${fz}"/></geometry></collision>
+      <inertial>
+        <mass value="${mass}"/>
+        <inertia
+          ixx="${mass * (fy * fy + fz * fz) / 12}"
+          iyy="${mass * (fx * fx + fz * fz) / 12}"
+          izz="${mass * (fx * fx + fy * fy) / 12}"
+          ixy="0" ixz="0" iyz="0"/>
+      </inertial>
+    </link>
+  </xacro:macro>
+
+  <!-- ==================================================================
+       The gripper macro. Instantiates one parallel-jaw gripper under a fixed
+       mount off the wrist-roll output.
+       ================================================================== -->
+
+  <!--
+    `name` = the instance prefix/side, doubled as the joint-name prefix.
+    `mount_xyz` = gripper_base origin in the parent wrist_roll_link frame;
+    identity by default. `mount_rpy` likewise. `meshes_dir` =
+    'package://robot_description/meshes/gripper'. `tip_x/y/z`, `tip_mass` are
+    the macro-parameterized fingertip box (R2's swap surface), threaded to the
+    fingertip sub-macro and used to derive the tip-half offset.
+  -->
+  <xacro:macro name="so101_gripper"
+               params="name mount_xyz mount_rpy meshes_dir tip_x tip_y tip_z tip_mass">
+    <joint name="${name}_gripper_mount_joint" type="fixed">
+      <parent link="${name}_wrist_roll_link"/>
+      <child link="${name}_gripper_base_link"/>
+      <origin xyz="${mount_xyz}" rpy="${mount_rpy}"/>
+    </joint>
+
+    <link name="${name}_gripper_base_link">
+      <!-- The Fixed_Jaw mesh is authored grip-along -y upstream; Rz(+pi/2)
+           turns its grip axis (-y) into this macro's +x (down). -->
+      <visual>
+        <origin xyz="0 0 0" rpy="0 0 ${pi/2}"/>
+        <geometry><mesh filename="${meshes_dir}/Fixed_Jaw.stl"/></geometry>
+      </visual>
+      <visual>
+        <origin xyz="0 0 0" rpy="0 0 ${pi/2}"/>
+        <geometry><mesh filename="${meshes_dir}/Fixed_Jaw_Motor.stl"/></geometry>
+      </visual>
+      <collision>
+        <origin xyz="0 0 0" rpy="0 0 ${pi/2}"/>
+        <geometry><mesh filename="${meshes_dir}/Fixed_Jaw.stl"/></geometry>
+      </collision>
+      <collision>
+        <origin xyz="0 0 0" rpy="0 0 ${pi/2}"/>
+        <geometry><mesh filename="${meshes_dir}/Fixed_Jaw_Motor.stl"/></geometry>
+      </collision>
+      <inertial>
+        <mass value="${fixed_jaw_mass}"/>
+        <inertia
+          ixx="${fixed_jaw_mass * (fixed_jaw_D * fixed_jaw_D + fixed_jaw_H * fixed_jaw_H) / 12}"
+          iyy="${fixed_jaw_mass * (fixed_jaw_W * fixed_jaw_W + fixed_jaw_H * fixed_jaw_H) / 12}"
+          izz="${fixed_jaw_mass * (fixed_jaw_W * fixed_jaw_W + fixed_jaw_D * fixed_jaw_D) / 12}"
+          ixy="0" ixz="0" iyz="0"/>
+      </inertial>
+    </link>
+
+    <!-- Driven jaw joint (motor key `gripper`): axis +y, the upper jaw. -->
+    <joint name="${name}_gripper" type="revolute">
+      <parent link="${name}_gripper_base_link"/>
+      <child link="${name}_gripper_upper_jaw_link"/>
+      <origin xyz="${gripper_pivot_x} ${gripper_tuck} ${gripper_pivot_z}" rpy="0 0 0"/>
+      <axis xyz="0 1 0"/>
+      <limit lower="${gripper_joint_lower}" upper="${gripper_joint_upper}"
+             effort="${gripper_joint_effort}" velocity="${gripper_joint_velocity}"/>
+    </joint>
+
+    <link name="${name}_gripper_upper_jaw_link">
+      <visual>
+        <origin xyz="0 0 0" rpy="0 0 ${pi/2}"/>
+        <geometry><mesh filename="${meshes_dir}/Moving_Jaw.stl"/></geometry>
+      </visual>
+      <collision>
+        <origin xyz="0 0 0" rpy="0 0 ${pi/2}"/>
+        <geometry><mesh filename="${meshes_dir}/Moving_Jaw.stl"/></geometry>
+      </collision>
+      <inertial>
+        <mass value="${moving_jaw_mass}"/>
+        <inertia
+          ixx="${moving_jaw_mass * (moving_jaw_D * moving_jaw_D + moving_jaw_H * moving_jaw_H) / 12}"
+          iyy="${moving_jaw_mass * (moving_jaw_W * moving_jaw_W + moving_jaw_H * moving_jaw_H) / 12}"
+          izz="${moving_jaw_mass * (moving_jaw_W * moving_jaw_W + moving_jaw_D * moving_jaw_D) / 12}"
+          ixy="0" ixz="0" iyz="0"/>
+      </inertial>
+    </link>
+
+    <!-- Mirror jaw joint: same +y axis, pivot + lever reflected across the grip
+         plane (z -> -z); <mimic multiplier="-1"> makes it follow the driven
+         joint with equal-and-opposite rotation. -->
+    <joint name="${name}_gripper_mirror" type="revolute">
+      <parent link="${name}_gripper_base_link"/>
+      <child link="${name}_gripper_lower_jaw_link"/>
+      <origin xyz="${gripper_pivot_x} ${gripper_tuck} ${-gripper_pivot_z}" rpy="0 0 0"/>
+      <axis xyz="0 1 0"/>
+      <limit lower="${gripper_joint_lower}" upper="${gripper_joint_upper}"
+             effort="${gripper_joint_effort}" velocity="${gripper_joint_velocity}"/>
+      <mimic joint="${name}_gripper" multiplier="-1"/>
+    </joint>
+
+    <link name="${name}_gripper_lower_jaw_link">
+      <visual>
+        <origin xyz="0 0 0" rpy="0 0 ${pi/2}"/>
+        <geometry><mesh filename="${meshes_dir}/Moving_Jaw.stl"/></geometry>
+      </visual>
+      <collision>
+        <origin xyz="0 0 0" rpy="0 0 ${pi/2}"/>
+        <geometry><mesh filename="${meshes_dir}/Moving_Jaw.stl"/></geometry>
+      </collision>
+      <inertial>
+        <mass value="${moving_jaw_mass}"/>
+        <inertia
+          ixx="${moving_jaw_mass * (moving_jaw_D * moving_jaw_D + moving_jaw_H * moving_jaw_H) / 12}"
+          iyy="${moving_jaw_mass * (moving_jaw_W * moving_jaw_W + moving_jaw_H * moving_jaw_H) / 12}"
+          izz="${moving_jaw_mass * (moving_jaw_W * moving_jaw_W + moving_jaw_D * moving_jaw_D) / 12}"
+          ixy="0" ixz="0" iyz="0"/>
+      </inertial>
+    </link>
+
+    <!-- Fingertips: fixed-mounted rigid boxes. The upper tip sits below (in z)
+         its pivot, the lower tip above its pivot, by exactly half the pad
+         thickness, so at q=0 the two centres land on the grip plane separated
+         by the pad thickness z (faces touching). The forward reach is
+         grip_reach - pivot_x; the z half-step is pivot_z - tip_z/2. -->
+    <joint name="${name}_gripper_upper_tip_joint" type="fixed">
+      <parent link="${name}_gripper_upper_jaw_link"/>
+      <child link="${name}_gripper_upper_tip_link"/>
+      <origin xyz="${gripper_grip_reach - gripper_pivot_x} 0 ${-gripper_pivot_z + tip_z / 2}" rpy="0 0 0"/>
+    </joint>
+    <xacro:gripper_fingertip name="${name}_gripper_upper_tip_link"
+                             fx="${tip_x}" fy="${tip_y}" fz="${tip_z}" mass="${tip_mass}"/>
+
+    <joint name="${name}_gripper_lower_tip_joint" type="fixed">
+      <parent link="${name}_gripper_lower_jaw_link"/>
+      <child link="${name}_gripper_lower_tip_link"/>
+      <origin xyz="${gripper_grip_reach - gripper_pivot_x} 0 ${gripper_pivot_z - tip_z / 2}" rpy="0 0 0"/>
+    </joint>
+    <xacro:gripper_fingertip name="${name}_gripper_lower_tip_link"
+                             fx="${tip_x}" fy="${tip_y}" fz="${tip_z}" mass="${tip_mass}"/>
+  </xacro:macro>
+
+  <!-- ==================================================================
+       Instantiations. One gripper per arm, off each wrist-roll output, both
+       with identity mount (the reach/tuck live in the jaw geometry). Shared
+       STL set in meshes/gripper/, same fingertip default.
+       ================================================================== -->
+  <xacro:so101_gripper name="left"
+                       mount_xyz="0 0 0"
+                       mount_rpy="0 0 0"
+                       meshes_dir="package://robot_description/meshes/gripper"
+                       tip_x="${fingertip_x}" tip_y="${fingertip_y}"
+                       tip_z="${fingertip_z}" tip_mass="${fingertip_mass}"/>
+  <xacro:so101_gripper name="right"
+                       mount_xyz="0 0 0"
+                       mount_rpy="0 0 0"
+                       meshes_dir="package://robot_description/meshes/gripper"
+                       tip_x="${fingertip_x}" tip_y="${fingertip_y}"
+                       tip_z="${fingertip_z}" tip_mass="${fingertip_mass}"/>
+
+</robot>
