@@ -4,17 +4,27 @@
 
   This file is the single entry point every consumer expands (launch files,
   the MuJoCo conversion, the test gate in test/test_description.py); nothing
-  should ever include base/column/arm/gripper directly. It owns exactly two things:
-  the root frame, and the order the subassemblies are pulled in.
+  should ever include base/column/arm/gripper directly. It owns exactly two
+  things: the root frame, and the order the subassemblies are pulled in.
 
-  `base_link` is declared *here*, not in base.xacro: it is the robot's root
+  base_link is declared here, not in base.xacro: it is the robot's root
   frame, so it belongs to the assembly rather than to any one subassembly:
-  the base geometry attaches *to* it via a joint (PR2), as do the column
+  the base geometry attaches to it via a joint (PR2), as do the column
   (PR3) and the arms (PR4).
 
-  Includes are deliberately *relative* (no `$(find robot_description)`), so a
+  PR8b adds the two sim-control includes:
+  - transmissions.xacro, the actuator source of truth (16 SimpleTransmissions).
+  - ros2_control.xacro,  the MuJoCo hardware-interface joint/interface block.
+
+  Includes are deliberately relative (no $(find robot_description)), so a
   source checkout and the installed share/ tree expand identically, which is
   what lets the gate expand the installed copy and mean it.
+
+  mujoco_model_path is a launcher-injected arg (robot_bringup passes the real
+  runtime MJCF path). Its default is a literal placeholder, deliberately NOT a
+  $(find ...) substitution: PR7's MJCF derivation (mjcf_model.py) expands this
+  xacro via __file__-relative lookups with no ROS runtime / ament index on the
+  path (D30), and a $(find ...) default would force an ament dependency there.
 -->
 <robot xmlns:xacro="http://www.ros.org/wiki/xacro" name="sisyphus">
 
@@ -22,8 +32,16 @@
   <xacro:include filename="column.xacro"/>
   <xacro:include filename="arm.xacro"/>
   <xacro:include filename="gripper.xacro"/>
+  <xacro:include filename="transmissions.xacro"/>
+  <xacro:include filename="ros2_control.xacro"/>
 
   <!-- Root frame of the whole robot. Everything else hangs off this. -->
   <link name="base_link"/>
+
+  <!-- The MuJoCo hardware-interface block (PR8b). The launch overrides this -->
+  <!-- with the real derived-scene path; see the comment at the top of the file. -->
+  <xacro:arg name="mujoco_model_path" default="/tmp/derived_scene.xml"/>
+  <xacro:sisyphus_mujoco_control
+      mujoco_model_path="$(arg mujoco_model_path)"/>
 
 </robot>

@@ -1,0 +1,61 @@
+<?xml version="1.0"?>
+<!--
+  Transmissions: the actuator source of truth (ros2_control convention, PR8b / issue #92).
+
+  One STS3215 transmission TYPE (D26: every actuated joint lives on one
+  Feetech STS3215 servo ecosystem), instantiated as a 1:1 SimpleTransmission
+  (mechanical_reduction 1.0) for the 16 commandable joints. The URDF/MJCF
+  joint is the servo's output, so the sim acts directly on the joint; the
+  transmission is the ros2_control boilerplate that names the acting actuator
+  (its name equals the joint it actuates, which is how mujoco_ros2_control
+  maps joints to MJCF actuators by name or target joint).
+
+  The 2 gripper-mirror joints ($(side)_gripper_mirror) have NO independent
+  actuator: they are mimics (see ros2_control.xacro) and the physical
+  anti-parallel motion is enforced by an MJCF equality constraint
+  (overlay.xml, R-PR8b-6). They are therefore NOT in this file.
+
+  Velocity interface: the 3 omniwheels (continuous), MJCF intvelocity.
+  Position interface: column_lift (prismatic), the 10 arm revolute, and the
+  2 driven gripper joints ($(side)_gripper), MJCF position.
+-->
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro">
+
+  <!-- One STS3215 1:1 transmission. name = joint/actuator name (1:1). -->
+  <xacro:macro name="sts3215_transmission" params="name">
+    <transmission name="${name}_trans" type="transmission_interface/SimpleTransmission">
+      <joint name="${name}" role="joint1">
+        <mechanical_reduction>1.0</mechanical_reduction>
+        <offset>0.0</offset>
+      </joint>
+      <actuator name="${name}" role="actuator1"/>
+    </transmission>
+  </xacro:macro>
+
+  <!-- mobile base, 3 continuous wheels (velocity) -->
+  <xacro:sts3215_transmission name="base_left_wheel"/>
+  <xacro:sts3215_transmission name="base_back_wheel"/>
+  <xacro:sts3215_transmission name="base_right_wheel"/>
+
+  <!-- column, 1 prismatic (position) -->
+  <xacro:sts3215_transmission name="column_lift"/>
+
+  <!-- left arm, 5 revolute (position) -->
+  <xacro:sts3215_transmission name="left_shoulder_pan"/>
+  <xacro:sts3215_transmission name="left_shoulder_lift"/>
+  <xacro:sts3215_transmission name="left_elbow_flex"/>
+  <xacro:sts3215_transmission name="left_wrist_flex"/>
+  <xacro:sts3215_transmission name="left_wrist_roll"/>
+
+  <!-- right arm, 5 revolute (position) -->
+  <xacro:sts3215_transmission name="right_shoulder_pan"/>
+  <xacro:sts3215_transmission name="right_shoulder_lift"/>
+  <xacro:sts3215_transmission name="right_elbow_flex"/>
+  <xacro:sts3215_transmission name="right_wrist_flex"/>
+  <xacro:sts3215_transmission name="right_wrist_roll"/>
+
+  <!-- grippers, 2 driven joints (position); mirrors are mimics, no transmission -->
+  <xacro:sts3215_transmission name="left_gripper"/>
+  <xacro:sts3215_transmission name="right_gripper"/>
+
+</robot>

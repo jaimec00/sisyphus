@@ -4,7 +4,7 @@
 # license that can be found in the LICENSE file or at
 # https://opensource.org/licenses/MIT.
 
-"""PR7 — the MuJoCo MJCF derivation gate (issue #89, roadmap §PR7).
+"""PR7/PR8b — the MuJoCo MJCF derivation gate (issues #89 / #92).
 
 The URDF stays the single source of truth; the MJCF is *derived* from it at
 call time by ``robot_description.mjcf_model.load_mjcf_model`` and the
@@ -13,16 +13,20 @@ repo. This file is the matching claim *at the source* (same home as
 ``test_robot_model.py``): the description package owns the loader, so it owns
 the loader's gate here, independent of any consumer.
 
-The assertions are the issue's acceptance criteria, made exact against the
-probed model (see ``docs/features/pr7-mjcf-derivation/status.md`` rulings):
+The assertions are the issues' acceptance criteria, made exact against the
+probed model (see ``docs/features/pr7-mjcf-derivation/status.md`` and
+``docs/features/i92-pr8b-mujoco-sim-bringup/status.md`` rulings):
 
 1. MuJoCo loads the derived model (no exception) — the load itself is the
    strongest single claim, covering the expand footprint, mesh resolution and
    the overlay splice.
-2. ``nq == nv == nu == 18`` — the URDF's 18 non-fixed DOF (3 continuous wheels
-   + 1 prismatic column + 14 revolute arms/grippers) all survive derivation,
-   and every one of them has a placeholder actuator (R-PR7-4), so ``nu``
-   equals the actuated-joint count.
+2. ``nq == nv == 18`` — the URDF's 18 non-fixed DOF (3 continuous wheels +
+   1 prismatic column + 14 revolute arms/grippers) all survive derivation.
+   ``nu == 16`` — PR8b reconciles PR7's 18 placeholder motors into 16 typed
+   actuators plus 2 gripper-mimic equality constraints (R-PR8b-6): the 2
+   gripper-mirror joints are mimics with NO independent actuator, so the
+   commandable-actuator count drops to 16 while every DOF stays present.
+   ``neq == 2`` — the driven<->mirror gripper equality pairs.
 3. ``nbody == 19`` — this is the **fusestatic** number, NOT the URDF's 32
    links (R-PR7-5). The static trunk (``base_link``/``base_chassis_link``/
    ``column_rail_link`` and the massless frames) is folded into the world body
@@ -36,6 +40,8 @@ probed model (see ``docs/features/pr7-mjcf-derivation/status.md`` rulings):
    ``(0, -pi/2, +pi/2)`` relative to the ``column_top`` body (R-PR7-6). That
    frame is where the URDF's ``head_camera_optical_frame`` lives once
    ``fusestatic`` folds the massless camera frames away.
+6. PR8b: the overlay names every commandable actuator (16: 3 <intvelocity>
+   wheels + 13 <position>) and wires the gripper mimics via <equality>.
 """
 
 import mujoco
@@ -44,8 +50,18 @@ import numpy as np
 from robot_description.mjcf_model import load_mjcf_model
 
 #: URDF-derived DOF count: 3 continuous + 1 prismatic + 14 revolute = 18.
-#: Every non-fixed joint is actuated in the overlay, so ``nu`` equals this too.
+#: Every non-fixed joint survives derivation, so nq == nv == 18.
 ACTUATED_DOF = 18
+
+#: Commandable MJCF actuators after PR8b reconciliation (R-PR8b-6): the 2
+#: gripper-mirror joints carry NO independent actuator (they are mimics driven
+#: by <equality>), so nu == 16 even though nq/nv == 18.
+COMMANDABLE_ACTUATORS = 16
+
+#: Gripper-mimic equality constraints introduced by PR8b (2 driven<->mirror
+#: pairs). MuJoCo's URDF import does NOT turn <mimic> into an equality, so
+#: neq jumps 0 -> 2 in the derived model.
+GRIPPER_MIMIC_EQUALITIES = 2
 
 #: ``nbody`` after MuJoCo's default ``fusestatic`` folds the static trunk
 #: (base + column_rail_link + massless frames) into the world body. Distinct
@@ -64,18 +80,48 @@ def test_derived_mjcf_compiles():
     assert model is not None
 
 
-def test_nq_nv_nu_match_urdf_derived_counts():
-    """Joints and actuators agree with the URDF's 18 non-fixed DOF."""
+def test_nq_nv_match_urdf_derived_dof_counts():
+    """Joints agree with the URDF's 18 non-fixed DOF (all survive derivation)."""
     model = load_mjcf_model()
     assert model.nq == ACTUATED_DOF
     assert model.nv == ACTUATED_DOF
-    assert model.nu == ACTUATED_DOF
+
+
+def test_nu_reflects_pr8b_reconciliation_not_dof_count():
+    """Commandable actuators = 16 (2 gripper mirrors are equality mimics)."""
+    model = load_mjcf_model()
+    assert model.nu == COMMANDABLE_ACTUATORS
+
+
+def test_neq_reflects_gripper_mimic_equalities():
+    """PR8b wires the 2 gripper driven<->mirror pairs as equality constraints."""
+    model = load_mjcf_model()
+    assert model.neq == GRIPPER_MIMIC_EQUALITIES
 
 
 def test_nbody_reflects_fusestatic_not_urdf_link_count():
     """Fusestatic folds the static trunk into the world body (D31 check)."""
     model = load_mjcf_model()
     assert model.nbody == FUSESTATIC_NBODY
+
+
+def test_all_commandable_actuators_are_named_and_target_the_joint():
+    """Every commandable actuator is named == the joint it drives (ros2_control seam).
+
+    mujoco_ros2_control maps URDF ros2_control joints to MJCF actuators by
+    name / target joint (R-PR8b-6), so every one of the 16 commandable
+    actuators must carry the joint's name and target that joint.
+    """
+    model = load_mjcf_model()
+    assert model.nu == COMMANDABLE_ACTUATORS
+    for i in range(model.nu):
+        name = mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_ACTUATOR, i)
+        assert name is not None, f'actuator {i} is unnamed'
+        trnt = int(model.actuator_trntype[i])
+        trid = int(model.actuator_trnid[i, 0])
+        assert trnt == mujoco.mjtTrn.mjTRN_JOINT, f'actuator {i} not joint-type'
+        jn = mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_JOINT, trid)
+        assert jn == name, f'actuator {name!r} targets {jn!r}, not itself'
 
 
 def test_one_mj_step_smoke_has_no_nan():

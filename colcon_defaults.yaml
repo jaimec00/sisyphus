@@ -1,0 +1,43 @@
+# PR8b: the vendored mujoco_ros2_control stack is a git-untracked third-party
+# dependency (robot.repos / vcs import). It is exempt from our test-count guard
+# (check_test_integrity.py "unowned"). Its upstream test binaries do not link
+# against our glfw setup even when the library builds, so build the vendored
+# cmake packages with BUILD_TESTING=OFF. Our own packages are ament_python and
+# collect tests via pytest regardless of this flag.
+#
+# CMAKE_INSTALL_RPATH_USE_LINK_PATH=TRUE: ament's setup.bash recomputes
+# LD_LIBRARY_PATH from the ament prefix paths and DROPS the conda env lib, so
+# the plugin's runtime cannot find conda-native links like libbackward.so.
+# Capturing the link-time lib paths (the conda lib, found via LIBRARY_PATH from
+# pixi.toml activation.env) into the installed RPATH fixes that regardless of
+# LD_LIBRARY_PATH.
+build:
+  cmake-args:
+    - -DBUILD_TESTING=OFF
+    - -DCMAKE_INSTALL_RPATH_USE_LINK_PATH=TRUE
+    - -DCMAKE_BUILD_TYPE=Release
+mujoco_vendor:
+  build:
+    cmake-args:
+      - -DBUILD_TESTING=OFF
+      - -DCMAKE_INSTALL_RPATH_USE_LINK_PATH=TRUE
+mujoco_3d_lidar:
+  build:
+    cmake-args:
+      - -DBUILD_TESTING=OFF
+      - -DCMAKE_INSTALL_RPATH_USE_LINK_PATH=TRUE
+mujoco_ros2_control_msgs:
+  build:
+    cmake-args:
+      - -DBUILD_TESTING=OFF
+      - -DCMAKE_INSTALL_RPATH_USE_LINK_PATH=TRUE
+mujoco_ros2_control_plugins:
+  build:
+    cmake-args:
+      - -DBUILD_TESTING=OFF
+      - -DCMAKE_INSTALL_RPATH_USE_LINK_PATH=TRUE
+mujoco_ros2_control:
+  build:
+    cmake-args:
+      - -DBUILD_TESTING=OFF
+      - -DCMAKE_INSTALL_RPATH_USE_LINK_PATH=TRUE

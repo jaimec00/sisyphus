@@ -1,0 +1,154 @@
+<?xml version="1.0"?>
+<!--
+  ros2_control hardware interfaces for the Sisyphus robot (PR8b / issue #92).
+
+  The ros2_control tag declares the MuJoCo hardware plugin and the joint
+  interfaces mujoco_ros2_control exposes. The MJCF (overlay.xml + derived
+  pipeline) is the actuator authority; here we name the same actuator per
+  joint and choose the command interface type, per the command-interface to
+  MJCF-actuator-type matrix (R-PR8b-6):
+
+    velocity command, MJCF intvelocity/velocity actuator, the 3 wheels
+    position command,  MJCF position actuator,  column, arm, driven grippers
+
+  The 2 gripper-mirror joints are mimics: a mimic param (and NO command
+  interface) tells the plugin to derive their value/command from the driven
+  joint, matching the URDF mimic with multiplier -1.
+-->
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro">
+
+  <xacro:macro name="sisyphus_mujoco_control" params="mujoco_model_path">
+    <ros2_control name="MujocoSystem" type="system">
+      <hardware>
+        <plugin>mujoco_ros2_control/MujocoSystemInterface</plugin>
+        <param name="mujoco_model">${mujoco_model_path}</param>
+        <param name="headless">true</param>
+        <param name="sim_speed_factor">1.0</param>
+      </hardware>
+
+      <!-- mobile base, 3 continuous wheels: velocity command -->
+      <joint name="base_left_wheel">
+        <command_interface name="velocity"/>
+        <state_interface name="position"/>
+        <state_interface name="velocity"/>
+        <state_interface name="effort"/>
+      </joint>
+      <joint name="base_back_wheel">
+        <command_interface name="velocity"/>
+        <state_interface name="position"/>
+        <state_interface name="velocity"/>
+        <state_interface name="effort"/>
+      </joint>
+      <joint name="base_right_wheel">
+        <command_interface name="velocity"/>
+        <state_interface name="position"/>
+        <state_interface name="velocity"/>
+        <state_interface name="effort"/>
+      </joint>
+
+      <!-- column, 1 prismatic: position command -->
+      <joint name="column_lift">
+        <command_interface name="position"/>
+        <state_interface name="position"/>
+        <state_interface name="velocity"/>
+        <state_interface name="effort"/>
+      </joint>
+
+      <!-- left arm, 5 revolute: position command -->
+      <joint name="left_shoulder_pan">
+        <command_interface name="position"/>
+        <state_interface name="position"/>
+        <state_interface name="velocity"/>
+        <state_interface name="effort"/>
+      </joint>
+      <joint name="left_shoulder_lift">
+        <command_interface name="position"/>
+        <state_interface name="position"/>
+        <state_interface name="velocity"/>
+        <state_interface name="effort"/>
+      </joint>
+      <joint name="left_elbow_flex">
+        <command_interface name="position"/>
+        <state_interface name="position"/>
+        <state_interface name="velocity"/>
+        <state_interface name="effort"/>
+      </joint>
+      <joint name="left_wrist_flex">
+        <command_interface name="position"/>
+        <state_interface name="position"/>
+        <state_interface name="velocity"/>
+        <state_interface name="effort"/>
+      </joint>
+      <joint name="left_wrist_roll">
+        <command_interface name="position"/>
+        <state_interface name="position"/>
+        <state_interface name="velocity"/>
+        <state_interface name="effort"/>
+      </joint>
+
+      <!-- right arm, 5 revolute: position command -->
+      <joint name="right_shoulder_pan">
+        <command_interface name="position"/>
+        <state_interface name="position"/>
+        <state_interface name="velocity"/>
+        <state_interface name="effort"/>
+      </joint>
+      <joint name="right_shoulder_lift">
+        <command_interface name="position"/>
+        <state_interface name="position"/>
+        <state_interface name="velocity"/>
+        <state_interface name="effort"/>
+      </joint>
+      <joint name="right_elbow_flex">
+        <command_interface name="position"/>
+        <state_interface name="position"/>
+        <state_interface name="velocity"/>
+        <state_interface name="effort"/>
+      </joint>
+      <joint name="right_wrist_flex">
+        <command_interface name="position"/>
+        <state_interface name="position"/>
+        <state_interface name="velocity"/>
+        <state_interface name="effort"/>
+      </joint>
+      <joint name="right_wrist_roll">
+        <command_interface name="position"/>
+        <state_interface name="position"/>
+        <state_interface name="velocity"/>
+        <state_interface name="effort"/>
+      </joint>
+
+      <!-- grippers, 2 driven jaws: position command -->
+      <joint name="left_gripper">
+        <command_interface name="position"/>
+        <state_interface name="position"/>
+        <state_interface name="velocity"/>
+        <state_interface name="effort"/>
+      </joint>
+      <joint name="right_gripper">
+        <command_interface name="position"/>
+        <state_interface name="position"/>
+        <state_interface name="velocity"/>
+        <state_interface name="effort"/>
+      </joint>
+
+      <!-- gripper mirrors: mimics of the driven joints (R-PR8b-6); no command
+           interface, derived from the drivers. -->
+      <joint name="left_gripper_mirror">
+        <param name="mimic">left_gripper</param>
+        <param name="multiplier">-1</param>
+        <state_interface name="position"/>
+        <state_interface name="velocity"/>
+        <state_interface name="effort"/>
+      </joint>
+      <joint name="right_gripper_mirror">
+        <param name="mimic">right_gripper</param>
+        <param name="multiplier">-1</param>
+        <state_interface name="position"/>
+        <state_interface name="velocity"/>
+        <state_interface name="effort"/>
+      </joint>
+    </ros2_control>
+  </xacro:macro>
+
+</robot>

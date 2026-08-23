@@ -1,0 +1,47 @@
+# ros2_control controller configuration for the MuJoCo bringup (PR8b / issue #92).
+#
+# controller_manager with two group controllers + a joint-state broadcaster:
+#   - joint_state_broadcaster   publishes the 18-joint state (position/velocity).
+#   - arm_gripper_position_controller: JointGroupPositionController over the 13
+#     position-commanded joints (column_lift + 10 arm revolute + 2 driven
+#     grippers). Publish a Float64MultiArray of 13 values in the listed order.
+#   - base_velocity_controller: JointGroupVelocityController over the 3
+#     omniwheels (velocity command, holonomic wheel speeds). Float64MultiArray
+#     of 3 values in the listed order.
+#
+# The 2 gripper-mirror joints are mimics handled by the hardware interface
+# itself (R-PR8b-6); they are NOT in any controller.
+controller_manager:
+  ros__parameters:
+    update_rate: 100
+
+joint_state_broadcaster:
+  ros__parameters:
+    update_rate: 50
+    type: joint_state_broadcaster/JointStateBroadcaster
+
+arm_gripper_position_controller:
+  ros__parameters:
+    type: position_controllers/JointGroupPositionController
+    joints:
+      - column_lift
+      - left_shoulder_pan
+      - left_shoulder_lift
+      - left_elbow_flex
+      - left_wrist_flex
+      - left_wrist_roll
+      - right_shoulder_pan
+      - right_shoulder_lift
+      - right_elbow_flex
+      - right_wrist_flex
+      - right_wrist_roll
+      - left_gripper
+      - right_gripper
+
+base_velocity_controller:
+  ros__parameters:
+    type: velocity_controllers/JointGroupVelocityController
+    joints:
+      - base_left_wheel
+      - base_back_wheel
+      - base_right_wheel
