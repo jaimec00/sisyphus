@@ -40,8 +40,8 @@ import pytest
 # (The sim-blocked integration smoke test is skipped at its own definition, not
 # here, so the structural tests below still run and stay green.)
 _BAD_ALLOC_SKIP = pytest.mark.skip(
-    reason="mujoco_ros2_control 0.1.0 headless load throws std::bad_alloc on our "
-           "model; sim cannot spawn (status.md BLOCKER)."
+    reason='mujoco_ros2_control 0.1.0 headless load throws std::bad_alloc on'
+           ' our model; sim cannot spawn (status.md BLOCKER).'
 )
 
 #: private ROS domain for this suite.
@@ -226,6 +226,7 @@ def test_joint_command_moves_sim_state():
 
             # -- read current joint position from /joint_states
             joint_state = {}
+
             def _joint_cb(msg):
                 joint_state.update(dict(zip(msg.name, msg.position)))
             node.create_subscription(JointState, '/joint_states',

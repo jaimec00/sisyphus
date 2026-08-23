@@ -161,6 +161,7 @@ def _splice_overlay(base_mjcf: str, root_blocks: str, head_camera_block: str,
     merged = merged[:insert_pos] + indented + '\n' + merged[insert_pos:]
     return merged
 
+
 def _build_merged_mjcf(pkg: Path) -> str:
     """Derive and return the merged MJCF text (URDF import + overlay splice).
 
