@@ -309,3 +309,26 @@ equalities (nu 16 / neq 2 / nbody 19, mj_step no NaN); controller YAML;
 launch; unit tests. Only the sim-spawns half of acceptance is blocked by the
 plugin bug. No PR was opened because it would fail its own acceptance
 (AGENTS.md: do not force what is not actually green).
+
+## Update 2 (after resolving the urdf_parser_py regression) — suite is green, sim-spawn still BLOCKED
+
+The full `pixi run test` is now GREEN: 835 tests, 0 errors, 0 failures, 1
+skipped (the 1 skipped is the sim smoke, @skip with the BLOCKER reason above).
+The D28 ratchet auto-raised on commit: robot_bringup 2 -> 4, robot_description
+48 -> 52.
+
+Two things surfaced while getting there and were fixed on the branch:
+- **urdf_parser_py cannot parse ros2_control `<transmission>` blocks** (it only
+  duck-types new_transmission/pr2_transmission). This regressed every owned
+  package that calls `URDF.from_xml_string` (test_description, robot_model's
+  `_parse_model` -> cascade into robot_backends/mcp/brain/etc.). Fixed by
+  stripping the `<transmission>...</transmission>` blocks for the urdf_parser_py
+  parse in `robot_model._parse_model` and the description/TF gates, with a
+  dedicated test pinning the 16 transmissions ARE in the raw expansion; the
+  ros2_control runtime parser validates them (R-PR8b-7).
+- The `<robot>` root must keep `name="sisyphus"` or RSP fails "No name given"
+  (lost in an early rewrite; restored).
+
+The sim-spawn BLOCKER above (plugin std::bad_alloc) is unchanged and is the
+only thing keeping PR8b from READY. The branch is in a coherent, unit-green
+state; no PR was opened (it would fail the sim-smoke acceptance).
