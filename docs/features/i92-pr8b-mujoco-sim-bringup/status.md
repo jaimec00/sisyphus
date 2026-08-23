@@ -332,3 +332,34 @@ Two things surfaced while getting there and were fixed on the branch:
 The sim-spawn BLOCKER above (plugin std::bad_alloc) is unchanged and is the
 only thing keeping PR8b from READY. The branch is in a coherent, unit-green
 state; no PR was opened (it would fail the sim-smoke acceptance).
+
+## Probe result (2026-08-22): the 0.0.3 tag does NOT fix the headless-load bad_alloc — hypothesis DISPROVEN
+
+Tested the released **0.0.3** tag of `mujoco_ros2_control` (commit
+`35ba8174b62d9560093614f981a3d4b978a96036`) source-built in-branch, same
+`mujoco_vendor` (`ff9e648`), same launch. Result: **same `std::bad_alloc`, same
+code path** — the released tag has the SAME headless-load race for our larger
+model.
+
+Full 0.0.3 launch sequence (verified on `olivia`, ran inside `pixi run` so the
+env libs resolve):
+- "Sim ready, continuing initialization..." → "Constructing node and
+  executor..." → "Executor thread started." → "Loading model..."
+- "Constructing publishers." → "Registering actuators." →
+  `[ERROR] Exception of type : St9bad_alloc occurred while initializing
+  hardware 'MujocoSystem': std::bad_alloc`
+- Controller spawners (joint_state_broadcaster, position, velocity) then sit
+  in "Failed to acquire lock / Could not contact service
+  /controller_manager/list_controllers" forever — nothing activates.
+
+Only practical diffs vs 0.1.0: 0.0.3 links `libbackward.so` (build needs the
+pixi env lib dir on LD_LIBRARY_PATH — launch must run via `pixi run bash -c
+source install/setup.bash`); it logs one extra line ("Registering
+actuators.") before the throw, purely log-timing variance in the same racy
+path. Error token identical: `std::bad_alloc`.
+
+Conclusion: closes option [2] from the BLOCKER list. The fix must come from
+option [1]: an upstream patch / tiny fork of the headless
+`MujocoSimulation::initialize` load path (recorded as a threading race, has a
+clean serialized load under gdb). robot.repos reverted back to 0.1.0
+(`57fc674`) after the probe; the branch is unchanged / buildable at 0.1.0.
