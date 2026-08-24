@@ -38,10 +38,10 @@
   <!-- Root frame of the whole robot. Everything else hangs off this. -->
   <link name="base_link"/>
 
-  <!-- The MuJoCo hardware-interface block (PR8b). The launch overrides this -->
-  <!-- with the real derived-scene path; see the comment at the top of the file. -->
+  <!-- The MuJoCo hardware-interface block (PR8b). dfki-ric's plugin reads the
+       MJCF path, sim frequency and GUI from NODE parameters (mujoco.launch.py),
+       not from the URDF, so this macro takes no arguments. The mujoco_model_path
+       arg is kept for backwards-compat with any launcher-injected xacro call. -->
   <xacro:arg name="mujoco_model_path" default="/tmp/derived_scene.xml"/>
-  <xacro:sisyphus_mujoco_control
-      mujoco_model_path="$(arg mujoco_model_path)"/>
-
+  <xacro:sisyphus_mujoco_control/>
 </robot>

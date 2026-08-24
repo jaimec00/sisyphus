@@ -34,15 +34,8 @@ import subprocess
 import threading
 import time
 
-import pytest
 # ROS imports are deferred into the tests so collection needs no ROS runtime.
 
-# (The sim-blocked integration smoke test is skipped at its own definition, not
-# here, so the structural tests below still run and stay green.)
-_BAD_ALLOC_SKIP = pytest.mark.skip(
-    reason='mujoco_ros2_control 0.1.0 headless load throws std::bad_alloc on'
-           ' our model; sim cannot spawn (status.md BLOCKER).'
-)
 
 #: private ROS domain for this suite.
 MUJOCO_DOMAIN_ID = '113'
@@ -85,6 +78,7 @@ def test_launch_generates_expected_nodes():
     integration smoke in ``test_joint_command_moves_sim_state``.
     """
     import importlib.util
+    from launch.actions import RegisterEventHandler
     from launch_ros.actions import Node
     path = _launch_path()
     assert os.path.isfile(path), (
@@ -93,14 +87,28 @@ def test_launch_generates_expected_nodes():
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     description = module.generate_launch_description()
-    seen = []
-    for action in description.entities:
-        if isinstance(action, Node):
-            seen.append((getattr(action, 'node_package', '?'),
-                         getattr(action, 'node_executable', '?')))
-    flat = ' '.join('%s/%s' % n for n in seen)
+
+    def _walk(actions):
+        # Follows top-level entities AND RegisterEventHandler's on_start list,
+        # where the dfki-ric franka-pattern launch nests the controller
+        # spawners (they must only start once the sim node is up). Reaches
+        # into the private ``_OnActionEventBase__actions_on_event`` (the only
+        # reliable way to enumerate an OnProcessStart handler's actions in
+        # the pinned launch version; get_sub_entities()/describe() return
+        # empty for it).
+        for action in actions:
+            if isinstance(action, Node):
+                yield (getattr(action, 'node_package', '?'),
+                       getattr(action, 'node_executable', '?'))
+            elif isinstance(action, RegisterEventHandler):
+                handler = getattr(action, 'event_handler', None)
+                on_start = getattr(handler,
+                                   '_OnActionEventBase__actions_on_event', [])
+                yield from _walk(on_start)
+
+    flat = ' '.join('%s/%s' % n for n in _walk(description.entities))
     assert 'robot_state_publisher/robot_state_publisher' in flat
-    assert 'mujoco_ros2_control/ros2_control_node' in flat
+    assert 'mujoco_ros2_control/mujoco_ros2_control' in flat
     assert 'controller_manager/spawner' in flat
 
 
@@ -184,7 +192,6 @@ def _position_controller_joint_order():
                 [POSITION_CONTROLLER]['ros__parameters']['joints'])
 
 
-@_BAD_ALLOC_SKIP
 def test_joint_command_moves_sim_state():
     """End-to-end: sim spawns, ros2_control loads, a joint command moves state.
 
@@ -203,23 +210,52 @@ def test_joint_command_moves_sim_state():
     env = dict(os.environ, ROS_DOMAIN_ID=MUJOCO_DOMAIN_ID)
     process, group, output, reader = _spawn_launch(env)
     try:
-        rclpy.init()
-        node = Node('mujoco_smoke_probe')
+        # The probe must share the launched sim's ROS_DOMAIN_ID (MUJOCO_DOMAIN_ID),
+        # not whatever domain the pytest host happens to be on, or it can never
+        # see the controller_manager or /joint_states on the sim's domain.
+        os.environ['ROS_DOMAIN_ID'] = str(MUJOCO_DOMAIN_ID)
+        # Use a dedicated rclpy context so this test never collides with other
+        # tests in the same pytest process that also call rclpy.init() (which
+        # raises "Context.init() must only be called once" on a second call).
+        # The test runs a full launch subprocess; a private context lets it
+        # spin up and tear down cleanly regardless of pytest collection order.
+        _ctx = rclpy.Context()
+        rclpy.init(context=_ctx)
+        node = Node('mujoco_smoke_probe', context=_ctx)
+        executor = None
         try:
+            # Single spinner (no background thread): each `_wait_until` predicate
+            # below drives the executor via spin_once, servicing both the
+            # controller-manager service client and the /joint_states
+            # subscription. A dedicated background spin thread vs. the
+            # predicate-level spins on the same executor would race and neither
+            # service responses nor subscription callbacks would deliver. This
+            # test was blocked by the sim bad_alloc for PR8b's whole life and is
+            # only now exercising the real graph for the first time.
+            executor = rclpy.executors.SingleThreadedExecutor(context=_ctx)
+            executor.add_node(node)
+
             # -- wait for controller_manager and the position controller active
             cli = node.create_client(
                 ListControllers, '/controller_manager/list_controllers')
-            cli.wait_for_service(timeout_sec=LAUNCH_READY_TIMEOUT_S)
+
+            def _service_ready():
+                executor.spin_once(timeout_sec=0.1)
+                return cli.service_is_ready()
+            _wait_until(_service_ready, LAUNCH_READY_TIMEOUT_S,
+                        'controller_manager list_controllers never became '
+                        'available')
 
             def _position_active():
+                executor.spin_once(timeout_sec=0.1)
+                if not cli.service_is_ready():
+                    return False
                 req = ListControllers.Request()
                 fut = cli.call_async(req)
-                rclpy.spin_until_future_complete(node, fut, timeout_sec=5)
-                if not fut.done():
-                    return False
+                executor.spin_until_future_complete(fut, timeout_sec=2)
                 return any(
                     c.name == POSITION_CONTROLLER and c.state == 'active'
-                    for c in fut.result().controller)
+                    for c in fut.result().controller) if fut.done() else False
 
             _wait_until(_position_active, CONTROLLER_ACTIVE_TIMEOUT_S,
                         'position controller never became active')
@@ -231,8 +267,11 @@ def test_joint_command_moves_sim_state():
                 joint_state.update(dict(zip(msg.name, msg.position)))
             node.create_subscription(JointState, '/joint_states',
                                      _joint_cb, 10)
-            _wait_until(lambda: SMOKE_JOINT in joint_state,
-                        JOINT_MOVE_TIMEOUT_S,
+
+            def _have_joint():
+                executor.spin_once(timeout_sec=0.1)
+                return SMOKE_JOINT in joint_state
+            _wait_until(_have_joint, JOINT_MOVE_TIMEOUT_S,
                         'joint_states never reported %s' % SMOKE_JOINT)
             before = joint_state[SMOKE_JOINT]
 
@@ -250,10 +289,12 @@ def test_joint_command_moves_sim_state():
                 cmd = Float64MultiArray()
                 cmd.data = list(home)
                 cmd_pub.publish(cmd)
+                executor.spin_once(timeout_sec=0.1)
                 time.sleep(0.2)
 
             # -- give the position actuator time to move, then confirm
             def _moved():
+                executor.spin_once(timeout_sec=0.1)
                 return abs(joint_state.get(SMOKE_JOINT, before) - target) < 0.05
             _wait_until(_moved, JOINT_MOVE_TIMEOUT_S,
                         'joint did not move toward commanded position')
@@ -261,7 +302,10 @@ def test_joint_command_moves_sim_state():
             assert abs(after - before) > 0.02, (
                 'joint state did not move (before=%r after=%r)' % (before, after))
         finally:
+            if executor is not None:
+                executor.shutdown()
             node.destroy_node()
+            _ctx.try_shutdown()
             # rclpy.shutdown() is deferred (see PR8a test comment): spinning it
             # down mid-thread aborts under this pytest host; the process exits
             # immediately after, so the cost is nil.

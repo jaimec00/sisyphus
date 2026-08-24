@@ -363,3 +363,148 @@ option [1]: an upstream patch / tiny fork of the headless
 `MujocoSimulation::initialize` load path (recorded as a threading race, has a
 clean serialized load under gdb). robot.repos reverted back to 0.1.0
 (`57fc674`) after the probe; the branch is unchanged / buildable at 0.1.0.
+
+## Manager review of the probe delta (2026-08-23) — rulings + the real blocker fix
+
+I (worktree manager) reviewed the probes uncommitted dfki-ric delta file-by-file
+## Manager review of the probe delta (2026-08-23) — rulings + the real blocker fix
+
+I (worktree manager) reviewed the probe's uncommitted dfki-ric delta file-by-file
+against the dfki-ric source (pinned f151b7df9ee366fd6a93ee760652d3d809a5f788) before
+dispatching the implementer. The delta is mostly correct; the immediate blocker is
+the CM namespace, and the probe got it WRONG.
+
+### R-PR8b-11 (corrects the probe): CM namespace is /controller_manager, NOT /mujoco_ros2_control
+Probed from dfki-ric source (src/mujoco_ros2_control_plugin.cpp, init_controller_manager):
+the embedded controller_manager is constructed with node name "controller_manager" and
+an EMPTY namespace "", and is added to its own executor (not a child of the
+mujoco_ros2_control node). Its services register at /controller_manager/* at the ROOT.
+This exactly matches dfki-ric's own franka example launch
+(mujoco_ros2_control_examples/launch/franka.launch.py), whose _spawner passes
+`--controller-manager /controller_manager` (with `--param-file` where needed).
+The probe's launch.mujoco _spawner instead targets `/mujoco_ros2_control` — that never
+reaches the CM, which is precisely why the controllers never load ("Could not set
+controller param type/params_file"). FIX: point the spawners at /controller_manager
+and follow the franka pattern (see R-PR8b-14). The probe's stated reason for avoiding
+/controller_manager (that passing the whole controllers.yaml pre-declares params as
+read-only and breaks --param-file) is CONTRADICTED by the franka example, which passes
+the entire controllers.yaml as a simulator node parameter AND uses --param-file on
+spawners. The probe's real failure was the wrong CM target, not a read-only-param clash.
+
+### R-PR8b-12: stale tests are NOT in the delta and must be updated by the implementer
+The probe changed the overlay semantics but left the committed tests asserting the old
+ros-controls-era model. Under the dfki-ric overlay the derived MJCF is nu==18 (2 driven
++ 2 mirror position actuators, franka-hand pattern) and neq==0 (no <equality>; dfki-ric
+reads URDF <mimic> natively). Committed tests still assert nu==16 / neq==2. Implementer
+must update:
+- src/robot_description/test/test_mjcf_model.py: COMMANDABLE_ACTUATORS 16->18,
+  GRIPPER_MIMIC_EQUALITIES 2->0, docstrings + header comment; the named/targets-joint
+  test still holds (18 actuators, each named==joint incl. the mirrors).
+- src/robot_bringup/test/test_mujoco_launch.py: assert the launch emits
+  mujoco_ros2_control/mujoco_ros2_control (NOT ros2_control_node); REMOVE the
+  @_BAD_ALLOC_SKIP on test_joint_command_moves_sim_state so the integration smoke
+  actually runs against dfki-ric (that smoke already uses /controller_manager/
+  list_controllers, correct). The structural test must also not rely on the probe's
+  wrong /mujoco_ros2_control spawner target.
+Do NOT weaken the smoke; it is the PR8b acceptance criterion.
+
+### R-PR8b-13: PCL/OpenCV/cv_bridge/pcl_conversions come in transitively; pin them explicit per migration delta
+Probed build log (build_2026-08-23_17-12-58): pcl_conversions 2.6.4, cv_bridge 4.1.0,
+PCL 1.15, OpenCV 4.13.0 all found in .pixi/envs/default/share|lib — pulled in
+transitively by ros-jazzy-desktop (vision_opencv / perception_pcl). The build currently
+succeeds WITHOUT explicit pins. The migration delta asks to pin them explicitly for
+reproducibility. Implementer: probe availability on robostack-jazzy and add explicit
+ros-jazzy-* pins if resolvable (e.g. ros-jazzy-pcl-conversions, and OpenCV/PCL via the
+perception_pcl/vision_opencv meta-packages); if the solver refuses, keep the transitive
+resolution and record why. libglfw3-dev: dfki-ric's package.xml lists it and the build
+links glfw — glfw is already pinned (>=3.5.1,<4 in pixi [dependencies]); confirm that
+satisfies the dep, else add it. libglvnd was already added by the probe (needed for
+OpenGL::EGL offscreen rendering) — keep it.
+
+### R-PR8b-14: reconcile the launch to the canonical dfki-ric franka pattern
+Follow mujoco_ros2_control_examples/launch/franka.launch.py (the verified reference):
+- Pass the controllers.yaml (PathJoinSubstitution to the installed controllers.yaml)
+  as a simulator NODE PARAMETER (so controller type declarations + CM update_rate land
+  on the embedded CM), NOT as a hand-rolled inline {'controller_manager': {...} } block.
+- Spawners use --controller-manager /controller_manager and --param-file controllers.yaml.
+- Keep robot_model_path -> the materialized derived MJCF, show_gui=false,
+  simulation_frequency (use 500.0 to match the franka example), real_time_factor=1.0.
+- Keep remapping /controller_manager/robot_description -> /robot_description (the franka
+  example does exactly this); RSP publishes /robot_description.
+- Add synchronous_mode=false (franka pattern) if the param library wants it; ensure the
+  exact param names match dfki-ric's parameter library (verified: robot_description,
+  robot_model_path, show_gui, simulation_frequency, clock_publisher_frequency,
+  real_time_factor [NOTE: underscore "real_time_factor", not "realtime_factor"],
+  synchronous_mode — the probe's launch passed "realtime_factor" which does NOT match the
+  parameter library's "real_time_factor"; fix the key name).
+
+### R-PR8b-15: build state confirmed good; preserve it
+The probe's dfki-ric stack is built cleanly (build_2026-08-23_17-12-58; node binary
+exists at build/mujoco_ros2_control/mujoco_ros2_control). mujoco_ros2_control_examples
+is excluded from the build (packages_skip) — correct, we don't build the upstream
+examples. The root untracked MUJOCO_LOG.TXT is probe debris (an unstable-sim warning
+from a pre-fix run); gitignore or trash it (do not commit). The src/mujoco_ros2_control
+dir must be gitignored (git-untracked vcs import), as R-PR8b-4 recorded — VERIFY it is in
+.gitignore before committing.
+
+### Implementer: dispatch instructions
+Work on node olivia. Do ALL file edits + tests there. Review each of the 7 modified files
+in the uncommitted delta (colcon_defaults.yaml, pixi.toml, robot.repos,
+src/robot_bringup/launch/mujoco.launch.py, src/robot_description/mjcf/overlay.xml,
+src/robot_description/urdf/robot.urdf.xacro, src/robot_description/urdf/ros2_control.xacro)
+against the rulings above; fix what's wrong (the launch spawner target + real_time_factor
+key + controllers.yaml-as-node-param), then implement the stale-test updates
+(R-PR8b-12) + deps (R-PR8b-13), then build + run + write implementation.md.
+Then the manager dispatches red-team. Do NOT read STL/mesh contents into context.
+
+## RESOLVED (2026-08-23): dfki-ric swap fixed the sim-spawn blocker; full suite green
+
+The sim-spawn BLOCKER is RESOLVED. The probe/manager converged on swapping the
+sim source from ros-controls/mujoco_ros2_control to **dfki-ric/mujoco_ros2_control**
+(jazzy branch, `f151b7d`). dfki-ric is a DISTINCT implementation: it embeds its own
+controller_manager (registered at `/controller_manager`, R-PR8b-11) and loads the MJCF
+synchronously in configure, sidestepping the ros-controls headless-load `std::bad_alloc`.
+robot.repos + colcon_defaults.yaml + pixi.toml (libglvnd, cv_bridge, pcl_conversions)
+were updated accordingly. Overlay actuator types changed per dfki-rics PRM classifier
+## RESOLVED (2026-08-23): dfki-ric swap fixed the sim-spawn blocker; full suite green
+
+The sim-spawn BLOCKER is RESOLVED. The probe/manager converged on swapping the
+sim source from ros-controls/mujoco_ros2_control to **dfki-ric/mujoco_ros2_control**
+(jazzy branch, `f151b7d`). dfki-ric is a DISTINCT implementation: it embeds its own
+controller_manager (registered at `/controller_manager`, R-PR8b-11) and loads the MJCF
+synchronously in configure, sidestepping the ros-controls headless-load `std::bad_alloc`.
+robot.repos + colcon_defaults.yaml + pixi.toml (libglvnd, cv_bridge, pcl_conversions)
+were updated accordingly. Overlay actuator types changed per dfki-ric's PRM classifier
+(wheels `<velocity kv>`, position `<position kp>` no dampratio), the gripper `<equality>`
+mimics were removed (dfki-ric reads URDF `<mimic>` natively), the `<camera>` element is
+DELIBERATELY omitted (ncam=0) so the headless sim avoids a MujocoDepthCamera
+eglInitialize abort, and the launch was reconciled to the franka pattern (spawners ->
+`/controller_manager`, `real_time_factor` key, controllers.yaml as node param, R-PR8b-14).
+Stale tests updated for the new model (nu 16->18, neq 2->0; `<camera>` assertion ->
+`head_camera_site`/ncam; R-PR8b-12) and the `@_BAD_ALLOC_SKIP` removed so the ACCEPTANCE
+smoke `test_joint_command_moves_sim_state` actually runs.
+
+**Finishing (this pass):** the one remaining gate blocker was the vendored
+`mujoco_ros2_control` package's OWN upstream CTest tests (6 failures, headless launch
+tests) being regenerated/aggregated into `colcon test-result` and failing it. Fixed in
+`scripts/check_test_integrity.py` per the assigned task: the FULL run now uses
+`--packages-select` on the OWNED packages (NOT `--packages-skip` on unowned), which
+guarantees the vendored package is never in the test invocation; and because
+`colcon test-result --all` has no package filter (it aggregates CTest `Testing/<run>/Test.xml`
+which `find_result_files` cannot parse as xunit and so never prunes), added
+`delete_vendored_results()` to clear vendored packages' `test_results/` + `Testing/`
+result areas so stale CTest evidence cannot leak into the report. 3 unit tests cover it.
+MUJOCO_LOG.TXT is gitignored (R-PR8b-15).
+
+**Result: full `pixi run test` GREEN** — 838 tests, 0 errors, 0 failures, 0 skipped,
+`All stages passed`; acceptance smoke `test_joint_command_moves_sim_state` PASSED (sim
+spawns, controllers load via `/controller_manager`, a joint command moves sim state);
+ratchet raised 189->192 `_workspace_tooling` (3 new unit tests) + 4->5 `robot_bringup`;
+lint clean (ament_flake8 RC 0). READY for PR; NOT merged (Sisyphus merges).
+
+### Red-team NOTE (pre-existing, NOT introduced by PR8b; follow-up only)
+`scripts/tests/test_driver.py::test_a_stale_result_cannot_stand_in_for_a_package_colcon_skipped`
+asserts `"99" not in out`, which is flaky because pytest's `tmp_path` may contain a random
+`...99` segment (observed once across 2 green runs). Not a PR8b regression; a durable
+hardening (assert on a package-count/stale-haulage string rather than a bare numeric
+substring) is a good follow-up.

@@ -3,27 +3,27 @@
   ros2_control hardware interfaces for the Sisyphus robot (PR8b / issue #92).
 
   The ros2_control tag declares the MuJoCo hardware plugin and the joint
-  interfaces mujoco_ros2_control exposes. The MJCF (overlay.xml + derived
-  pipeline) is the actuator authority; here we name the same actuator per
-  joint and choose the command interface type, per the command-interface to
-  MJCF-actuator-type matrix (R-PR8b-6):
+  interfaces dfki-ric's mujoco_ros2_control exposes. The MJCF (overlay.xml +
+  derived pipeline) is the actuator authority; here we name the same actuator
+  per joint and choose the command interface type, per the command-interface to
+  MJCF-actuator-type matrix (R-PR8b-6, as adapted for dfki-ric in the probe):
 
-    velocity command, MJCF intvelocity/velocity actuator, the 3 wheels
-    position command,  MJCF position actuator,  column, arm, driven grippers
+    velocity command, MJCF <velocity> actuator, the 3 wheels
+    position command,  MJCF <position>  actuator,  column, arm, grippers (+mirrors)
 
-  The 2 gripper-mirror joints are mimics: a mimic param (and NO command
-  interface) tells the plugin to derive their value/command from the driven
-  joint, matching the URDF mimic with multiplier -1.
+  dfki-ric's plugin is `MujocoSystem` (NOT ros-controls' MujocoSystemInterface).
+  The MJCF path, sim frequency and GUI are NODE parameters (see
+  mujoco.launch.py), not hardware params. dfki-ric reads URDF <mimic> tags
+  natively (so the gripper mirrors below declare state interfaces only, no
+  command interface); the plugin drives each mirror's own MJCF position
+  actuator from the driven command x -1 (see gripper.xacro <mimic>).
 -->
 <robot xmlns:xacro="http://www.ros.org/wiki/xacro">
 
-  <xacro:macro name="sisyphus_mujoco_control" params="mujoco_model_path">
+  <xacro:macro name="sisyphus_mujoco_control" params="">
     <ros2_control name="MujocoSystem" type="system">
       <hardware>
-        <plugin>mujoco_ros2_control/MujocoSystemInterface</plugin>
-        <param name="mujoco_model">${mujoco_model_path}</param>
-        <param name="headless">true</param>
-        <param name="sim_speed_factor">1.0</param>
+        <plugin>mujoco_ros2_control/MujocoSystem</plugin>
       </hardware>
 
       <!-- mobile base, 3 continuous wheels: velocity command -->
@@ -132,18 +132,17 @@
         <state_interface name="effort"/>
       </joint>
 
-      <!-- gripper mirrors: mimics of the driven joints (R-PR8b-6); no command
-           interface, derived from the drivers. -->
+      <!-- gripper mirrors: mimics of the driven joints, via the URDF <mimic>
+           tag in gripper.xacro (multiplier -1). dfki-ric reads that natively
+           and drives each mirror's own MJCF position actuator from the driven
+           command; so the mirrors declare STATE interfaces only (no command
+           interface), per the dfki-ric franka-hand pattern. -->
       <joint name="left_gripper_mirror">
-        <param name="mimic">left_gripper</param>
-        <param name="multiplier">-1</param>
         <state_interface name="position"/>
         <state_interface name="velocity"/>
         <state_interface name="effort"/>
       </joint>
       <joint name="right_gripper_mirror">
-        <param name="mimic">right_gripper</param>
-        <param name="multiplier">-1</param>
         <state_interface name="position"/>
         <state_interface name="velocity"/>
         <state_interface name="effort"/>

@@ -11,9 +11,21 @@
 #
 # The 2 gripper-mirror joints are mimics handled by the hardware interface
 # itself (R-PR8b-6); they are NOT in any controller.
+#
+# Controller `type` is declared BOTH at the top level of each controller's
+# section (so the spawner's --param-file sets it on the embedded CM, R-PR8b-14
+# probe: this is the mechanism that succeeded for joint_state_broadcaster) and
+# under controller_manager.ros__parameters (dfki-ric franka-example style) so
+# the CM can instantiate it by name.
 controller_manager:
   ros__parameters:
     update_rate: 100
+    joint_state_broadcaster:
+      type: joint_state_broadcaster/JointStateBroadcaster
+    arm_gripper_position_controller:
+      type: position_controllers/JointGroupPositionController
+    base_velocity_controller:
+      type: velocity_controllers/JointGroupVelocityController
 
 joint_state_broadcaster:
   ros__parameters:

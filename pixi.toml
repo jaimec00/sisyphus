@@ -46,7 +46,10 @@ vcstool = ">=1.1.7,<2"
 ros-jazzy-ros2-control-cmake = ">=0.4.0,<0.5"
 libcap = ">=2.78,<3"
 glfw = ">=3.5.1,<4"
+libglvnd = "*"
 lttng-ust = ">=2.13.9,<3"
+ros-jazzy-cv-bridge = ">=4.1.0,<5"
+ros-jazzy-pcl-conversions = ">=2.6.4,<3"
 
 # TODO (verify availability on robostack-jazzy; source-build in this env if missing):
 #   ros-jazzy-moveit                (MoveIt 2 — confirmed present on channel)
