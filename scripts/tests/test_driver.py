@@ -229,7 +229,16 @@ def test_a_stale_result_cannot_stand_in_for_a_package_colcon_skipped(
 
     assert rc == 1
     assert 'FAIL robot_b: no JUnit result file' in out
-    assert '99' not in out
+    # The stale result reported 99 collected tests; if the pre-run clean left
+    # it in place, robot_b's report *row* would show that count. Assert on the
+    # row rather than the bare '99' against the whole output: the "no JUnit
+    # result file under ..." detail embeds the tmp_path, and a pytest tmp dir
+    # (pytest-N) can itself contain '99' -- a false positive this test isn't
+    # about.
+    robot_b_row = [ln for ln in out.splitlines()
+                   if ln.lstrip().startswith('robot_b')]
+    assert robot_b_row, out
+    assert '99' not in robot_b_row[0]
 
 
 def test_the_tooling_suite_is_audited_like_a_package(workspace, capsys):
