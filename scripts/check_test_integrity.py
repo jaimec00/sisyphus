@@ -829,6 +829,36 @@ def format_report(audits, *, notes=(), show_age=False, tolerated=()):
     return '\n'.join(lines)
 
 
+def delete_vendored_results(build_base, unowned):
+    """Remove the result area of packages this repo does not own.
+
+    Vendored packages (``vcs import`` / ``robot.repos``) are built but never
+    run under ``colcon test`` (PR8b selects only the OWNED set), so anything
+    under their ``build/<pkg>/test_results/`` or CTest ``build/<pkg>/Testing/``
+    is stale residue from some other pipeline. ``colcon test-result --all``
+    aggregates the CTest ``Testing/<run>/Test.xml`` files too, and those are
+    NOT parseable as xunit so :func:`find_result_files` never prunes them --
+    a leftover vendored CTest failure would therefore fail the guard even
+    though the test that produced it never ran in this invocation. Clearing
+    the whole result area of an untested package is the robust complement to
+    ``--packages-select``: no stale vendored evidence can leak into the report.
+    """
+    if not unowned:
+        return []
+    build_base = Path(build_base)
+    removed = []
+    for name in sorted(unowned):
+        pkg_build = build_base / name
+        for sub in ('test_results', 'Testing'):
+            area = pkg_build / sub
+            if area.is_dir():
+                for path in sorted(area.rglob('*')):
+                    if path.is_file():
+                        path.unlink()
+                        removed.append(path)
+    return sorted(removed)
+
+
 def delete_result_files(build_base, packages=None):
     """Delete the JUnit result files under ``build_base``.
 
@@ -1172,6 +1202,26 @@ def main(argv=None):
                    '--test-result-base', str(args.build_base)]
     if narrowed:
         colcon_test += ['--packages-select'] + packages
+    elif unowned:
+        # VENDORED-PACKAGE SEPARATION (PR8b):
+        # Packages landed by `vcs import` (robot.repos) are not owned by this
+        # repo and are never audited (see discover_packages). They may still
+        # be built -- some are runtime deps -- but they must never run their
+        # upstream tests here: those suites (e.g. dfki-ric's launch tests)
+        # can fail headless, and once colcon regenerates them during
+        # `colcon test` they land in `colcon test-result` and fail the guard
+        # even under `--packages-skip`. Selecting the OWNED set explicitly is
+        # the robust guarantee that a vendored package is never in the test
+        # invocation at all. TOOLING_PACKAGE is a pseudo-package (this
+        # script) that colcon does not know, so it is held out here and runs
+        # via run_tooling_tests() below.
+        owned = sorted(set(packages) - {TOOLING_PACKAGE})
+        colcon_test += ['--packages-select'] + owned
+        # colcon test-result --all scans the WHOLE build base (it has no
+        # package filter), so a stale CTest Testing/<run>/Test.xml left in a
+        # vendored package's build dir would still fail the guard. Clear their
+        # result areas now; they hold nothing this run can regenerate.
+        delete_vendored_results(args.build_base, unowned)
     rc_test = _run(colcon_test, cwd=str(repo_root))
 
     rc_tooling = 0

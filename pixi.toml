@@ -32,6 +32,24 @@ ros-jazzy-urdfdom = ">=6.0,<7"
 ros-jazzy-robot-state-publisher = ">=3.3.3,<4"
 ros-jazzy-joint-state-publisher = ">=2.4.0,<3"
 mujoco = ">=3.12.0,<4"
+ros-jazzy-controller-manager = ">=4.45.1,<5"
+ros-jazzy-hardware-interface = ">=4.45.1,<5"
+ros-jazzy-transmission-interface = ">=4.45.1,<5"
+ros-jazzy-control-toolbox = ">=4.11.0,<5"
+ros-jazzy-realtime-tools = ">=3.11.0,<4"
+ros-jazzy-joint-state-broadcaster = ">=4.40.0,<5"
+ros-jazzy-position-controllers = ">=4.40.0,<5"
+ros-jazzy-velocity-controllers = ">=4.40.0,<5"
+ros-jazzy-backward-ros = ">=1.0.8,<2"
+ros-jazzy-tinyxml2-vendor = ">=0.9.2,<0.10"
+vcstool = ">=1.1.7,<2"
+ros-jazzy-ros2-control-cmake = ">=0.4.0,<0.5"
+libcap = ">=2.78,<3"
+glfw = ">=3.5.1,<4"
+libglvnd = "*"
+lttng-ust = ">=2.13.9,<3"
+ros-jazzy-cv-bridge = ">=4.1.0,<5"
+ros-jazzy-pcl-conversions = ">=2.6.4,<3"
 
 # TODO (verify availability on robostack-jazzy; source-build in this env if missing):
 #   ros-jazzy-moveit                (MoveIt 2 — confirmed present on channel)
@@ -70,3 +88,16 @@ openclaw = { cmd = "node/node_modules/.bin/openclaw", depends-on = ["install-ope
 
 [pypi-dependencies]
 mcp = ">=2.0.0, <3"
+
+[activation.env]
+# The source-built mujoco_ros2_control/plugins link against conda-native libs
+# (lttng-ust, cap, glfw) by bare name; the linker needs the env lib dir on
+# LIBRARY_PATH (the same setting the upstream mujoco_ros2_control pixi.toml
+# uses). LD_LIBRARY_PATH alone does not satisfy the -L search.
+LIBRARY_PATH = "${CONDA_PREFIX}/lib:${LIBRARY_PATH}"
+# pixi does not put the conda env 'lib/' on LD_LIBRARY_PATH, and ament's
+# colcon setup.bash recomputes it from the ament prefixes, so a runtime node
+# cannot find conda-native links such as libbackward.so / libglfw (the
+# source-built mujoco_ros2_control links them). Keep the env lib on the
+# runtime loader path explicitly.
+LD_LIBRARY_PATH = "${CONDA_PREFIX}/lib:${LD_LIBRARY_PATH}"

@@ -1,18 +1,53 @@
 <!--
-  PR7 physics overlay for the derived MJCF (hand-authored — see R-PR7-4).
+  PR7/PR8 physics + actuation overlay for the derived MJCF (hand-authored —
+  see R-PR7-4 and R-PR8b-*).
 
   This is the ONLY hand-authored MJCF in the repo. It carries the bits a URDF
-  cannot: actuators, contact defaults, and the head camera sensor site at the
-  REP-103 optical frame. MuJoCo compiles a base MJCF from the shipped URDF
-  (via MjModel.from_xml_path + mj_saveLastXML, see mjcf_model.py) and splices
-  the blocks below into it before compiling. A generated MJCF is NEVER checked
-  in — the URDF stays the single source of truth (issue #89 / R-PR7-2).
+  cannot: contact defaults, the head camera sensor site, and the sim-only
+  actuation wiring. MuJoCo compiles a base MJCF from the shipped URDF (via
+  MjModel.from_xml_path + mj_saveLastXML, see mjcf_model.py) and splices the
+  blocks below into it before compiling. A generated MJCF is NEVER checked in —
+  the URDF stays the single source of truth (issue #89 / R-PR7-2) and the
+  transmissions/ros2_control tags in the URDF are the actuator source of truth
+  (R-PR8b-6).
 
-  A header comment marks the head-camera block because it does not live at the
-  MJCF root element: after fusestatic folds the massless head_camera_link /
-  head_camera_optical_frame away (R-PR7-5/6), the camera must be re-attached
-  to the column_top body. mjcf_model.py extracts the block between
-  PR7-HEAD-CAMERA-BEGIN/END and inserts it as the first child of column_top.
+  PR8b probe (issue #92) — dfki-ric/mujoco_ros2_control adaptation (R-PR8b):
+  this overlay is now consumed by the dfki-ric sim plugin (not ros-controls).
+  Two changes from the ros-controls-era overlay:
+
+    1. Actuator types are what dfki-ric's PRM-based classifier actually
+       recognizes (verified against MuJoCo 3.9 PRMs):
+         - wheels      -> <velocity kv>   (VELOCITY control; dfki-ric writes the
+                                            wheel speed to ctrl). NOT intvelocity,
+                                            which dfki-ric mis-classifies as
+                                            POSITION.
+         - column/arm  -> <position kp>   (POSITION control; dfki-ric writes the
+                           driven gripper   position target to ctrl). NO dampratio
+                                            — dampratio adds a bias term that
+                                            breaks dfki-ric's POSITION pattern
+                                            and falls it back to plugin PID.
+         - gripper mirrors -> <position kp> (franka hand pattern: BOTH driver and
+                                            mirror get their own position actuator;
+                                            dfki-ric writes the mirror's ctrl from
+                                            the driven command x multiplier).
+
+    2. The 2 gripper <equality> mimics are GONE (neq 2->0). dfki-ric reads the
+       URDF <mimic multiplier="-1"> tags natively and drives the mirror joint
+       itself in write() by writing the mirror's own actuator command; an
+       equality constraint would fight that. nq/nv stay 18; nu is 18.
+
+    3. The head-camera <camera .../> ELEMENT is DELIBERATELY omitted (ncam=0).
+       dfki-ric creates a MujocoDepthCamera node for every MJCF <camera>, and
+       that node aborts on eglInitialize failure — which is exactly what
+       happens on the headless bringup/CI node (no GPU/EGL). The framepos
+       sensor on head_camera_site (roadmap #4's RGB-D seam) stays; the
+       <camera> is re-introduced when RGB-D is actually driven on GPU-backed
+       hardware (roadmap #4). VERIFIED: with the <camera> present the sim node
+       dies (exit -6, std::runtime_error 'MujocoDepthCamera: eglInitialize
+       failed'); without it the headless sim spawns cleanly.
+
+  Contact defaults and the head-camera framepos sensor + site are otherwise
+  unchanged from PR7.
 -->
 <mujoco>
   <!-- Sane contact defaults (sec R-PR7-4). Tuning is iterative — PR8 / roadmap #4. -->
@@ -20,38 +55,47 @@
     <geom friction="1.0 0.4 0.02" solref="0.01 1.0" priority="1"/>
   </default>
 
+  <!-- ======================================================================
+       Actuators (R-PR8b-6 / R-PR8b probe). Real STS3215 gains + contact/
+       friction tuning are roadmap #4; gains here are placeholders that give
+       stable PD behavior. Actuator TYPES are chosen to match dfki-ric's
+       PRM-based classifier (see header comment) so the plugin drives each
+       joint via its own actuator ctrl rather than the fallback PID.
+       ====================================================================== -->
   <actuator>
-    <!-- One placeholder motor per actuated joint so nu == actuated-count (18).
-         Placeholder gains only: real STS3215 gains are PR8 / roadmap #4. -->
-    <!-- mobile base (3 omniwheels) -->
-    <motor joint="base_left_wheel"/>
-    <motor joint="base_back_wheel"/>
-    <motor joint="base_right_wheel"/>
-    <!-- column lift -->
-    <motor joint="column_lift"/>
-    <!-- left arm (5 revolute) -->
-    <motor joint="left_shoulder_pan"/>
-    <motor joint="left_shoulder_lift"/>
-    <motor joint="left_elbow_flex"/>
-    <motor joint="left_wrist_flex"/>
-    <motor joint="left_wrist_roll"/>
-    <!-- right arm (5 revolute) -->
-    <motor joint="right_shoulder_pan"/>
-    <motor joint="right_shoulder_lift"/>
-    <motor joint="right_elbow_flex"/>
-    <motor joint="right_wrist_flex"/>
-    <motor joint="right_wrist_roll"/>
-    <!-- grippers (2 each) -->
-    <motor joint="left_gripper"/>
-    <motor joint="left_gripper_mirror"/>
-    <motor joint="right_gripper"/>
-    <motor joint="right_gripper_mirror"/>
+    <!-- mobile base (3 omniwheels): velocity command -> <velocity> actuator.
+         dfki-ric classifies <velocity> as VELOCITY and writes the commanded
+         wheel speed straight to ctrl. -->
+    <velocity name="base_left_wheel" joint="base_left_wheel" kv="10"/>
+    <velocity name="base_back_wheel" joint="base_back_wheel" kv="10"/>
+    <velocity name="base_right_wheel" joint="base_right_wheel" kv="10"/>
+    <!-- column lift: position command -->
+    <position name="column_lift" joint="column_lift" kp="100"/>
+    <!-- left arm (5 revolute): position command -->
+    <position name="left_shoulder_pan" joint="left_shoulder_pan" kp="100"/>
+    <position name="left_shoulder_lift" joint="left_shoulder_lift" kp="100"/>
+    <position name="left_elbow_flex" joint="left_elbow_flex" kp="100"/>
+    <position name="left_wrist_flex" joint="left_wrist_flex" kp="100"/>
+    <position name="left_wrist_roll" joint="left_wrist_roll" kp="100"/>
+    <!-- right arm (5 revolute): position command -->
+    <position name="right_shoulder_pan" joint="right_shoulder_pan" kp="100"/>
+    <position name="right_shoulder_lift" joint="right_shoulder_lift" kp="100"/>
+    <position name="right_elbow_flex" joint="right_elbow_flex" kp="100"/>
+    <position name="right_wrist_flex" joint="right_wrist_flex" kp="100"/>
+    <position name="right_wrist_roll" joint="right_wrist_roll" kp="100"/>
+    <!-- grippers: 2 driven + 2 mirror jaws, each with its own position
+         actuator (franka hand pattern). dfki-ric drives the mirror's ctrl
+         from the driven command x -1 (URDF <mimic>). -->
+    <position name="left_gripper" joint="left_gripper" kp="100"/>
+    <position name="right_gripper" joint="right_gripper" kp="100"/>
+    <position name="left_gripper_mirror" joint="left_gripper_mirror" kp="100"/>
+    <position name="right_gripper_mirror" joint="right_gripper_mirror" kp="100"/>
   </actuator>
 
   <sensor>
     <!-- Head camera sensor: a first-class framepos sensor on the camera site,
          plus the site/camera themselves (below). RGB pixel output is
-         renderer-based in MuJoCo 3.12 (no XML RGB <sensor>), so the pinhole
+         renderer-based in MuJoCo (no XML RGB <sensor>), so the pinhole
          camera + site here are what roadmap #4's RGB-D render pipeline consumes. -->
     <framepos name="head_camera_pos" objtype="site" objname="head_camera_site"/>
   </sensor>
@@ -62,8 +106,6 @@
   head_camera_link -> head_camera_optical_joint (xyz 0 0 0, rpy 0 -pi/2 +pi/2) ->
   head_camera_optical_frame. So pos (0,0,0.05), euler (0, -pi/2, +pi/2).
   -->
-  <camera name="head_camera" pos="0 0 0.05" euler="0 -1.5708 1.5708"
-          fovy="60" resolution="640 480"/>
-  <site name="head_camera_site" pos="0 0 0.05" euler="0 -1.5708 1.5708" size="0.01"/>
+    <site name="head_camera_site" pos="0 0 0.05" euler="0 -1.5708 1.5708" size="0.01"/>
   <!-- PR7-HEAD-CAMERA-END -->
 </mujoco>

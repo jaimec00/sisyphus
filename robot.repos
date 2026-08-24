@@ -2,16 +2,18 @@
 # Import with:  vcs import src < robot.repos
 # Populated as we adopt/fork upstreams (see docs/design/PROJECT.md "Reuse map").
 #
-# Examples (commented until adopted — pin a real commit in `version:`):
-#
-# repositories:
-#   so101_ros2:
-#     type: git
-#     url: https://github.com/msf4-0/so101_ros2.git
-#     version: <commit-sha>
-#   mujoco_ros2_control:
-#     type: git
-#     url: https://github.com/ros-controls/mujoco_ros2_control.git
-#     version: <commit-sha>
+# PR8b probe (issue #92): MuJoCo sim source-built via dfki-ric/mujoco_ros2_control
+# (jazzy branch, pinned). dfki-ric is a DISTINCT implementation from the
+# ros-controls org: it vendors its own MuJoCo 3.9.0 via FetchContent (builds
+# from source; distinct libmujoco SONAME, coexists with the conda mujoco 3.12.0
+# the Python derivation uses), loads the MJCF synchronously in configure
+# (sidesteps the ros-controls std::bad_alloc), and reads URDF <mimic> natively.
+# It needs NO separate mujoco_vendor. Per the R-PR8b probe, actuator types are
+# <velocity> for the wheels and <position kp> (no dampratio) for position
+# joints -- what dfki-ric's PRM-based classifier recognizes.
 
-repositories: {}
+repositories:
+  mujoco_ros2_control:
+    type: git
+    url: https://github.com/dfki-ric/mujoco_ros2_control.git
+    version: f151b7df9ee366fd6a93ee760652d3d809a5f788

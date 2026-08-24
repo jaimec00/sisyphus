@@ -1,0 +1,29 @@
+# PR8b probe: the vendored mujoco_ros2_control stack (dfki-ric) is a
+# git-untracked third-party dependency (robot.repos / vcs import). It is exempt
+# from our test-count guard (check_test_integrity.py "unowned"). Its upstream
+# test binaries do not link against our glfw setup even when the library
+# builds, so build the vendored cmake package with BUILD_TESTING=OFF. Our own
+# packages are ament_python and collect tests via pytest regardless of this
+# flag.
+#
+# CMAKE_INSTALL_RPATH_USE_LINK_PATH=TRUE: ament's setup.bash recomputes
+# LD_LIBRARY_PATH from the ament prefix paths and DROPS the conda env lib, so
+# the plugin's runtime cannot find conda-native links like libbackward.so /
+# libglfw. Capturing the link-time lib paths (the conda lib, found via
+# LIBRARY_PATH from pixi.toml activation.env) into the installed RPATH fixes
+# that regardless of LD_LIBRARY_PATH.
+#
+# dfki-ric's MuJoCo is fetched and built from source (FetchContent, 3.9.0), so
+# no mujoco_vendor or NEVER_VENDOR flag applies to the C++ sim path. The conda
+# mujoco 3.12.0 in pixi.toml is only for the Python MJCF derivation.
+build:
+  cmake-args:
+    - -DBUILD_TESTING=OFF
+    - -DCMAKE_INSTALL_RPATH_USE_LINK_PATH=TRUE
+    - -DCMAKE_BUILD_TYPE=Release
+mujoco_ros2_control:
+  build:
+    cmake-args:
+      - -DBUILD_TESTING=OFF
+      - -DCMAKE_INSTALL_RPATH_USE_LINK_PATH=TRUE
+      - -DCMAKE_BUILD_TYPE=Release

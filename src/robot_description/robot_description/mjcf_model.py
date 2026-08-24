@@ -56,7 +56,7 @@ from typing import Dict
 import mujoco
 import xacro
 
-__all__ = ['load_mjcf_model']
+__all__ = ['load_mjcf_model', 'write_mjcf_model']
 
 #: Top-level entry point the derivation expands (same as robot_model.py).
 _TOP_LEVEL = 'robot.urdf.xacro'
@@ -162,13 +162,14 @@ def _splice_overlay(base_mjcf: str, root_blocks: str, head_camera_block: str,
     return merged
 
 
-def load_mjcf_model() -> mujoco.MjModel:
-    """Derive and compile the robot's MJCF model from the shipped URDF + overlay.
+def _build_merged_mjcf(pkg: Path) -> str:
+    """Derive and return the merged MJCF text (URDF import + overlay splice).
 
-    Returns a compiled :class:`mujoco.MjModel`. Throwaway files (staged URDF,
-    derived base MJCF) live in a temp dir and are not committed.
+    Shared by :func:`load_mjcf_model` (which compiles it) and
+    :func:`write_mjcf_model` (which materializes it to a file for the
+    ``mujoco_ros2_control`` sim - PR8b / issue #92). Returns the single,
+    hand-authored-overlay-spliced MJCF string.
     """
-    pkg = _package_dir()
     assets = _collect_assets(pkg / 'meshes')
     urdf_xml = _expand_urdf(pkg / 'urdf')
     root_blocks, head_camera_block = _read_overlay(pkg / 'mjcf' / 'overlay.xml')
@@ -179,7 +180,33 @@ def load_mjcf_model() -> mujoco.MjModel:
         base_mjcf = base_mjcf_path.read_text()
 
     base_mjcf = _redirect_meshes(base_mjcf, pkg / 'meshes')
-    merged = _splice_overlay(base_mjcf, root_blocks, head_camera_block,
-                             _HEAD_CAMERA_PARENT_BODY)
+    return _splice_overlay(base_mjcf, root_blocks, head_camera_block,
+                           _HEAD_CAMERA_PARENT_BODY)
+
+
+def load_mjcf_model() -> mujoco.MjModel:
+    """Derive and compile the robot's MJCF model from the shipped URDF + overlay.
+
+    Returns a compiled :class:`mujoco.MjModel`. Throwaway files (staged URDF,
+    derived base MJCF) live in a temp dir and are not committed.
+    """
+    merged = _build_merged_mjcf(_package_dir())
     spec = mujoco.MjSpec.from_string(merged)
     return spec.compile()
+
+
+def write_mjcf_model(path: str) -> str:
+    """Materialize the derived MJCF to ``path`` for the sim to load.
+
+    The ``mujoco_ros2_control`` system interface loads the sim model from a
+    *file* (its ``mujoco_model`` hardware param). The derived MJCF is never
+    checked in (PR7, issue #89), so a bringup launch materializes it at
+    runtime by calling this, then passes ``path`` to the xacro's
+    ``mujoco_model_path`` arg. Returns the MJCF text that was written, for
+    callers that want to inspect it. The output path is made absolute.
+    """
+    out = Path(path).expanduser().resolve()
+    out.parent.mkdir(parents=True, exist_ok=True)
+    merged = _build_merged_mjcf(_package_dir())
+    out.write_text(merged)
+    return merged

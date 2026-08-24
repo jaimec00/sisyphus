@@ -88,7 +88,14 @@ def _expected_links_and_roots():
         [_require_tool('xacro'), xacro], capture_output=True, text=True)
     assert expanded.returncode == 0, (
         'xacro failed to expand the installed description:\n' + expanded.stderr)
-    robot = URDF.from_xml_string(expanded.stdout)
+    # PR8b: ros2_control <transmission> blocks are not parseable by
+    # urdf_parser_py (it only duck-types new_transmission/pr2_transmission);
+    # strip them for the frame derivation. Transmissions are validated by
+    # ros2_control's runtime parser (R-PR8b-7).
+    import re
+    xml = re.sub(r'<transmission\b[^>]*>.*?</transmission>',
+                 '', expanded.stdout, flags=re.S)
+    robot = URDF.from_xml_string(xml)
     child_frames = {j.child for j in robot.joints}
     links = {link.name for link in robot.links}
     roots = sorted(links - child_frames)

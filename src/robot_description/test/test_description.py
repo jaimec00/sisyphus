@@ -128,6 +128,7 @@ class D29 named and PR3's own review round hit twice:
 import io
 import math
 import os
+import re
 import shutil
 import signal
 import subprocess
@@ -390,7 +391,10 @@ ANGLE_TOL_DEG = 1e-6
 #: Subassembly files the top level must include -- a wiring contract, not just
 #: a list of files that happen to be installed. Deleting an <xacro:include> is
 #: otherwise invisible here (the file stays installed and stays linted).
-SUBASSEMBLIES = ('base.xacro', 'column.xacro', 'arm.xacro', 'gripper.xacro')
+SUBASSEMBLIES = (
+    'base.xacro', 'column.xacro', 'arm.xacro', 'gripper.xacro',
+    'transmissions.xacro', 'ros2_control.xacro',
+)
 
 #: xacro's namespace, needed to find <xacro:include> in the *unexpanded* file.
 XACRO_NS = 'http://www.ros.org/wiki/xacro'
@@ -426,6 +430,38 @@ def _require_expansion(expansion):
         'test_xacro_expands_without_error for the root cause.\n%s' % (
             expansion.returncode, expansion.stderr))
     return expansion.stdout
+
+
+def _parse_urdf(expansion):
+    """Parse the expanded URDF, tolerating ros2_control transmission blocks.
+
+    urdf_parser_py (this version) only duck-types ``new_transmission`` /
+    ``pr2_transmission`` tags; it cannot parse the ros2_control
+    ``<transmission type="transmission_interface/...">`` grammar and raises
+    on it. This gate asserts on links/joints/geometry, never on transmissions
+    (ros2_control validates them at runtime via ``ros2 control``), so we strip
+    the transmission blocks for the Python parse and let a dedicated test
+    (``test_transmissions_present_in_expansion``) pin that they ARE in the
+    raw expansion. PR8b / issue #92.
+    """
+    xml = _require_expansion(expansion)
+    xml = re.sub(r'<transmission\b[^>]*>.*?</transmission>', '', xml, flags=re.S)
+    return URDF.from_xml_string(xml)
+
+
+def test_transmissions_present_in_expansion(expansion):
+    """PR8b: the shipped robot.urdf.xacro carries 16 ros2_control transmissions.
+
+    The urdf_parser_py gate strips them (it cannot parse that grammar), so this
+    asserts they are present and well-formed in the raw expansion, and that they
+    name the expected commandable joints.
+    """
+    xml = _require_expansion(expansion)
+    import re as _re
+    trans = _re.findall(r'<transmission\b[^>]*>', xml)
+    assert len(trans) == 16, 'expected 16 transmissions, got %d' % len(trans)
+    assert 'transmission_interface/SimpleTransmission' in xml
+    assert 'base_left_wheel_trans' in xml and 'right_gripper_trans' in xml
 
 
 def _resolve_asset_path(filename, share_dir):
@@ -837,7 +873,7 @@ def parsed_model(expansion):
     enough of them that re-parsing per assertion is just noise. Read-only by
     convention -- nothing here mutates the returned model.
     """
-    return URDF.from_xml_string(_require_expansion(expansion))
+    return _parse_urdf(expansion)
 
 
 def test_share_layout_is_installed(share_dir):
@@ -897,7 +933,7 @@ def test_check_urdf_parses_the_expansion(expansion, expanded_urdf_path):
 
 def test_link_set_is_exactly_the_expected_links(expansion):
     """The parsed model contains exactly EXPECTED_LINKS -- no more, no fewer."""
-    robot = URDF.from_xml_string(_require_expansion(expansion))
+    robot = _parse_urdf(expansion)
     links = {link.name for link in robot.links}
     assert links == EXPECTED_LINKS, (
         'link set drifted: missing %s, unexpected %s' % (
@@ -1997,7 +2033,7 @@ def test_every_asset_reference_resolves(expansion, share_dir):
 
 def test_robot_is_named(expansion):
     """The model carries the robot's name, so downstream tooling can identify it."""
-    robot = URDF.from_xml_string(_require_expansion(expansion))
+    robot = _parse_urdf(expansion)
     assert robot.name == 'sisyphus', 'unexpected robot name: %r' % robot.name
 
 

@@ -28,3 +28,12 @@ node/
 
 # OS
 .DS_Store
+
+# vendored third-party sources (robot.repos / vcs import) — git-untracked by
+# design: check_test_integrity.py classifies them "unowned" so they are not
+# required to produce tests, and they must never be accidentally committed.
+# (PR8b: mujoco_vendor + mujoco_ros2_control stack.) Their pinned commits are
+# captured in robot.repos, not by vendoring the trees into this repo.
+src/mujoco_vendor/
+src/mujoco_ros2_control/
+MUJOCO_LOG.TXT

@@ -52,6 +52,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 import math
 from pathlib import Path
+import re
 from typing import Tuple
 import xml.etree.ElementTree as ElementTree
 
@@ -128,9 +129,22 @@ def _read_property(urdf_dir: Path, filename: str, name: str) -> float:
 
 
 def _parse_model(urdf_dir: Path) -> URDF:
-    """Expand and parse the shipped ``robot.urdf.xacro`` into a model tree."""
+    """Expand and parse the shipped ``robot.urdf.xacro`` into a model tree.
+
+    The ros2_control ``<transmission>`` blocks (PR8b, R-PR8b-7) are valid URDF
+    but urdf_parser_py (this version) only duck-types ``new_transmission`` /
+    ``pr2_transmission`` and raises on the ros2_control ``<transmission
+    type="transmission_interface/...">`` grammar. This loader owns the URDF as
+    the D23 source of truth for the robot's *structure* (links/joints/limits);
+    transmissions are validated by ros2_control's own runtime parser, so strip
+    the transmission blocks for the Python model parse. The presence of the
+    16 transmissions is pinned by test_description.test_transmissions_present
+    _in_expansion.
+    """
     doc = xacro.process_file(str(urdf_dir / _TOP_LEVEL))
-    return URDF.from_xml_string(doc.toxml())
+    xml = re.sub(r'<transmission\b[^>]*>.*?</transmission>', '',
+                 doc.toxml(), flags=re.S)
+    return URDF.from_xml_string(xml)
 
 
 def _rotation_from_rpy(rpy):

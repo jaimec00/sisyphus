@@ -25,6 +25,15 @@
   <exec_depend>launch</exec_depend>
   <exec_depend>launch_ros</exec_depend>
   <exec_depend>ament_index_python</exec_depend>
+  <!-- PR8b: the MuJoCo sim bringup. robot_description carries the derived-MJCF
+       writer (mjcf_model.write_mjcf_model); mujoco_ros2_control runs the sim
+       system interface node; the controller_manager stack provides the
+       controllers the launch spawns. -->
+  <exec_depend>mujoco_ros2_control</exec_depend>
+  <exec_depend>controller_manager</exec_depend>
+  <exec_depend>joint_state_broadcaster</exec_depend>
+  <exec_depend>position_controllers</exec_depend>
+  <exec_depend>velocity_controllers</exec_depend>
 
   <test_depend>ament_copyright</test_depend>
   <test_depend>ament_flake8</test_depend>

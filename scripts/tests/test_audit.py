@@ -366,6 +366,64 @@ def test_cleaning_can_be_limited_to_the_selected_packages(workspace):
     assert untouched.exists()
 
 
+def test_delete_vendored_results_clears_ctest_too(workspace):
+    """A vendored package's stale CTest Testing/<run>/Test.xml must be pruned.
+
+    ``colcon test-result --all`` aggregates CTest ``Testing/<run>/Test.xml``
+    (which is NOT parseable as xunit, so ``delete_result_files`` never prunes
+    it) across the WHOLE build base -- and it has no package filter. A stale
+    vendored CTest failure left over from some other pipeline would therefore
+    fail the guard even though the test never ran in this invocation. PR8b's
+    separation runs vendored packages out of ``colcon test`` via
+    ``--packages-select`` on the owned set; clearing their result area is the
+    robust complement so that leftover evidence cannot leak into the report.
+    """
+    _, build_base = workspace
+    vendored = 'mujoco_ros2_control'
+    # A CTest-style Test.xml under Testing/<run>/ -- colcon test-result reads
+    # these and find_result_files/delete_result_files would skip them.
+    ctest = (build_base / vendored / 'Testing' / '20260824-0015' / 'Test.xml')
+    ctest.parent.mkdir(parents=True)
+    ctest.write_text(
+        '<?xml version="1.0" encoding="UTF-8"?>'
+        '<Site><Testing><Test>'            # not xunit: delete_result_files skips
+        '<Name>test_prepare_terrain</Name><Status>failed</Status>'
+        '</Test></Testing></Site>')
+    # An owned xunit result must be left alone by the vendored-prune helper.
+    owned = write_result(build_base, 'robot_a', tests=5)
+
+    removed = guard.delete_vendored_results(build_base, [vendored])
+
+    assert ctest in removed
+    assert not ctest.exists()
+    assert owned.exists()          # owned results are not the helper's concern
+    assert build_base.exists()
+
+
+def test_delete_vendored_results_is_a_noop_for_empty_unowned(workspace):
+    """With no vendored packages there is nothing to prune."""
+    _, build_base = workspace
+    result = write_result(build_base, 'robot_a', tests=5)
+
+    assert guard.delete_vendored_results(build_base, []) == []
+    assert result.exists()
+
+
+def test_delete_vendored_results_scopes_to_named_packages(workspace):
+    """Only the named packages' result areas are touched."""
+    _, build_base = workspace
+    ctest_a = build_base / 'mujoco_a' / 'Testing' / 'run1' / 'Test.xml'
+    ctest_b = build_base / 'mujoco_b' / 'Testing' / 'run1' / 'Test.xml'
+    for p in (ctest_a, ctest_b):
+        p.parent.mkdir(parents=True)
+        p.write_text('<Testing></Testing>')
+
+    removed = guard.delete_vendored_results(build_base, ['mujoco_a'])
+
+    assert ctest_a in removed and not ctest_a.exists()
+    assert ctest_b.exists()       # not named, untouched
+
+
 def test_expected_packages_come_from_the_source_tree(workspace):
     """The expected set is the source tree, so a skipped package is caught."""
     source_dir, build_base = workspace
