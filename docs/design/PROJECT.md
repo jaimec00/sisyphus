@@ -48,10 +48,14 @@ both the differentiators and the real risks (D22).
   `robot_mcp` over that seam, the `robot_world` JSON store (D23), the
   self-discovering launch path + boot-smoke gate (D24), and `robot_description`
   as a real package with a CI expand/parse gate (D27, PR #62).
-- **In flight:** the URDF/MJCF body — PR1 done, PR2 (base) next. Sequence and
-  per-PR acceptance in [`urdf-mjcf-pr-breakdown.md`](urdf-mjcf-pr-breakdown.md).
-- **Not started:** MuJoCo backend behind the same skills; perception writing
-  into `robot_world`; any real hardware (nothing purchased).
+- **Done:** the URDF/MJCF body — PR1–PR8b all merged (see
+  [`urdf-mjcf-pr-breakdown.md`](urdf-mjcf-pr-breakdown.md)); MuJoCo sim bringup
+  under `dfki-ric/mujoco_ros2_control` (D33).
+- **In flight:** the MuJoCo `RobotBackend` (Mock → Sim swap, D9/D34). Sequence
+  and per-PR acceptance in
+  [`mujoco-backend-pr-breakdown.md`](mujoco-backend-pr-breakdown.md).
+- **Not started:** perception writing into `robot_world`; any real hardware
+  (nothing purchased).
 
 ## Open questions (still genuinely open)
 - **Brain LLM choice** (which hosted model) + when/if to move to a self-hosted
@@ -73,14 +77,15 @@ both the differentiators and the real risks (D22).
 depth-camera class, base geometry — all settled by D26.)*
 
 ## Next steps
-1. **Build the body:** work the URDF/MJCF PR sequence — PR2 (3-omniwheel base)
-   is next off the harness PR1 landed. See
-   [`urdf-mjcf-pr-breakdown.md`](urdf-mjcf-pr-breakdown.md).
-2. **Prove the brain end-to-end:** an OpenClaw `robot` agent whose system prompt
+1. **~~Build the body~~ — done** (PR1–PR8b merged).
+2. **Swap Mock → MuJoCo** behind the same skills — the MuJoCo `RobotBackend`
+   (D9/D34). See
+   [`mujoco-backend-pr-breakdown.md`](mujoco-backend-pr-breakdown.md).
+3. **Prove the brain end-to-end:** an OpenClaw `robot` agent whose system prompt
    carries the skill API + observation format + safety envelope + worked
    examples, wired to `robot_mcp` over the **Mock** backend — text "clear the
-   table" → tool-calls in a loop, safety-clamped, replies (D21).
-3. **Swap Mock → MuJoCo** behind the same skills, once the body exists (D9).
+   table" → tool-calls in a loop, safety-clamped, replies (D21). *(Smoke passed
+   on Mock 2026-09-04; the context-free-subagent variant is still open.)*
 4. **Wrap `robot_world` in a ROS 2 query service** and let perception write into
    it (D23).
 5. **Classical skills first** (D22): MoveIt pick-and-place of rigid objects +
