@@ -17,8 +17,8 @@ column height, gripper open/empty posture).  That is what lets a brain or a
 server swap the backend without a schema change.
 """
 
-import pytest
 from mcp_fixtures import connected, payload
+import pytest
 from robot_backends import MockBackend, MuJoCoBackend
 from robot_skills import (
     GripperState,

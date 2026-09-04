@@ -14,8 +14,8 @@ step cannot perturb them); the robot comes up at ``start_location`` with column
 at ``start_column_height`` and empty/open grippers.
 """
 
-import pytest
 from mock_backend_fixtures import assert_pose_close
+import pytest
 from robot_backends import MockBackend, MuJoCoBackend, RobotBackend
 from robot_skills import (
     FailureCode,
@@ -25,7 +25,6 @@ from robot_skills import (
     Pose,
     Side,
     SIDE_ORDER,
-    Skill,
     SkillResult,
     SkillStatus,
 )
@@ -66,7 +65,7 @@ def _gripper_shape(observation: Observation) -> dict[Side, tuple]:
 
 
 def test_mujoco_backend_is_a_robot_backend(backend):
-    """MuJoCoBackend satisfies the RobotBackend seam (D9/Mock parity)."""
+    """The MuJoCo backend satisfies the RobotBackend seam (D9/Mock parity)."""
     assert isinstance(backend, RobotBackend)
     assert isinstance(backend.reset(), Observation)
     assert isinstance(backend.get_observation(), Observation)
@@ -78,8 +77,8 @@ def test_observation_matches_the_seed_scene(backend, document):
     """Every reported object pose, id and map vocabulary equals the seed (R-5)."""
     observation = backend.get_observation()
 
-    by_id = dict(
-        (item.object_id, item.pose) for item in observation.objects)
+    by_id = {
+        item.object_id: item.pose for item in observation.objects}
     assert sorted(by_id) == sorted(
         item.object_id for item in document.objects), 'wrong object id set'
     for spec in document.objects:
@@ -119,7 +118,7 @@ def test_reset_returns_seed_posture(backend, document):
 
 
 def test_gripper_shape_matches_mock_reset(backend):
-    """MuJoCo grippers are structurally the same as a fresh Mock's (parity)."""
+    """Gripper shape is structurally the same as a fresh Mock's (parity)."""
     mu = backend.reset()
     mock = MockBackend().reset()
 

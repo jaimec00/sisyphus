@@ -37,8 +37,8 @@ Or drive one in-process, as the tests do::
 from robot_mcp.schemas import no_arguments_schema, schema_for_type, skill_schema
 from robot_mcp.server import (
     BACKEND_ENV,
-    BACKENDS,
     backend_from_options,
+    BACKENDS,
     build_server,
     default_safety_layer,
     main,
