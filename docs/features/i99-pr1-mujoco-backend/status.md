@@ -17,7 +17,7 @@ created from `origin/main` 9c4ef6c. Manager: worktree manager (OpenClaw subagent
    objects yet. (Recording the issue's ruling, which is binding.)
 4. The seam (`RobotBackend.reset/get_observation/execute`), the wire schema
    (`Observation`/`SkillResult`, `SCHEMA_VERSION`), and the failure vocabulary are
-   unchanged. `Observations must be same shape as Mock.`
+   unchanged. Observation must be same shape as Mock.
 
 ## Scope for this PR (from issue #99 body — authoritative)
 
@@ -44,60 +44,88 @@ Out of scope (later PRs 2–5): execute() skills, IK, grasp/place, parity/brain 
 - NOTE: full `pixi run test` rewrites `scripts/test_baseline.json` UP on green; commit
   the bump as part of the PR.
 
-## Manager rulings (recorded before dispatch)
+## Model facts (probed on mujoco 3.12.0, olivia — 2026-09-04)
 
-- **R-1 (open, discovery) — scene insertion mechanism.** A compiled
-  `mujoco.MjModel` cannot have bodies appended post-compile. The backend must place
-  world objects into the sim BEFORE compile. Discovery must determine the least
-  invasive path to give MuJoCo a robot+scene MjModel that still satisfies
-  "load ~robot_description~'s MJCF through load_mjcf_model()",
-  e.g. leave `load_mjcf_model()` unchanged and add a scene-aware compile path that
-  reuses the existing merge helpers + splices body/geom blocks for world objects,
-  OR give the backend an XML-level entry point that mirrors `load_mjcf_model()`.
-  Resolver records the concrete mechanism in status.md before/in implementation.md.
-  Constraint: don't modify `load_mjcf_model()`'s public contract; keep robot-body
-  derivation shared/DNY rebuild.
-- **R-2 — frame/coordinate mapping.** World JSON `Pose`s are in the apartment (map)
-  frame; MJCF is robot-centric with its own frame. The observation must report world
-  (map) coordinates so it matches the seed world within tolerance and matches Mock's
-  `Observation` shape. If MJCF world origin == seed `start_location` (charger at
-  (0,0,0)) with the same +z-up axes and floor, coordinates overlay directly; verify by
-  probe, else record the transform. Expect: use MuJoCo free joints + `mjData.qpos` for
-  objects/robot. Object `z` coordinates are above their support (e.g. counter at
-  z≈0.45, mug on it at z≈0.9); if floor/furniture is not actually modelled with
-  height, settle on the observation-matches-seed contract per R-5 and record.
-- **R-3 — `robot_mcp --backend` seam.** Add `--backend {mock,mujoco}` flag (env
-  fallback mirroring existing `--world-state`/`--world-seed` style) parsed in
-  `parse_args`; thread through `backend_from_options` and `main`. Default remains the
-  current Mock behaviour. `MuJoCoBackend` needs no live state file for the in-memory
-  seed case (matches default_world), matching the "serve same wire schema as Mock"
-  test. Follow whichever existing convention (flag/env env var names) the code already
-  uses for other flags.
-- **R-4 — D30 gate.** The new `robot_backends` module and any new `robot_mcp` code must
-  keep a clean static import of `robot_backends`/`robot_mcp` free of ROS packages. The
-  `mujoco` import must not transitively pull `rclpy`. Implementer verifies
-  `test_no_ros_runtime` and the static scan.
-- **R-5 — object height/floor contract.** The seed objects sit at absolute z in world
-  space (some above furniture). The acceptance test asserts observation object/location
-  poses match the seed within tolerance. Record how the mjData-derived pose maps to the
-  seed coordinate/pose (identity IF the MJCF world frame is the map frame with the
-  floor at z=0 and free-join objects placed at their JSON pose). Where the seed has no
-  explicit floor/furniture height offset captured in the MJCF, prefer an identity
-  mapping so mjData qpos == JSON pose and document any deviation in implementation.md.
-- **R-6 — robot proprioception.** `RobotState` needs pose/column_height/grippers.
-  PR1 does not command skills; read robot base pose from its joint/body in mjData,
-  column height from the prismatic joint, grippers/held_object_id empty (no skills).
-  Keep the `Observation` field population identical in kind to Mock (empty grippers at
-  reset, both grippers present per Side order).
+- Derived MJCF has a **fixed (fused-static) base**: no planar/free robot base joint.
+  Kinematic root is the world body; 3 omniwheel hinges (velocity), `column_lift`
+  prismatic (z, range ~[0,1.2], position actuator), left/right arm joints + grippers
+  and gripper mirrors (position), all hanging off `column_top`. `nq/nv=18`, `nu=18`.
+- `column_top` body origin is at z=0.195; `column_lift` changes it from there.
+- Robot base (fused) sits at world origin = map origin = seed `start_location`
+  `charger` (0,0,0). So frame overlay is identity (see R-2).
+- Wheel/arm/gripper actuators: wheels `<velocity>`, column/arms/gripper `<position
+  kp>` (per overlay.xml). At reset, position actuators default ctrl 0.
 
-## Open questions to be resolved by worker (record resolution back here + implementation.md)
+## Manager rulings (final — recorded before dispatch)
 
-- Q-1: exact MuJoCo scene-build entry point that reuses robot-body derivation (R-1).
-- Q-2: axis/frame verification between MJCF and world coords (R-2).
-- Q-3: how `--backend mujoco` behaves when a `--world-state` file is or is not given
-  (does MuJoCo need a store? It must be able to run in-memory like the Mock default).
+- **R-1 → R-1-resolved (FIXED): scene objects = static (welded) bodies.** A compiled
+  `MjModel` cannot gain bodies post-compile, so world objects are spliced into the
+  MJCF/assembly BEFORE `load_mjcf_model()` compiles (the scene-aware build must reuse
+  the PR7 merge machinery in `robot_description.mjcf_model` that produces the merged
+  XML/`MjSpec`, extending it with body/geom blocks for the JSON world objects). Each
+  scene object becomes a **static body with NO joint** (a `<body pos=...>` under the
+  world, holding its primitive geom(s)) at its seed frame → poses are exact and
+  invariant across any number of `mj_step` calls (no gravity collapse, deterministic,
+  matches seed acceptance trivially). Graspable/furniture distinction still recorded
+  via `graspable`; PR5 (grasp/place) replaces these with free joints resting on a
+  modelled floor/surface — out of scope here. Document this explicitly in
+  implementation.md so PR5 knows the seam.
+- **R-2 (FIXED) — identity frame.** MuJoCo world frame == apartment map frame == seed
+  `start_location` `charger` at origin (0,0,0). MJCF +z == map +z. The fused robot
+  base at origin IS the robot standing at the charger. Object seed `Pose.position`
+  (x,y,z) maps directly onto the MJCF body `pos` (x,y,z). Locations = the four map
+  frames (all `z≈0`). No extra transform. Observation `Pose` reports these MJCF/MAP
+  coordinates directly.
+- **R-3 (FIXED) — robot column height on reset.** Seed `start_column_height: 0.3`.
+  On `reset()` set `d.qpos[column_lift_slot] = 0.3` AND set the matching position
+  actuator `d.ctrl` so the servo **holds** 0.3 across `mj_step` (position actuators
+  drive toward their ctrl; a ctrl of 0 would drag the column back to 0). Arms/wheels
+  at home: qpos 0 / velocity ctrl 0. Report `column_height` read from the column qpos
+  slot. If the probe shows the column cannot be servoed to a stable 0.3 without a
+  controller fight, record it and use the closest stable posture, but EXPECT 0.3 to
+  hold (position actuator + matching ctrl).
+- **R-4 (carried) — D30 gate.** New `robot_backends.mujoco_backend` and any new
+  `robot_mcp` code must keep clean static import free of ROS packages (`mujoco` is
+  fine; `rclpy`/`ament_index_python`/`xacro` are NOT). Verify `test_no_ros_runtime`.
+- **R-5 (FIXED) — object/location pose report.** Read object positions from mjData
+  body frames (xpos/xquat → Pose), identity-mapped to map coords so qpos/xpos == JSON
+  pose. Objects sorted by object_id; known_locations sorted. Empty grippers
+  (open, not grasped, no held object). Robot `RobotState.location` = `"charger"`
+  (the start location; base is fixed so it never leaves).
+- **R-6 (carried) — robot proprioception.** Report base pose (identity, at origin),
+  column_height (R-3), grippers present for both `SIDE_ORDER` sides, all empty/open.
+  Robot `pose` = start-location frame identity.
+- **R-7 — `robot_mcp --backend`.** Add `--backend {mock,mujoco}` (argparse) with env
+  fallback env var following the existing `--world-state`/`--world-seed` convention;
+  thread through `backend_from_options` and `main`. `mock` (and no flag at all) =
+  today's Mock behaviour (build_server-injected default). `mujoco` = construct a
+  `MuJoCoBackend` over the shipped seed world. Ruling: a `--backend mujoco` server may
+  run with no `--world-state` (in-memory seed, matching the "serve same wire schema as
+  Mock" test); it should also accept a caller-supplied seed via the existing
+  `--world-seed` when one matters. Implementer keeps wiring minimal & consistent with
+  the existing D23 helpers.
+
+## Open questions to be resolved by implementer (record resolution back here + implementation.md)
+
+- Q-1: exact scene-aware assembly entry point (which function in
+  `robot_description.mjcf_model` to extend/reuse so robot body derivation is not
+  duplicated and `load_mjcf_model()`'s public contract is unchanged). R-1 says splice
+  before compile; details of how to reuse the merge helpers are implementer's probe.
+- Q-2: column/arm home + actuator ctrl values that keep posture stable over
+  `mj_step` (R-3) — verify with a probe step.
+- Q-3: gripper-pose report source (body frame of each gripper link) + exact home joint
+  config, and what to report for `GripperState` at reset (OPEN vs Mock's reset state —
+  mirror MockBackend's reset gripper state exactly).
+- Q-4 (R-1 carryover): whether scene bodies get a shared default/contact block or a
+  separate inert default; keep contact OFF or non-interfering for PR1 scene objects so
+  a step can't perturb them, consistent with them being static.
 
 ## Role log
 
-(Worktree manager records dispatch/red-team/test events and findings here as the loop
-runs. Red-team findings labelled VERIFIED/UNVERIFIED.)
+- 2026-09-04: worktree created from origin/main 9c4ef6c; pixi env + install-openclaw +
+  build done. Rulings R-1..R-6 recorded. First implementer dispatch
+  (session pr1-implementer #1) spent its entire budget on code reading + framework
+  understanding and hit its context/output ceiling BEFORE writing any code (no commits,
+  no files). Its useful validated discovery (model facts above) is preserved; ruling,
+  not re-derivation, is the fix. Manager finalized the mechanism (R-1/FIXED..R-7) and
+  is re-dispatching a sharpen-scoped implementer with these decisions pre-baked.
