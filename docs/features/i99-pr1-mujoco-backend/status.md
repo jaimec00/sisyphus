@@ -129,3 +129,58 @@ Out of scope (later PRs 2–5): execute() skills, IK, grasp/place, parity/brain 
   no files). Its useful validated discovery (model facts above) is preserved; ruling,
   not re-derivation, is the fix. Manager finalized the mechanism (R-1/FIXED..R-7) and
   is re-dispatching a sharpen-scoped implementer with these decisions pre-baked.
+
+## Open-question resolutions (implementer #2 — session pr1-implementer2, 2026-09-04)
+
+- **Q-1 — scene-aware assembly seam.** Entry point is a new public function in
+  `robot_description/mjcf_model.py`: `load_mjcf_model_with_scene(world_bodies_xml)`,
+  which reuses the single PR7 assembly `_build_merged_mjcf(pkg, world_bodies='')`.
+  The robot derivation is never duplicated: `_build_merged_mjcf` produces the
+  merged MJCF (URDF import + overlay splice) as before, then the new
+  `_insert_world_bodies()` splices the caller's static `<body>` blocks in as the
+  LAST sibling inside the derived MJCF's single `<worldbody>...</worldbody>`
+  (before its close). `load_mjcf_model()` now delegates to
+  `load_mjcf_model_with_scene('')` and is byte-identical (public contract and
+  behavior unchanged); `write_mjcf_model()` still calls
+  `_build_merged_mjcf(_package_dir())` (no scene). The geom/label rendering lives
+  in `robot_backends/mujoco_backend.py` (`_world_bodies_xml`), so
+  `robot_description` stays a purely generic world-body splice and never learns
+  mug/counter specifics. Verified by probe: compile + 200 `mj_step`s keep object
+  xpos bit-identical to seed.
+- **Q-2 — column/arm home that holds.** Verified against mujoco 3.12.0: wheels are
+  velocity actuators (ctrl 0 → no motion), `column_lift` is a position actuator.
+  On reset, set `qpos[column]==start_column_height` (0.3) AND `ctrl[column]==0.3`
+  → the kp=100 servo holds ~0.3 (0.29989 after 200 steps). Arms are position
+  actuators with ctrl 0 = home target; under gravity their joints drift a little
+  over many steps (shoulder_lift ~-0.028 rad over 200 steps) because kp=100 is a
+  weak spring vs. gravity torque. That is fine for PR1 (scene is static; no arm
+  skills; column [the R-3 focus] holds). PR2 owns real arm control — do not tune
+  gains here.
+- **Q-3 — gripper-pose source & reset report.** Report `GripperState.OPEN`,
+  `held_object_id=None`, `grasped=False` on reset, mirroring Mock's reset. The
+  reported `pose` is the world-frame midpoint of the two open jaws
+  (`{side}_gripper_upper_jaw_link` / `{side}_gripper_lower_jaw_link`) read from
+  `mjData.xpos`, with the upper jaw's `xquat` (converted wxyz→xyzw) as
+  orientation. There is no single palm body (the URDF gripper base is folded into
+  the wrist by fusestatic), so the symmetric jaw midpoint is the honest
+  grasp-centre stand-in; PR2 arm kinematics will report true commanded poses. The
+  pose is a *sim* value, so it legitimately differs from the Mock's shoulder+offset
+  model (parity is about shape/fields, not pose equality).
+- **Q-4 — scene contact.** Each scene geom carries `contype="0" conaffinity="0"`,
+  making it collision-inert. Together with the static weld this means a step can
+  never perturb an object via contact or dynamics; objects stay at seed across any
+  number of `mj_step`s. Objects are metres from the robot, so no robot-contact
+  interference either. No separate default class needed.
+
+## Role log (implementer #2)
+
+- 2026-09-04: Implementation committed (see `git log origin/main..HEAD`):
+  (1) `mjcf_model.py` scene seam + `load_mjcf_model_with_scene`;
+  (2) `robot_backends/mujoco_backend.py` `MuJoCoBackend(RobotBackend)`;
+  (3) `robot_mcp` `--backend mock|mujoco` (+`$ROBOT_BACKEND`) wiring;
+  (4) tests `robot_backends/test/test_mujoco_backend.py` + `robot_mcp/test/
+  test_mcp_mujoco_parity.py`; (5) ament-lint fixes. Scoped authoritative run:
+  `pixi run -- python scripts/check_test_integrity.py --packages-select
+  robot_backends robot_mcp` → 175 tests, 0 failures, AUDIT PASSED;
+  `test_no_ros_runtime` green in both packages. Baseline ratcheted 77→84 /
+  82→85. Full `pixi run test` (whole workspace, test-runner role) still pending.
