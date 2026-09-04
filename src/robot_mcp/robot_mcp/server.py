@@ -51,7 +51,7 @@ import anyio
 from mcp.server.lowlevel import Server
 from mcp.server.stdio import stdio_server
 import mcp_types as types
-from robot_backends import MockBackend, RobotBackend
+from robot_backends import MockBackend, MuJoCoBackend, RobotBackend
 from robot_mcp.tools import OBSERVATION_TOOL, RESET_TOOL, TOOL_NAMES, TOOLS
 from robot_safety import (
     KeepOutBoxGuard,
@@ -70,7 +70,7 @@ from robot_skills import (
     SKILL_TYPES,
     SkillResult,
 )
-from robot_world import FileWorldStore
+from robot_world import FileWorldStore, read_document
 
 __all__ = [
     'backend_from_options',
@@ -80,6 +80,7 @@ __all__ = [
     'parse_args',
     'run_stdio',
     'SkillToolRouter',
+    'BACKEND_ENV',
     'WORLD_SEED_ENV',
     'WORLD_STATE_ENV',
 ]
@@ -87,6 +88,13 @@ __all__ = [
 #: Environment variables the world-state flags fall back to.
 WORLD_STATE_ENV = 'ROBOT_WORLD_STATE'
 WORLD_SEED_ENV = 'ROBOT_WORLD_SEED'
+
+#: Environment variable ``--backend`` falls back to (R-7).
+BACKEND_ENV = 'ROBOT_BACKEND'
+
+#: The backends the server can host under the flag. ``mock`` (and no flag at
+#: all) is the historical behaviour; ``mujoco`` drives the MuJoCo sim (D34).
+BACKENDS = ('mock', 'mujoco')
 
 #: Server identity reported to the client during initialization.
 SERVER_NAME = 'robot_mcp'
@@ -354,12 +362,30 @@ async def run_stdio(
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     """Parse the server's command line, falling back to the environment.
 
-    A flag beats its environment variable, which beats "no world file at all".
-    ``--world-seed`` on its own is refused: it would silently do nothing.
+    A flag beats its environment variable, which beats the default. The
+    historical default is the in-memory Mock (no world file): ``--backend
+    mock`` (or no flag) keeps that. ``--backend mujoco`` (or
+    ``$ROBOT_BACKEND=mujoco``, R-7) drives a :class:`MuJoCoBackend` -- the
+    scene is compiled in from ``--world-seed`` (or the shipped apartment),
+    needs no live-state file, and nothing persists (D34, in-process sim).
+
+    ``--world-seed`` on its own is refused *for the Mock* -- where it would
+    silently do nothing without a live-state file to seed -- but is meaningful
+    on its own (and therefore allowed) for ``mujoco``, where the seed IS the
+    scene.
     """
     parser = argparse.ArgumentParser(
         prog='robot_mcp',
         description='Serve the robot skill API as MCP tools over stdio.',
+    )
+    parser.add_argument(
+        '--backend',
+        choices=BACKENDS,
+        default=os.environ.get(BACKEND_ENV) or None,
+        help=(
+            f'Backend to host: "mock" (default, the historical in-memory Mock) '
+            f'or "mujoco" (the in-process MuJoCo sim, D34). Reads '
+            f'${BACKEND_ENV} if the flag is absent.'),
     )
     parser.add_argument(
         '--world-state',
@@ -368,7 +394,8 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         help=(
             'JSON file holding the live world state, created from the seed if '
             f'absent. Without it (or ${WORLD_STATE_ENV}) the world is in '
-            'memory and dies with the process.'),
+            'memory and dies with the process. Not used with --backend mujoco: '
+            'the in-process sim keeps no live-state file.'),
     )
     parser.add_argument(
         '--world-seed',
@@ -377,28 +404,59 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         help=(
             'JSON file holding the read-only seed scene that reset() restores '
             f'(or ${WORLD_SEED_ENV}); defaults to the scene shipped with '
-            'robot_world. Requires --world-state.'),
+            'robot_world. For the Mock it requires --world-state; for muJoCo '
+            'it is the scene the backend compiles.'),
     )
     args = parser.parse_args(argv)
-    if args.world_seed is not None and args.world_state is None:
-        parser.error(
-            '--world-seed needs --world-state: with no live-state file there is '
-            'nothing for a seed to seed')
+    _validate_options(args, parser)
     return args
+
+
+def _validate_options(args: argparse.Namespace, parser: argparse.ArgumentParser) -> None:
+    """Refuse option combinations that would silently do nothing."""
+    if args.world_seed is not None and args.world_state is None:
+        if args.backend in (None, 'mock'):
+            parser.error(
+                '--world-seed needs --world-state: with no live-state file '
+                '(and the default/mock backend) there is nothing for a seed '
+                'to seed. With --backend mujoco a seed alone seeds the scene.')
+        # For --backend mujoco a seed alone is the scene, so it is allowed.
+        return
+    if args.backend == 'mujoco' and args.world_state is not None:
+        parser.error(
+            '--world-state is not supported with --backend mujoco: the '
+            'in-process MuJoCo sim keeps no live-state file. Pass the scene '
+            'with --world-seed, or omit both to use the shipped apartment.')
 
 
 def backend_from_options(
     world_state: str | None = None,
     world_seed: str | None = None,
+    backend: str | None = None,
 ) -> RobotBackend | None:
-    """Return the backend those options ask for, or ``None`` for the default.
+    """Return the backend those options ask for, or ``None`` for the Mock default.
 
-    ``None`` means "let :func:`build_server` make its own in-memory Mock" --
-    which is exactly today's behaviour, and stays the default deliberately:
-    a server that persisted by default would write into whatever directory it
-    happened to start in and would resume a previous run's world without
-    anyone asking it to (D23).
+    ``backend`` is one of :data:`BACKENDS` (``None`` = the Mock default).
+
+    * ``None``/``mock`` -- today's behaviour: ``None`` means "let
+      :func:`build_server` make its own in-memory Mock", and a ``world_state``
+      makes a file-backed Mock. Returns ``None`` only in this case, so the
+      caller's default path (no options at all) stays the historical one.
+    * ``mujoco`` -- a :class:`MuJoCoBackend` compiled from ``world_seed`` (a
+      world document file) or the shipped apartment when no seed is given. It
+      never returns ``None`` and never writes a file (D34).
+
+    ``backend`` deliberately does not default off the environment here: env
+    fallback is :func:`parse_args`'s job, and this function takes already-
+    resolved options so tests can call it directly.
     """
+    if backend == 'mujoco':
+        if world_seed is not None:
+            document = read_document(world_seed)
+        else:
+            document = None
+        return MuJoCoBackend(document=document)
+    # Mock (flag absent, or literal "mock"): the historical behaviour.
     if world_state is None:
         return None
     return MockBackend(store=FileWorldStore(world_state, seed_path=world_seed))
@@ -407,4 +465,6 @@ def backend_from_options(
 def main(argv: Sequence[str] | None = None) -> None:
     """Console-script entry point: run the stdio server."""
     args = parse_args(argv)
-    anyio.run(run_stdio, backend_from_options(args.world_state, args.world_seed))
+    backend = backend_from_options(
+        args.world_state, args.world_seed, backend=args.backend)
+    anyio.run(run_stdio, backend)
