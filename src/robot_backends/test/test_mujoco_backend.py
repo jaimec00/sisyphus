@@ -38,6 +38,11 @@ _POSE_TOLERANCE = 1e-6
 #: How many real dynamics timesteps the acceptance step runs.
 _STEPS = 200
 
+#: Column-hold tolerance (F11 regression): across _STEPS real
+#: dynamics steps the position-actuator servo must keep the
+#: column at its seed height (a body would otherwise slump).
+_COLUMN_HOLD_TOLERANCE = 0.01
+
 
 @pytest.fixture
 def backend() -> MuJoCoBackend:
@@ -115,6 +120,29 @@ def test_reset_returns_seed_posture(backend, document):
         assert state is GripperState.OPEN
         assert held is None
         assert grasped is False
+
+
+def test_column_servo_holds_seed_height_across_steps(backend, document):
+    """F11 regression: reset leaves column ctrl at seed AND it holds over steps.
+
+    The actuator home sweep must exclude the column position actuator -- if
+    it did not, reset would first command ``data.ctrl[column] = height`` and
+    then zero it, leaving the servo with no target so the column slumps under
+    gravity once stepped. Guard the servo target right after reset() and that
+    the reported column height holds over a long real-dynamics run.
+    """
+    backend.reset()
+
+    # The position actuator must still be commanded to the seed height right
+    # after reset -- the home sweep must not have zeroed it (F11).
+    assert backend._data.ctrl[backend._column_ctrl] == pytest.approx(
+        document.start_column_height)
+
+    # Drive real dynamics; the column must not collapse once stepped.
+    backend.step(_STEPS)
+    hold = backend.get_observation().robot.column_height
+    assert hold == pytest.approx(
+        document.start_column_height, abs=_COLUMN_HOLD_TOLERANCE)
 
 
 def test_gripper_shape_matches_mock_reset(backend):

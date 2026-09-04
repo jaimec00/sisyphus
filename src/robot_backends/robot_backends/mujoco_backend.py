@@ -186,7 +186,8 @@ class MuJoCoBackend(RobotBackend):
         # Every non-wheel joint is returned to joint zero (its position
         # actuator's servo target) on reset.
         self._home_joints = self._joint_ids_excluding(_WHEEL_JOINTS + (_COLUMN_JOINT,))
-        self._home_position_actuators = self._actuator_ids_excluding(_WHEEL_JOINTS)
+        self._home_position_actuators = self._actuator_ids_excluding(
+            _WHEEL_JOINTS + (_COLUMN_JOINT,))
 
         # World object -> body id table for observation reads.
         self._object_body: dict[str, int] = {}

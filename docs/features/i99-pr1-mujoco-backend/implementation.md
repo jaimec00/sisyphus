@@ -86,7 +86,10 @@ bodies because `Observation` reports location *names* (`robot.location`,
 - `column_lift` → qpos = `start_column_height` (0.3) **and** its position
   actuator ctrl = 0.3, so the servo holds it across steps (Q-2: ~0.29989 after
   200 steps);
-- arms + grippers (+ mirrors) → joint zero with position-actuator ctrl 0;
+- arms + grippers (+ mirrors) → joint zero with the position-actuator ctrl 0 sweep
+  that is scoped to NON-wheel, NON-column actuators so it must never overwrite
+  the column's 0.3 ctrl above (column is the one home joint whose actuator keeps
+  a non-zero target — red-team F11);
 - `mj_forward`, then observe.
 
 `get_observation()` calls `mj_forward` first, then reports:

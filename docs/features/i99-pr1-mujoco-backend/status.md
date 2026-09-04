@@ -184,3 +184,28 @@ Out of scope (later PRs 2–5): execute() skills, IK, grasp/place, parity/brain 
   robot_backends robot_mcp` → 175 tests, 0 failures, AUDIT PASSED;
   `test_no_ros_runtime` green in both packages. Baseline ratcheted 77→84 /
   82→85. Full `pixi run test` (whole workspace, test-runner role) still pending.
+
+## Role log (red-team F11 fix — subagent pr1-fix, 2026-09-04)
+
+- **F11 (BLOCK, VERIFIED by red-team) FIXED.** In
+  `robot_backends/robot_backends/mujoco_backend.py` the reset home sweep
+  `for aid in self._home_position_actuators: data.ctrl[aid] = 0.0` was zeroing the
+  column position actuator, because `_home_position_actuators` excluded only the
+  wheels (`_actuator_ids_excluding(_WHEEL_JOINTS)`) while `_home_joints` correctly
+  also excluded the column. So `reset()` commanded the servo to the seed height and
+  then immediately zeroed it → after reset `data.ctrl[column] == 0.0`, defeating the
+  R-3 / R-1 "hold at seed height" mechanism (column had no target and would slump
+  under gravity once stepped).
+  Fix (line 189): `_home_position_actuators = self._actuator_ids_excluding(
+  _WHEEL_JOINTS + (_COLUMN_JOINT,))` — mirrors `_home_joints`. Minimal + symmetric.
+- **Regression test added** (`robot_backends/test/test_mujoco_backend.py`):
+  `test_column_servo_holds_seed_height_across_steps` — asserts
+  `backend._data.ctrl[column_ctrl] == start_column_height` right after `reset()`, and
+  that after `step(200)` the reported column height holds within 0.01 of the seed.
+  Direct probe: after reset ctrl == 0.3 == start; after 200 steps reported height
+  0.29989 (|Δ|=1.1e-4), ctrl still 0.3 → column does not collapse.
+- Scoped authoritative run: `scripts/check_test_integrity.py --packages-select
+  robot_backends robot_mcp` → **176 tests, 0 errors, 0 failures, AUDIT PASSED**;
+  `test_no_ros_runtime` green in both packages. Baseline ratcheted
+  robot_backends 84 → 85 (`scripts/test_baseline.json`). NOT yet run: whole-workspace
+  `pixi run test` (that is the test-runner/manager role, out of this fix's scope).
