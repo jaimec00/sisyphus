@@ -56,7 +56,7 @@ from typing import Dict
 import mujoco
 import xacro
 
-__all__ = ['load_mjcf_model', 'write_mjcf_model']
+__all__ = ['load_mjcf_model', 'load_mjcf_model_with_scene', 'write_mjcf_model']
 
 #: Top-level entry point the derivation expands (same as robot_model.py).
 _TOP_LEVEL = 'robot.urdf.xacro'
@@ -162,13 +162,50 @@ def _splice_overlay(base_mjcf: str, root_blocks: str, head_camera_block: str,
     return merged
 
 
-def _build_merged_mjcf(pkg: Path) -> str:
+def _insert_world_bodies(merged: str, world_bodies: str) -> str:
+    """Splice ``world_bodies`` into ``merged`` as new siblings of the robot trunk.
+
+    The robot's tree (``fusestatic`` folds the whole static trunk into the
+    world body) occupies the single ``<worldbody>...</worldbody>``; the overlay
+    blocks (contact defaults, actuators, sensor) live *after* that element.  A
+    compiled ``MjModel`` cannot gain bodies post-compile (R-1), so PR1 scene
+    objects are added here -- as static, joint-less bodies welded to the world
+    -- by inserting them as the last sibling inside ``</worldbody>``, before it
+    closes.  That keeps them inside the world body (so they are immovable and
+    never simulated) and after every robot body (so they cannot disturb the
+    robot geometry).
+
+    ``world_bodies`` is a fragment of ``<body>...</body>`` elements at the
+    worldbody's one level of nesting; it gains one level of indentation here
+    so the merged text stays readable.  An empty fragment returns ``merged``
+    unchanged, so plain :func:`load_mjcf_model` is byte-identical whether it
+    routes through this or not.
+    """
+    if not world_bodies or not world_bodies.strip():
+        return merged
+    marker = '</worldbody>'
+    # Exactly one worldbody (the implicit one every MJCF has).
+    assert merged.count(marker) == 1, merged.count(marker)
+    insert_at = merged.rindex(marker)
+    indented = '\n'.join(
+        '  ' + line if line.strip() else line
+        for line in world_bodies.split('\n'))
+    return merged[:insert_at] + indented + '\n' + merged[insert_at:]
+
+
+def _build_merged_mjcf(pkg: Path, world_bodies: str = '') -> str:
     """Derive and return the merged MJCF text (URDF import + overlay splice).
 
     Shared by :func:`load_mjcf_model` (which compiles it) and
     :func:`write_mjcf_model` (which materializes it to a file for the
     ``mujoco_ros2_control`` sim - PR8b / issue #92). Returns the single,
     hand-authored-overlay-spliced MJCF string.
+
+    ``world_bodies`` optionally carries extra static ``<body>`` blocks that are
+    spliced into the worldbody before compilation -- the seam the scene-aware
+    MuJoCo backend (PR1, issue #99) uses to place immovable world objects (see
+    ``_insert_world_bodies``).  The default '' means robot-only, so callers of
+    the bare merge (the ``write_mjcf_model`` PR8b path) are unaffected.
     """
     assets = _collect_assets(pkg / 'meshes')
     urdf_xml = _expand_urdf(pkg / 'urdf')
@@ -180,8 +217,9 @@ def _build_merged_mjcf(pkg: Path) -> str:
         base_mjcf = base_mjcf_path.read_text()
 
     base_mjcf = _redirect_meshes(base_mjcf, pkg / 'meshes')
-    return _splice_overlay(base_mjcf, root_blocks, head_camera_block,
-                           _HEAD_CAMERA_PARENT_BODY)
+    merged = _splice_overlay(base_mjcf, root_blocks, head_camera_block,
+                             _HEAD_CAMERA_PARENT_BODY)
+    return _insert_world_bodies(merged, world_bodies)
 
 
 def load_mjcf_model() -> mujoco.MjModel:
@@ -190,7 +228,22 @@ def load_mjcf_model() -> mujoco.MjModel:
     Returns a compiled :class:`mujoco.MjModel`. Throwaway files (staged URDF,
     derived base MJCF) live in a temp dir and are not committed.
     """
-    merged = _build_merged_mjcf(_package_dir())
+    return load_mjcf_model_with_scene('')
+
+
+def load_mjcf_model_with_scene(world_bodies: str) -> mujoco.MjModel:
+    """Compile the robot MJCF with ``world_bodies`` welded into the world body.
+
+    The scene-aware twin of :func:`load_mjcf_model`: identical except that the
+    static ``<body>`` blocks in ``world_bodies`` are spliced into the worldbody
+    *before* the merged text is compiled (see :func:`_insert_world_bodies`), so
+    the returned :class:`mujoco.MjModel` already carries the scene objects as
+    immovable bodies.  Passing '' compiles the bare robot and is equivalent to
+    :func:`load_mjcf_model`.  This is the seam PR1 (issue #99) uses; robot
+    derivation itself is never duplicated because both compile the same
+    ``_build_merged_mjcf`` output.
+    """
+    merged = _build_merged_mjcf(_package_dir(), world_bodies=world_bodies)
     spec = mujoco.MjSpec.from_string(merged)
     return spec.compile()
 

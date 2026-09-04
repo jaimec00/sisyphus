@@ -34,10 +34,12 @@ from robot_backends.mock_world import (
     world_from_document,
     world_to_document,
 )
+from robot_backends.mujoco_backend import MuJoCoBackend
 
 __all__ = [
     'default_world',
     'MockBackend',
+    'MuJoCoBackend',
     'MockWorld',
     'ObjectSpec',
     'RobotBackend',

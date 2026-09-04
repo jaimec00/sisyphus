@@ -36,7 +36,9 @@ Or drive one in-process, as the tests do::
 
 from robot_mcp.schemas import no_arguments_schema, schema_for_type, skill_schema
 from robot_mcp.server import (
+    BACKEND_ENV,
     backend_from_options,
+    BACKENDS,
     build_server,
     default_safety_layer,
     main,
@@ -63,6 +65,8 @@ __all__ = [
     'SkillToolRouter',
     'TOOL_NAMES',
     'TOOLS',
+    'BACKEND_ENV',
+    'BACKENDS',
     'WORLD_SEED_ENV',
     'WORLD_STATE_ENV',
 ]
