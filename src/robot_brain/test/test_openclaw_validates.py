@@ -227,12 +227,15 @@ def test_the_validator_rejects_a_broken_fragment(mutation, tmp_path):
 def test_validating_writes_only_where_the_test_told_it_to(tmp_path):
     """The subprocess is hermetic, so running the suite is not a side effect.
 
-    ``openclaw`` opens a sqlite state DB on startup: at
-    ``$OPENCLAW_STATE_DIR/state/openclaw.sqlite`` when that is set, and at
-    ``$HOME/.openclaw/state/openclaw.sqlite`` when it is not (both observed).
-    If the redirection in ``validate()`` ever stopped working, this suite would
-    silently start mutating the developer's real OpenClaw install -- and the
-    validate tests would still pass, so nothing else here would notice.
+    ``config validate`` is *read-only* in the current CLI: it parses the
+    fragment and exits without creating a state DB (verified -- it writes no
+    state at all, so ``$OPENCLAW_STATE_DIR`` is not populated).  What this test
+    therefore asserts is the property that actually matters: nothing is written
+    under ``home`` outside the redirected ``state`` directory.  If the
+    redirection in ``validate()`` ever stopped working, the CLI would create
+    ``$HOME/.openclaw`` instead -- caught by the assertion below -- and the
+    whole point is that the validate tests would still pass, so nothing else
+    here would notice.
     """
     home = tmp_path / 'home'
     home.mkdir()
@@ -240,8 +243,8 @@ def test_validating_writes_only_where_the_test_told_it_to(tmp_path):
     completed = validate(shipped_fragment(), home)
 
     assert completed.returncode == 0, report(completed)
-    assert (home / 'state').is_dir(), (
-        f'state did not follow OPENCLAW_STATE_DIR: {sorted(home.iterdir())}')
+    assert set(home.iterdir()) <= {'state'}, (
+        f'CLI wrote outside OPENCLAW_STATE_DIR: {sorted(home.iterdir())}')
     assert not (home / '.openclaw').exists(), (
         'the CLI fell back to the default state location; a real $HOME would '
         'have been written to')

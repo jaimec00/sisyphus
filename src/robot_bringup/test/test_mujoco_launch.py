@@ -26,6 +26,13 @@ The one-``mj_step`` no-NaN smoke lives at the description layer
 (test_mjcf_model.test_one_mj_step_smoke_has_no_nan) and covers the hardware
 interface's own stepping; here we additionally prove the sim is live through
 the ros2_control stack.
+
+The integration smoke is *conditional*: ``mujoco_ros2_control`` (dfki-ric) is a
+source-build dependency pulled in by ``robot.repos`` (D33) and is not present in
+a tree that has not run ``vcs import src < robot.repos`` + a build.  When the
+plugin is missing the launch cannot come up, so the smoke skips with the build
+command in its reason rather than failing on a dependency the developer has not
+been asked to install yet.
 """
 import os
 import shutil
@@ -33,6 +40,8 @@ import signal
 import subprocess
 import threading
 import time
+
+import pytest
 
 # ROS imports are deferred into the tests so collection needs no ROS runtime.
 
@@ -61,6 +70,17 @@ def _require_tool(name):
 def _install_share(pkg):
     from ament_index_python.packages import get_package_share_directory
     return get_package_share_directory(pkg)
+
+
+def _have_package(pkg):
+    """Return True iff ``pkg`` is registered in the ament index."""
+    from ament_index_python.packages import PackageNotFoundError
+    from ament_index_python.packages import get_package_prefix
+    try:
+        get_package_prefix(pkg)
+    except PackageNotFoundError:
+        return False
+    return True
 
 
 def _launch_path():
@@ -201,6 +221,11 @@ def test_joint_command_moves_sim_state():
     topic; and asserts the joint position changes in the sim. This is the
     PR8b acceptance criterion exercised through the shipped artifact.
     """
+    if not _have_package('mujoco_ros2_control'):
+        pytest.skip(
+            'mujoco_ros2_control (dfki-ric, source-build via robot.repos, D33) '
+            'is not installed; the full-sim bringup smoke needs it live. '
+            'Build it with: `vcs import src < robot.repos && pixi run build`.')
     import rclpy
     from controller_manager_msgs.srv import ListControllers
     from rclpy.node import Node
