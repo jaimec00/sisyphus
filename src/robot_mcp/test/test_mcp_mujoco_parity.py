@@ -20,6 +20,7 @@ server swap the backend without a schema change.
 from mcp_fixtures import connected, payload
 import pytest
 from robot_backends import MockBackend, MuJoCoBackend
+from robot_safety import SafetyLimits
 from robot_skills import (
     GripperState,
     Observation,
@@ -27,6 +28,10 @@ from robot_skills import (
 )
 
 pytestmark = pytest.mark.anyio
+
+#: The column's clamped travel ceiling, from the shipped safety limits (the
+#: same source the router's safety gate clamps against).
+_COLUMN_MAX = SafetyLimits.defaults().column.max_height
 
 
 def _assert_observation_parses(wire):
@@ -53,14 +58,18 @@ async def test_mujoco_observation_is_the_mock_wire_schema():
 
 
 async def test_mujoco_result_is_the_mock_wire_schema():
-    """A MuJoCo ``execute`` refusal parses under the shared ``SkillResult`` schema."""
+    """A MuJoCo ``execute`` refusal (a still-unsupported skill) parses."""
     async with connected(MuJoCoBackend()) as client:
-        result = payload(await client.call_tool('navigate_to', {'location': 'kitchen'}))
+        result = payload(
+            await client.call_tool('grasp', {'object_id': 'mug_1'}))
 
     _assert_result_parses(result)
     assert result['status'] == 'failed'
     assert result['code'] == 'unsupported_skill'
-    assert result['skill'] == {'skill': 'navigate_to', 'location': 'kitchen'}
+    # Grasp carries an optional ``side`` that defaults to None on the round
+    # trip, so pin the discriminant + object rather than the whole dict.
+    assert result['skill']['skill'] == 'grasp'
+    assert result['skill']['object_id'] == 'mug_1'
 
 
 async def test_mujoco_agrees_with_mock_on_the_seed_guaranteed_fields():
@@ -111,3 +120,37 @@ async def test_mujoco_agrees_with_mock_on_the_seed_guaranteed_fields():
         assert ref['held_object_id'] is None
         assert our['grasped'] is False
         assert ref['grasped'] is False
+
+
+async def test_mcp_extend_column_overreach_is_clamped_not_refused():
+    """Over MCP the safety layer clamps an over-reach; the backend never sees 2.0.
+
+    Mirrors Mock's ``test_the_default_server_clamps_a_column_command_mid_run``:
+    the router's safety gate rewrites an out-of-range ``extend_column`` to the
+    travel ceiling before the backend runs, so it comes back ``ok`` (not a
+    backend ``OUT_OF_RANGE`` refusal), the executed skill height is the clamped
+    maximum, the observation reports the column genuinely at that height, and
+    the reason mentions the clamp.  An in-range height passes through with no
+    reason and lands exactly where commanded.
+    """
+    async with connected(MuJoCoBackend()) as client:
+        overreached = payload(
+            await client.call_tool('extend_column', {'height': 2.0}))
+        in_range = payload(
+            await client.call_tool('extend_column', {'height': 0.3}))
+
+    # The over-reach is clamped to the safety maximum, never refused.
+    _assert_result_parses(overreached)
+    assert overreached['status'] == 'ok'
+    assert overreached['skill'] == {
+        'skill': 'extend_column', 'height': _COLUMN_MAX}
+    assert overreached['observation']['robot']['column_height'] == pytest.approx(
+        _COLUMN_MAX)
+    assert 'clamped' in overreached['reason']
+
+    # The in-range height passes through unchanged (no informational reason).
+    _assert_result_parses(in_range)
+    assert in_range['status'] == 'ok'
+    assert in_range['skill'] == {'skill': 'extend_column', 'height': 0.3}
+    assert in_range['reason'] is None
+    assert in_range['observation']['robot']['column_height'] == pytest.approx(0.3)
