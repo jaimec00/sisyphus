@@ -75,6 +75,24 @@ _HEAD_CAMERA_END = 'PR7-HEAD-CAMERA-END'
 #: fused static frame).
 _HEAD_CAMERA_PARENT_BODY = 'column_top'
 
+#: Names for the free-jointed base the scene backend wraps the robot trunk in.
+#: The base trunk is fused into the world body by ``fusestatic`` (PR1/PR7) and
+#: so has no own joint; ``navigate_to`` (PR2) needs a way to *teleport* it, so
+#: :func:`_wrap_base_freejoint` closes the trunk in a 6-DOF free-jointed body.
+#: MuJoCo's free joint qpos is 7 floats ``[x, y, z, qw, qx, qy, qz]`` (6 DOF):
+#: it adds 7 to ``nq`` and 6 to ``nv`` (probed against mujoco 3.12).
+_BASE_FREEJOINT_BODY = 'base_link'
+_BASE_FREEJOINT_NAME = 'base_free'
+
+#: Mass (kg) of the wrapped ``base_link`` body, from ``base.xacro``'s
+#: ``chassis_mass``= 6.0.  A free-jointed body MuJoCo will *move* must carry a
+#: mass/inertia above ``mjMINVAL`` or the compile is rejected; this is the only
+#: reason the inertial exists (navigate_to is teleport-only in PR2, R4/R6), so
+#: the exact value only needs to be positive-definite and > ``mjMINVAL``.  The
+#: stand-in diaginertia below is the ruling's suggested stable value.
+_BASE_MASS = 6.0
+_BASE_DIAGINERTIA = '0.1 0.1 0.1'
+
 
 def _package_dir() -> Path:
     """Return the directory holding ``urdf/``, ``meshes/`` and ``mjcf/``."""
@@ -193,7 +211,54 @@ def _insert_world_bodies(merged: str, world_bodies: str) -> str:
     return merged[:insert_at] + indented + '\n' + merged[insert_at:]
 
 
-def _build_merged_mjcf(pkg: Path, world_bodies: str = '') -> str:
+def _wrap_base_freejoint(merged: str) -> str:
+    """Close the robot trunk in a free-jointed ``base_link`` body (navigate seam).
+
+    The robot's derived MJCF has no base joint: ``fusestatic`` folds the static
+    trunk (chassis ``<geom>`` pair + the movable wheels/column arms) into the
+    world body, so the base is welded to the origin and cannot move -- which is
+    fine for PR1 (scene loader, no motion) but leaves the MuJoCo backend unable
+    to execute ``navigate_to``.
+
+    ``navigate_to`` needs to *teleport* the base (PR2, issue #101).  MuJoCo has
+    no joint-independent body move, so this wraps the ENTIRE worldbody content
+    (everything between ``<worldbody>`` and ``</worldbody>`` -- the robot's
+    fused trunk, i.e. the top-level ``<geom>`` pair + the wheel/column bodies)
+    in a single 6-DOF free-jointed ``<body name="base_link">``.  Driving that
+    free joint's qpos then moves the whole kinematic subtree as one unit, which
+    is exactly a mobile base teleport.  ``world_bodies`` scene objects are
+    spliced *after* this wrap (see :func:`_build_merged_mjcf`), so they stay
+    welded to the world rather than riding on the base (R-1).
+
+    The wrapped body carries an :class:`inertial` (mass ``_BASE_MASS``,
+    ``_BASE_DIAGINERTIA``) because MuJoCo rejects a free-jointed body whose mass
+    is below ``mjMINVAL``.  PR2 only ever *teleports* it (R3), so the values are
+    a stable stand-in, not a measured chassis inertia (R4/R6).  Exactly one
+    ``<worldbody>`` is expected (the implicit one every MJCF has).
+    """
+    open_tag = '<worldbody>'
+    close_tag = '</worldbody>'
+    # Exactly one worldbody (the implicit one every MJCF has).
+    assert merged.count(close_tag) == 1, merged.count(close_tag)
+    oi = merged.index(open_tag)
+    ci = merged.index(close_tag, oi)
+    inner_block = merged[oi + len(open_tag):ci]
+    inner_block = ''.join(
+        ('  ' + line if line.strip() else line) + '\n'
+        for line in inner_block.split('\n'))
+    wrapped = (
+        f'<body name="{_BASE_FREEJOINT_BODY}" pos="0 0 0">\n'
+        f'  <freejoint name="{_BASE_FREEJOINT_NAME}"/>\n'
+        f'  <inertial pos="0 0 0" mass="{_BASE_MASS:g}" '
+        f'diaginertia="{_BASE_DIAGINERTIA}"/>\n'
+        + inner_block
+        + '</body>\n'
+    )
+    return merged[:oi + len(open_tag)] + '\n' + wrapped + merged[ci:]
+
+
+def _build_merged_mjcf(pkg: Path, world_bodies: str = '',
+                       *, base_free_joint: bool = False) -> str:
     """Derive and return the merged MJCF text (URDF import + overlay splice).
 
     Shared by :func:`load_mjcf_model` (which compiles it) and
@@ -206,6 +271,15 @@ def _build_merged_mjcf(pkg: Path, world_bodies: str = '') -> str:
     MuJoCo backend (PR1, issue #99) uses to place immovable world objects (see
     ``_insert_world_bodies``).  The default '' means robot-only, so callers of
     the bare merge (the ``write_mjcf_model`` PR8b path) are unaffected.
+
+    ``base_free_joint=True`` additionally closes the robot trunk in a
+    free-jointed ``base_link`` body (see :func:`_wrap_base_freejoint`) -- the
+    seam the MuJoCo backend's ``navigate_to`` uses (PR2, issue #101).  The wrap
+    happens *after* the robot-only merge but *before* ``world_bodies`` are
+    spliced, so scene objects stay welded to the world (siblings of the wrapped
+    base) rather than riding on it.  The default stays False: the bare
+    :func:`load_mjcf_model` and :func:`write_mjcf_model` paths are unchanged
+    (the robot trunk is fused to the origin, nq = nv = 18).
     """
     assets = _collect_assets(pkg / 'meshes')
     urdf_xml = _expand_urdf(pkg / 'urdf')
@@ -219,31 +293,51 @@ def _build_merged_mjcf(pkg: Path, world_bodies: str = '') -> str:
     base_mjcf = _redirect_meshes(base_mjcf, pkg / 'meshes')
     merged = _splice_overlay(base_mjcf, root_blocks, head_camera_block,
                              _HEAD_CAMERA_PARENT_BODY)
+    if base_free_joint:
+        merged = _wrap_base_freejoint(merged)
     return _insert_world_bodies(merged, world_bodies)
 
 
 def load_mjcf_model() -> mujoco.MjModel:
-    """Derive and compile the robot's MJCF model from the shipped URDF + overlay.
+    """Derive and compile the bare robot's MJCF (no base free joint, nq=nv=18).
 
-    Returns a compiled :class:`mujoco.MjModel`. Throwaway files (staged URDF,
+    Returns a compiled :class:`mujoco.MjModel` whose body tree is the fused
+    robot trunk welded to the world origin (``fusestatic`` folds the base into
+    the world, so there is **no** base joint here -- nq = nv = 18, matching
+    ``test_mjcf_model.py`` and the ``mujoco_ros2_control``/PR8b sim seam, both
+    of which load the fused robot as it is).  Throwaway files (staged URDF,
     derived base MJCF) live in a temp dir and are not committed.
+
+    This is deliberately **not** the scene backend's model: the backend
+    teleports the base, so it loads through :func:`load_mjcf_model_with_scene`,
+    which wraps the trunk in a free joint (PR2, issue #101).
     """
-    return load_mjcf_model_with_scene('')
+    merged = _build_merged_mjcf(_package_dir())
+    spec = mujoco.MjSpec.from_string(merged)
+    return spec.compile()
 
 
 def load_mjcf_model_with_scene(world_bodies: str) -> mujoco.MjModel:
-    """Compile the robot MJCF with ``world_bodies`` welded into the world body.
+    """Compile the scene MJCF (free-jointed base + ``world_bodies``) (PR2).
 
-    The scene-aware twin of :func:`load_mjcf_model`: identical except that the
-    static ``<body>`` blocks in ``world_bodies`` are spliced into the worldbody
-    *before* the merged text is compiled (see :func:`_insert_world_bodies`), so
-    the returned :class:`mujoco.MjModel` already carries the scene objects as
-    immovable bodies.  Passing '' compiles the bare robot and is equivalent to
-    :func:`load_mjcf_model`.  This is the seam PR1 (issue #99) uses; robot
-    derivation itself is never duplicated because both compile the same
-    ``_build_merged_mjcf`` output.
+    The scene-aware model the MuJoCo backend drives (PR1/P2, issues #99/#101):
+    the robot trunk is closed in a free-jointed ``base_link`` body (see
+    :func:`_wrap_base_freejoint`) -- the 6-DOF free joint ``navigate_to``
+    teleports, adding 6 DOF so ``nv = 18 + 6`` and ``nq = 18 + 7`` (a free
+    joint's qpos is 7 floats) -- and the static ``<body>`` blocks in
+    ``world_bodies`` are spliced into the worldbody *after* the wrap (see
+    :func:`_insert_world_bodies`), keeping the scene objects immovable and
+    welded to the world (siblings of the wrapped base).
+
+    Unlike the bare :func:`load_mjcf_model`, this model has the base free joint
+    and so is *not* the PR8b ROS-sim model: it exists for the in-process MuJoCo
+    backend, whose ``navigate_to`` must be able to move the base.  ``world_bodies``
+    may be '' (robot + free joint, no scene objects); robot derivation itself
+    is never duplicated because all paths compile ``_build_merged_mjcf``
+    output.
     """
-    merged = _build_merged_mjcf(_package_dir(), world_bodies=world_bodies)
+    merged = _build_merged_mjcf(
+        _package_dir(), world_bodies=world_bodies, base_free_joint=True)
     spec = mujoco.MjSpec.from_string(merged)
     return spec.compile()
 
