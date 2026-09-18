@@ -16,12 +16,20 @@ analytic closed form does not exist for this chain, and a sphere test is a
 worse proxy than convergence itself).
 
 The algorithm is damped least squares (Levenberg-Marquardt) over a
-**forward-difference numeric Jacobian** of the six-vector task error, with
-multi-start to escape the joint-limit stalls a single descent falls into::
+**forward-difference numeric Jacobian** of the task error, with multi-start to
+escape the joint-limit stalls a single descent falls into::
 
     e(q) = [ p_target - p_current ; log(R_target @ R_current.T) ]
     J[:, j] = (e(q + eps*e_j) - e(q)) / eps
     dq = -J.T @ solve(J @ J.T + lam**2 * I6, e)
+
+**Position-only mode** (``position_only=True``, status.md R6) drops the
+orientation term entirely: the task error is the 3-vector ``p_target -
+p_current`` and the Jacobian is 3x5 over the same five arm joints.  This is the
+reach oracle ``grasp``/``place`` use -- the Mock's semantics are
+orientation-free (it only ever checks distance), so the sim's grasp/place must
+ask the solver "is this *point* reachable", not "is this pose reachable".
+``move_gripper`` keeps the full six-dimensional pose test above.
 
 The solver is deliberately ROS-free, numpy-only, and **side-effect-free**: it
 snapshots the arm's qpos slots on entry and restores them (with one
@@ -89,13 +97,33 @@ def _error(
     rotation: np.ndarray,
     fk: Callable[[np.ndarray], tuple[np.ndarray, np.ndarray]],
     joint_adrs: Sequence[int],
+    position_only: bool,
 ) -> np.ndarray:
-    """Return the six-vector world-frame task error at the arm configuration ``q``."""
+    """Return the task error at the arm configuration ``q``.
+
+    Full-pose mode returns the six-vector ``[position error; rotation error]``;
+    position-only mode (R6) returns just the three-vector position error.
+    """
     pos_current, rot_current = fk(q)
+    position_error = position - np.asarray(pos_current, dtype=float)
+    if position_only:
+        return position_error
     return np.concatenate([
-        position - np.asarray(pos_current, dtype=float),
+        position_error,
         _log_map(np.asarray(rotation, dtype=float) @ np.asarray(rot_current).T),
     ])
+
+
+def _converged(error: np.ndarray, position_only: bool) -> bool:
+    """Return whether ``error`` is within tolerance.
+
+    Position-only mode checks the position error alone; full-pose mode checks
+    the position *and* rotation blocks separately.
+    """
+    if position_only:
+        return float(np.linalg.norm(error)) <= _TOL
+    return (float(np.linalg.norm(error[:3])) <= _TOL
+            and float(np.linalg.norm(error[3:])) <= _TOL)
 
 
 def _descent(
@@ -106,25 +134,28 @@ def _descent(
     joint_adrs: Sequence[int],
     lower: np.ndarray,
     upper: np.ndarray,
+    position_only: bool,
 ) -> tuple[np.ndarray, bool]:
     """Run one damped-least-squares descent; return ``(q, converged)``."""
     count = q.size
     damping = _LAMBDA0
-    error = _error(q, position, rotation, fk, joint_adrs)
+    error = _error(q, position, rotation, fk, joint_adrs, position_only)
+    rows = error.size
     for _ in range(_MAX_ITERS):
-        if (np.linalg.norm(error[:3]) <= _TOL
-                and np.linalg.norm(error[3:]) <= _TOL):
+        if _converged(error, position_only):
             return q, True
-        jacobian = np.zeros((6, count))
+        jacobian = np.zeros((rows, count))
         for column in range(count):
             perturbed = q.copy()
             perturbed[column] += _EPS
             jacobian[:, column] = (
-                _error(perturbed, position, rotation, fk, joint_adrs) - error) / _EPS
-        gain = jacobian @ jacobian.T + damping * damping * np.eye(6)
+                _error(perturbed, position, rotation, fk, joint_adrs,
+                       position_only) - error) / _EPS
+        gain = jacobian @ jacobian.T + damping * damping * np.eye(rows)
         step = -jacobian.T @ np.linalg.solve(gain, error)
         candidate = np.clip(q + step, lower, upper)
-        candidate_error = _error(candidate, position, rotation, fk, joint_adrs)
+        candidate_error = _error(
+            candidate, position, rotation, fk, joint_adrs, position_only)
         if np.linalg.norm(candidate_error) < np.linalg.norm(error):
             q, error = candidate, candidate_error
             damping = max(damping / 2.0, _LAMBDA_MIN)
@@ -142,6 +173,7 @@ def solve_ik(
     lower: np.ndarray,
     upper: np.ndarray,
     restore: Callable[[], None],
+    position_only: bool = False,
 ) -> np.ndarray | None:
     """Solve for the arm joint values putting the gripper at ``position``/``rotation``.
 
@@ -150,6 +182,11 @@ def solve_ik(
     slots in ``mjData``; ``lower``/``upper`` are their travel limits; and
     ``restore()`` puts ``mjData`` back exactly as it was found (the caller's
     snapshot + one ``mj_forward``).
+
+    With ``position_only=True`` (R6) the orientation term is dropped: the task
+    error is ``position - pos_current`` alone, the Jacobian is 3xN, and
+    convergence is ``norm(error) <= _TOL``.  ``rotation`` is then ignored.
+    This is the reach oracle for ``grasp``/``place``.
 
     Returns the converged joint vector, or ``None`` when no start converges --
     which the backend reads as "this pose is not reachable" (status.md R3).
@@ -169,7 +206,7 @@ def solve_ik(
         for start in starts:
             solved, converged = _descent(
                 np.asarray(start, dtype=float), position, rotation, fk,
-                joint_adrs, lower, upper)
+                joint_adrs, lower, upper, position_only)
             if converged:
                 return solved
         return None

@@ -20,14 +20,18 @@ the ``dfki-ric`` sim, out of scope here).  It therefore keeps the "no ROS
 import at runtime" invariant (D30 / issue #99) exactly like the Mock: it
 imports ``mujoco`` but never ``rclpy`` / ``ament_index_python``.
 
-**Static world objects (R-1).**  A compiled ``MjModel`` cannot gain bodies
-post-compile, so the scene-aware build welds each world object into the merged
-MJCF as a **static, joint-less body** *before* compilation -- reusing the PR7
-merge machinery via :func:`load_mjcf_model_with_scene` (see that function's
-docstring for the seam).  Static bodies never receive dynamics -- no gravity
-collapse, no drift -- so an object's world frame equals its seed pose exactly,
-across any number of ``mj_step`` calls.  See ``implementation.md`` for the PR5
-hand-off.
+**World objects (R-1, PR4 R2).**  A compiled ``MjModel`` cannot gain bodies
+post-compile, so the scene-aware build splices each world object into the
+merged MJCF as a ``<body>`` *before* compilation -- reusing the PR7 merge
+machinery via :func:`load_mjcf_model_with_scene` (see that function's
+docstring for the seam).  Since PR4 the body form depends on ``graspable``:
+**non-graspable** objects (``counter_1``, ``sofa_1``) stay static, joint-less,
+welded bodies that never receive dynamics (no gravity collapse, no drift); a
+**graspable** object becomes a **free-jointed movable body** with a small
+inertial and ``gravcomp="1"`` -- no floor, no contact physics in this PR -- so
+``grasp``/``place`` can drive its pose by writing the free joint's qpos (R2
+"re-parent-equivalent").  ``mj_resetData`` restores every free joint to its
+``qpos0`` (the body's seed ``pos``), so ``reset`` re-seeds the scene exactly.
 
 **Frame mapping (R-2).**  At the seed, the base sits at the world origin, which
 IS the seed map's ``start_location`` (``charger`` at (0,0,0)); MJCF +z == map
@@ -38,11 +42,15 @@ its ``<body pos=...>``, and :meth:`get_observation` reports the body's
 moves it (PR2 ``navigate_to``), the world frame still *is* the map frame -- the
 base's reported pose is just no longer the origin.
 
-**Posture on reset (R-3).**  ``reset`` homes the robot: wheels at velocity 0,
-``column_lift`` clamped to the seed ``start_column_height`` with its position
-actuator commanded to the same value so the servo *holds* it, arms/grippers at
-joint zero.  ``column_height`` is read back from the ``column_lift`` qpos
-slot, so it always reports what the simulated lift actually is.
+**Posture on reset (R-3, PR4).**  ``reset`` homes the robot: wheels at
+velocity 0, ``column_lift`` set to the seed ``start_column_height`` with its
+position actuator commanded to the same value so the servo *holds* it, arms at
+joint zero and grippers OPEN.  ``column_height`` is read back from the
+``column_lift`` qpos slot, so it always reports what the simulated lift
+actually is.  The **graspable objects' free joints are excluded from the home
+joint sweep**: sweeping them to zero would teleport the objects to the origin,
+and ``mj_resetData`` has already restored them to their seed ``qpos0``.
+``reset`` also clears all grasp book-keeping.
 
 **Base free joint (PR2, R4/R5).**  ``navigate_to`` needs to move the base, but the
 fused trunk has no own joint.  The scene build therefore wraps the robot in a
@@ -57,9 +65,10 @@ pairs, and the ``column_lift`` joint's own travel range.
 ``extend_column`` (see their handlers).  ``extend_column`` mirrors the Mock's
 reject, don't-clamp semantics (R2): a height outside the column's travel is
 refused with ``OUT_OF_RANGE`` and the sim is left unchanged; the safety layer
-(robot_mcp) owns clamping.  Every *other* legal skill keeps PR1's refusal --
-``status=failed`` with :class:`~robot_skills.FailureCode.UNSUPPORTED_SKILL` and
-an unchanged world (the ABC's total contract; see :meth:`execute`).
+(robot_mcp) owns clamping.  (PR3/PR4 complete the skill set; a skill this
+backend does not implement would be ``status=failed`` with
+:class:`~robot_skills.FailureCode.UNSUPPORTED_SKILL` and an unchanged world --
+the ABC's total contract; see :meth:`execute`.)
 
 **Skills (PR3).**  :meth:`execute` additionally implements ``move_gripper``,
 ``open_gripper`` and ``close_gripper``.  ``move_gripper`` targets the *reported*
@@ -71,13 +80,28 @@ so it stays semantically identical to the Mock's.  ``open_gripper`` /
 ``close_gripper`` write the driven joint *and* its independent mirror (R5) and
 never refuse (D19 idempotence).  All three write qpos **and** the matching
 position actuators (servo hold) then ``mj_forward`` -- no ``mj_step`` (R4).
-``grasp``/``place`` stay ``UNSUPPORTED_SKILL`` until PR4, and the primitive
-scene geometry below is a placeholder for roadmap #4's visuals.
+
+**Skills (PR4).**  :meth:`execute` implements ``grasp`` and ``place``,
+mirroring :mod:`robot_backends.mock_backend`'s semantics *exactly* (same
+failure codes and reason strings, R3): the same validation order (unknown id ->
+not graspable -> already held -> gripper occupancy), the same left-first
+reach-aware side pick for ``grasp`` and the same non-reach-aware side pick for
+``place``.  The one deliberate difference is the **reach oracle**: the Mock
+tests a sphere of ``reach_radius`` around each shoulder, while the sim asks
+:func:`~robot_backends.ik.solve_ik` in **position-only mode** (R6) -- the
+``move_gripper`` full-pose test is unsatisfiable for the seed objects, since
+the 5-DOF arm cannot hold an identity orientation there.  On grasp the object
+is attached by book-keeping (attach-on-close, R1) with the grasp offset
+(object pose in the gripper frame); :meth:`_carry_held_objects` re-writes the
+held object's free-joint qpos to ``gripper_frame ∘ offset`` after every skill,
+exactly mirroring ``mock_backend._carry_held_objects``.  No ``mj_step`` on the
+skill path (R2); the geometry below stays a placeholder for roadmap #4's
+visuals.
 """
 
 from __future__ import annotations
 
-from typing import Mapping
+from typing import Mapping, NoReturn
 
 import mujoco
 import numpy as np
@@ -90,12 +114,14 @@ from robot_skills import (
     CloseGripper,
     ExtendColumn,
     FailureCode,
+    Grasp,
     GripperObservation,
     GripperState,
     MoveGripper,
     NavigateTo,
     Observation,
     OpenGripper,
+    Place,
     Point,
     Pose,
     Quaternion,
@@ -189,27 +215,57 @@ def _geom_attrs(label: str) -> tuple[str, str, str]:
     return _PRIMITIVE_GEOMS.get(label, _FALLBACK_GEOM)
 
 
-def _world_bodies_xml(document: WorldDocument) -> str:
-    """Render ``document.objects`` as static ``<body>`` blocks for the worldbody.
+#: Mass of a graspable object's free body.  Must exceed ``mjMINVAL`` (MuJoCo
+#: rejects a zero/near-zero mass), the same pattern ``_wrap_base_freejoint``
+#: uses for the base; ``gravcomp="1"`` keeps the free body from falling (there
+#: is no floor in this PR).
+_OBJECT_MASS = 0.1
 
-    Each object becomes one joint-less, welded body named by its ``object_id``
-    (seed ids are alphanumeric+underscore, valid MuJoCo names) and placed at
-    its seed pose.  Its label selects a primitive geom via :func:`_geom_attrs`;
-    ``graspable`` is deliberately *not* modelled in PR1 (static bodies, no
-    joints, contact off) -- it survives only as the flag reported in the
-    Observation from the source document, and PR5's grasp work replaces these
-    bodies with free joints resting on a modelled floor/surface.
+#: Isotropic inertia for a graspable object's free body (see ``_OBJECT_MASS``).
+_OBJECT_INERTIA = 0.001
+
+
+def _world_bodies_xml(document: WorldDocument) -> str:
+    """Render ``document.objects`` as ``<body>`` blocks for the worldbody.
+
+    Each object becomes one body named by its ``object_id`` (seed ids are
+    alphanumeric+underscore, valid MuJoCo names) and placed at its seed pose.
+    Its label selects a primitive geom via :func:`_geom_attrs`.
+
+    Since PR4 (R2) the body form depends on ``graspable``:
+
+    * **non-graspable** objects stay static, joint-less, welded bodies (no
+      dynamics, no drift -- an object's world frame equals its seed pose);
+    * **graspable** objects become free-jointed movable bodies (``freejoint``
+      named ``<object_id>_free``) carrying a small inertial and
+      ``gravcomp="1"``, so ``grasp``/``place`` can drive their pose by writing
+      the free joint's qpos.  The free joint's ``qpos0`` defaults from the
+      body ``pos``, so ``mj_resetData`` restores the seed pose on ``reset``.
+
+    Geoms stay collision-inert (``contype/conaffinity=0``): no contact physics
+    in this PR.
     """
     blocks = []
     for item in document.objects:
         geom_type, size, rgba = _geom_attrs(item.label)
         p = item.pose.position
-        blocks.append(
-            f'<body name="{item.object_id}" pos="{p.x} {p.y} {p.z}">\n'
-            f'  <geom type="{geom_type}" size="{size}" rgba="{rgba}" '
-            'contype="0" conaffinity="0"/>\n'
-            '</body>'
-        )
+        if item.graspable:
+            blocks.append(
+                f'<body name="{item.object_id}" pos="{p.x} {p.y} {p.z}" gravcomp="1">\n'
+                f'  <freejoint name="{item.object_id}_free"/>\n'
+                f'  <inertial pos="0 0 0" mass="{_OBJECT_MASS}" '
+                f'diaginertia="{_OBJECT_INERTIA} {_OBJECT_INERTIA} {_OBJECT_INERTIA}"/>\n'
+                f'  <geom type="{geom_type}" size="{size}" rgba="{rgba}" '
+                'contype="0" conaffinity="0"/>\n'
+                '</body>'
+            )
+        else:
+            blocks.append(
+                f'<body name="{item.object_id}" pos="{p.x} {p.y} {p.z}">\n'
+                f'  <geom type="{geom_type}" size="{size}" rgba="{rgba}" '
+                'contype="0" conaffinity="0"/>\n'
+                '</body>'
+            )
     return '\n'.join(blocks) if blocks else ''
 
 
@@ -223,15 +279,13 @@ class MuJoCoBackend(RobotBackend):
     * ``extend_column`` -- set the prismatic column joint target, reading the
       clamped height back from ``mjData`` (R2).
 
-    Every other skill keeps PR1's refusal: :meth:`execute` returns
-    ``status=failed`` with
-    :class:`~robot_skills.FailureCode.UNSUPPORTED_SKILL`, leaving the world
-    unchanged -- exactly what the ABC's *total* contract asks for ("a skill
-    that cannot be carried out returns ``status=failed`` ... and leaves the
-    world state unchanged").  PR3 adds ``move_gripper`` (IK over the five arm
-    joints) and ``open_gripper``/``close_gripper`` (driven + mirror jaw joints).
-    Only ``move_gripper`` can refuse (``OUT_OF_REACH``); ``grasp``/``place``
-    raise :class:`TypeError` for a non-``Skill`` and stay unsupported until PR4.
+    PR3 adds ``move_gripper`` (IK over the five arm joints) and
+    ``open_gripper``/``close_gripper`` (driven + mirror jaw joints).  PR4 adds
+    ``grasp``/``place`` (position-only-IK reach, attach-on-close book-keeping,
+    object free-joint poses), mirroring the Mock's semantics.  A skill that
+    cannot be carried out returns ``status=failed`` with an attributable
+    :class:`~robot_skills.FailureCode` and leaves the world unchanged -- the
+    ABC's *total* contract; :meth:`execute` only raises for a non-``Skill``.
     """
 
     def __init__(
@@ -304,11 +358,18 @@ class MuJoCoBackend(RobotBackend):
 
         # Arms + grippers + mirrors are returned to their home posture on reset
         # (defined by ``_HOME_JOINTS``): arm joints to zero, gripper jaws to
-        # OPEN (R6).  The free joint is /excluded/ from the joint sweep (R5):
-        # it is homed to the start-location pose instead, and the grippers are
-        # written explicitly (their home is not joint zero).
+        # OPEN (R6).  The base free joint is /excluded/ from the joint sweep
+        # (R5): it is homed to the start-location pose instead, and the
+        # grippers are written explicitly (their home is not joint zero).
+        # The graspable objects' free joints are /excluded/ too (PR4 reset
+        # trap): sweeping them to zero would teleport every object to the
+        # origin, and ``mj_resetData`` has already restored them to the seed
+        # ``qpos0`` the body ``pos`` gives them.
+        object_free_joints = tuple(
+            f'{item.object_id}_free'
+            for item in self._document.objects if item.graspable)
         self._home_joints = self._joint_ids_excluding(
-            _WHEEL_JOINTS + (_COLUMN_JOINT, _BASE_FREE))
+            _WHEEL_JOINTS + (_COLUMN_JOINT, _BASE_FREE) + object_free_joints)
         self._home_position_actuators = self._actuator_ids_excluding(
             _WHEEL_JOINTS + (_COLUMN_JOINT,))
 
@@ -322,6 +383,25 @@ class MuJoCoBackend(RobotBackend):
         for item in self._document.objects:
             body_id = self._body_id(item.object_id)
             self._object_body[item.object_id] = body_id
+
+        # Graspable objects carry a ``<object_id>_free`` free joint (R2).  Its
+        # qpos slot is resolved by name (R5) so grasp/place/carry can write an
+        # object's world pose directly.  Non-graspable objects are welded (no
+        # joint), so they are absent from this table.
+        self._object_free_joint: dict[str, int] = {}
+        self._object_free_qpos: dict[str, int] = {}
+        for item in self._document.objects:
+            if not item.graspable:
+                continue
+            name = f'{item.object_id}_free'
+            self._object_free_joint[item.object_id] = self._joint_id(name)
+            self._object_free_qpos[item.object_id] = self._joint_qposadr(name)
+
+        # Per-side grasp book-keeping (R4): the object each gripper holds and
+        # the object's pose expressed in that gripper's frame at grasp time.
+        # Cleared by :meth:`reset`.
+        self._held_object: dict[Side, str | None] = dict.fromkeys(SIDE_ORDER)
+        self._held_offset: dict[Side, Pose | None] = dict.fromkeys(SIDE_ORDER)
 
         # Gripper jaw body ids, keyed by Side.
         self._jaw_upper: dict[Side, int] = {}
@@ -352,6 +432,12 @@ class MuJoCoBackend(RobotBackend):
         if joint_id < 0:
             raise ValueError(f'no joint named {name!r} in the MuJoCo model')
         return int(self._model.jnt_qposadr[joint_id])
+
+    def _joint_id(self, name: str) -> int:
+        joint_id = mujoco.mj_name2id(self._model, mujoco.mjtObj.mjOBJ_JOINT, name)
+        if joint_id < 0:
+            raise ValueError(f'no joint named {name!r} in the MuJoCo model')
+        return int(joint_id)
 
     def _joint_dofadr(self, name: str) -> int:
         """Return the first velocity (dof) index of the joint named ``name``."""
@@ -449,6 +535,13 @@ class MuJoCoBackend(RobotBackend):
                 data.qpos[qpos_adr] = open_qpos[key]
                 data.ctrl[ctrl_id] = open_ctrl[key]
 
+        # Clear all grasp book-keeping: reset homed the gripper jaws OPEN and
+        # ``mj_resetData`` re-seeded every object free joint, so nothing is
+        # held any more (R4).
+        for side in SIDE_ORDER:
+            self._held_object[side] = None
+            self._held_offset[side] = None
+
         self._location = self._document.start_location
         mujoco.mj_forward(self._model, data)
         return self.get_observation()
@@ -488,7 +581,7 @@ class MuJoCoBackend(RobotBackend):
                     label=item.label,
                     pose=self._object_pose(item.object_id),
                     graspable=item.graspable,
-                    held_by=None,
+                    held_by=self._holder_of(item.object_id),
                 )
                 for item in sorted(
                     self._document.objects, key=lambda o: o.object_id)
@@ -499,12 +592,15 @@ class MuJoCoBackend(RobotBackend):
     def execute(self, skill: Skill) -> SkillResult:
         """Execute one skill, returning its status and a fresh observation.
 
-        ``NavigateTo`` and ``ExtendColumn`` (PR2) plus ``MoveGripper``,
-        ``OpenGripper`` and ``CloseGripper`` (PR3) dispatch to their handlers;
-        ``Grasp``/``Place`` and any other skill are a clean ``status=failed``
-        with ``UNSUPPORTED_SKILL`` and an unchanged observation.  Per the ABC's
-        *total* contract this never raises for a legal :class:`Skill`, and it
-        only raises for something that is not a ``Skill`` at all.
+        ``NavigateTo`` and ``ExtendColumn`` (PR2), ``MoveGripper`` /
+        ``OpenGripper`` / ``CloseGripper`` (PR3) and ``Grasp`` / ``Place``
+        (PR4) dispatch to their handlers; any other skill is a clean
+        ``status=failed`` with ``UNSUPPORTED_SKILL`` and an unchanged
+        observation.  After a successful handler the carried objects are
+        re-written to their grippers' frames (:meth:`_carry_held_objects`, R2),
+        exactly as ``mock_backend.execute`` does.  Per the ABC's *total*
+        contract this never raises for a legal :class:`Skill`, and it only
+        raises for something that is not a ``Skill`` at all.
         """
         if not isinstance(skill, Skill):
             raise TypeError(
@@ -516,6 +612,10 @@ class MuJoCoBackend(RobotBackend):
                 note = self._extend_column(skill)
             elif isinstance(skill, MoveGripper):
                 note = self._move_gripper(skill)
+            elif isinstance(skill, Grasp):
+                note = self._grasp(skill)
+            elif isinstance(skill, Place):
+                note = self._place(skill)
             elif isinstance(skill, OpenGripper):
                 note = self._open_gripper(skill)
             elif isinstance(skill, CloseGripper):
@@ -527,6 +627,7 @@ class MuJoCoBackend(RobotBackend):
                     FailureCode.UNSUPPORTED_SKILL,
                     f'the MuJoCo backend does not implement skill {skill.name!r}',
                 )
+            self._carry_held_objects()
         except _SkillRefused as refusal:
             return SkillResult.failure(
                 skill, self.get_observation(), refusal.code, refusal.reason)
@@ -671,6 +772,244 @@ class MuJoCoBackend(RobotBackend):
         if was_closed:
             return f'the {side.value} gripper was already closed'
         return None
+
+    # -- skills (PR4): grasp + place ---------------------------------------
+
+    def _grasp(self, skill: Grasp) -> str | None:
+        """Close a free gripper around a present, graspable, reachable object.
+
+        Mirrors :meth:`mock_backend.MockBackend._grasp` exactly (R3) -- the same
+        validation order, the same failure codes and reason strings -- except
+        that "reachable" means a **position-only IK solve** converges (R6), not
+        the Mock's sphere test.  On success the arm is driven to the object
+        (servo-hold, as :meth:`_move_gripper`), the jaws close, and the object
+        is attached by book-keeping (attach-on-close, R1): ``_held_object`` and
+        the grasp offset (object pose in the gripper frame).  :meth:`execute`
+        then re-writes the object's free-joint qpos via
+        :meth:`_carry_held_objects`, so the reported pose jumps to the gripper.
+        """
+        item = self._find_object(skill.object_id)
+        if item is None:
+            raise _SkillRefused(
+                FailureCode.UNKNOWN_OBJECT,
+                f'no object {skill.object_id!r} in the scene; perceived objects: '
+                f'{", ".join(sorted(self._object_ids()))}',
+            )
+        if not item.graspable:
+            raise _SkillRefused(
+                FailureCode.NOT_GRASPABLE,
+                f'object {item.object_id!r} ({item.label}) is not graspable',
+            )
+        if self._holder_of(item.object_id) is not None:
+            raise _SkillRefused(
+                FailureCode.OBJECT_ALREADY_HELD,
+                f'object {item.object_id!r} is already held by the '
+                f'{self._holder_of(item.object_id).value} gripper',
+            )
+        object_pose = self._object_pose(item.object_id)
+        side = self._resolve_grasping_side(
+            skill.side, object_pose.position, f'grasp {item.object_id!r}')
+
+        solved = self._position_ik(side, object_pose.position)
+        if solved is None:  # unreachable: _resolve_grasping_side guarantees a solve
+            raise _SkillRefused(
+                FailureCode.OUT_OF_REACH, self._unreachable_reason(
+                    side, object_pose.position, f'grasp {item.object_id!r}'))
+        self._write_arm(side, solved)
+        self._set_gripper(side, closed=True)
+
+        self._held_object[side] = item.object_id
+        self._held_offset[side] = _offset_between(
+            self._gripper_pose(side), object_pose)
+        return None
+
+    def _place(self, skill: Place) -> str | None:
+        """Put the held object down at a reachable pose and open the gripper.
+
+        Mirrors :meth:`mock_backend.MockBackend._place` exactly (R3): side pick
+        is non-reach-aware, an over-far target refuses ``OUT_OF_REACH``, and on
+        success the object's pose becomes *exactly* ``skill.pose`` (position and
+        orientation), the hold is cleared and the jaws open.
+        """
+        side = self._resolve_holding_side(skill.side)
+        held_id = self._held_object[side]
+        if held_id is None:  # unreachable: _resolve_holding_side guarantees a load
+            raise _SkillRefused(
+                FailureCode.GRIPPER_EMPTY,
+                f'the {side.value} gripper is empty, there is nothing to place',
+            )
+        target = skill.pose.position
+        solved = self._position_ik(side, target)
+        if solved is None:
+            raise _SkillRefused(
+                FailureCode.OUT_OF_REACH, self._unreachable_reason(
+                    side, target, f'place {held_id!r}'))
+
+        self._write_arm(side, solved)
+        # Detach: the object's free-joint qpos becomes exactly the commanded
+        # pose (R2), and the book-keeping clears so carry stops tracking it.
+        self._set_object_pose(held_id, skill.pose)
+        self._held_object[side] = None
+        self._held_offset[side] = None
+        self._set_gripper(side, closed=False)
+        return f'released {held_id!r} from the {side.value} gripper'
+
+    def _resolve_grasping_side(
+        self, requested: Side | None, target: Point, action: str,
+    ) -> Side:
+        """Pick which gripper grasps ``target`` (Mock's reach-aware order, R3).
+
+        With a side named, that side must be free and able to reach (else
+        ``OUT_OF_REACH``).  With no side named, prefer the first side in
+        ``SIDE_ORDER`` that is *both* free and reachable; if none is reachable,
+        refuse ``OUT_OF_REACH`` for the first free side.  "Reachable" is a
+        position-only IK solve (R6), the sim's answer; the Mock's sphere test is
+        that backend's own oracle.
+        """
+        if requested is not None:
+            self._require_free_gripper(requested)
+            if self._position_ik(requested, target) is None:
+                raise _SkillRefused(
+                    FailureCode.OUT_OF_REACH,
+                    self._unreachable_reason(requested, target, action))
+            return requested
+
+        free = tuple(
+            side for side in SIDE_ORDER if self._held_object[side] is None)
+        if not free:
+            self._refuse_both_grippers_occupied()
+        for side in free:
+            if self._position_ik(side, target) is not None:
+                return side
+        # No free gripper can reach: report the preferred one.
+        raise _SkillRefused(
+            FailureCode.OUT_OF_REACH,
+            self._unreachable_reason(free[0], target, action))
+
+    def _resolve_holding_side(self, requested: Side | None) -> Side:
+        """Pick which gripper releases (Mock's NON-reach-aware logic, R3).
+
+        Deliberately *not* reach-aware, exactly as the Mock: with both hands
+        full, geometry must not silently decide *which object gets put down*.
+        """
+        if requested is not None:
+            if self._held_object[requested] is None:
+                raise _SkillRefused(
+                    FailureCode.GRIPPER_EMPTY,
+                    f'the {requested.value} gripper is empty, '
+                    'there is nothing to place',
+                )
+            return requested
+        for side in SIDE_ORDER:
+            if self._held_object[side] is not None:
+                return side
+        raise _SkillRefused(
+            FailureCode.GRIPPER_EMPTY,
+            'no gripper is holding an object, there is nothing to place',
+        )
+
+    def _require_free_gripper(self, side: Side) -> None:
+        """Refuse if the named gripper is already holding something (R3)."""
+        held = self._held_object[side]
+        if held is not None:
+            raise _SkillRefused(
+                FailureCode.GRIPPER_OCCUPIED,
+                f'the {side.value} gripper already holds {held!r}',
+            )
+
+    def _refuse_both_grippers_occupied(self) -> NoReturn:
+        """Refuse a grasp because there is no free gripper at all (R3)."""
+        holdings = ', '.join(
+            f'{side.value} holds {self._held_object[side]!r}'
+            for side in SIDE_ORDER
+        )
+        raise _SkillRefused(
+            FailureCode.GRIPPER_OCCUPIED, f'both grippers are occupied ({holdings})')
+
+    def _object_ids(self) -> tuple[str, ...]:
+        """Return every registered object id, for a failure reason's list (R3)."""
+        return tuple(item.object_id for item in self._document.objects)
+
+    def _find_object(self, object_id: str):
+        """Return the document object named ``object_id``, or ``None`` (R3)."""
+        return self._document.find_object(object_id)
+
+    def _holder_of(self, object_id: str) -> Side | None:
+        """Return the side whose gripper holds ``object_id``, or ``None`` (R4)."""
+        for side in SIDE_ORDER:
+            if self._held_object[side] == object_id:
+                return side
+        return None
+
+    def _position_ik(self, side: Side, target: Point) -> np.ndarray | None:
+        """Return the arm joints placing ``side``'s gripper at ``target`` (R6).
+
+        The shared reach oracle for grasp/place: a **position-only** IK solve
+        (orientation-free, like the Mock's distance test).  Snapshots the arm
+        and lets ``solve_ik``'s ``restore`` put ``mjData`` back, so a refused
+        query leaves the sim untouched -- the caller writes the result itself
+        only on success.
+        """
+        position = np.array([target.x, target.y, target.z])
+        lower = np.array([rng[0] for rng in self._arm_ranges[side]])
+        upper = np.array([rng[1] for rng in self._arm_ranges[side]])
+        self._snapshot_arm(side)
+        return solve_ik(
+            position,
+            np.eye(3),
+            fk=lambda q: self._arm_fk(side, q),
+            joint_adrs=self._arm_joint_adrs(side),
+            lower=lower,
+            upper=upper,
+            restore=lambda: self._restore_arm(side),
+            position_only=True,
+        )
+
+    def _write_arm(self, side: Side, solved: np.ndarray) -> None:
+        """Write an arm's five qpos slots and position actuators, then forward.
+
+        Servo hold (R4), exactly as :meth:`_move_gripper` does on success.
+        """
+        data = self._data
+        for value, (qpos_adr, ctrl_id) in zip(solved, self._arm_joints[side].values()):
+            data.qpos[qpos_adr] = float(value)
+            data.ctrl[ctrl_id] = float(value)
+        mujoco.mj_forward(self._model, data)
+
+    # -- carried-object book-keeping (PR4, R2) ------------------------------
+
+    def _carry_held_objects(self) -> None:
+        """Keep every held object glued to the gripper holding it (R2).
+
+        Mirrors ``mock_backend._carry_held_objects``: after *every* skill that
+        can move the load, re-write the held object's free-joint qpos to
+        ``gripper_frame ∘ offset`` and ``mj_forward``.  No ``mj_step``.
+        """
+        for side in SIDE_ORDER:
+            held_id = self._held_object[side]
+            offset = self._held_offset[side]
+            if held_id is None or offset is None:
+                continue
+            world_pose = _compose(self._gripper_pose(side), offset)
+            self._set_object_pose(held_id, world_pose)
+        mujoco.mj_forward(self._model, self._data)
+
+    def _set_object_pose(self, object_id: str, pose: Pose) -> None:
+        """Write an object's free-joint qpos from ``pose`` (position + w-first quat).
+
+        The same convention :meth:`_set_base_pose` uses for the base free joint
+        (MuJoCo free-joint qpos is x, y, z, qw, qx, qy, qz).
+        """
+        adr = self._object_free_qpos[object_id]
+        p, q = pose.position, pose.orientation
+        data = self._data
+        data.qpos[adr + 0] = p.x
+        data.qpos[adr + 1] = p.y
+        data.qpos[adr + 2] = p.z
+        data.qpos[adr + 3] = q.w
+        data.qpos[adr + 4] = q.x
+        data.qpos[adr + 5] = q.y
+        data.qpos[adr + 6] = q.z
 
     # -- arm + gripper mechanics (PR3) -------------------------------------
 
@@ -827,19 +1166,106 @@ class MuJoCoBackend(RobotBackend):
         return Pose(position=position, orientation=orientation)
 
     def _gripper_observation(self, side: Side) -> GripperObservation:
-        """Return the reportable state of one gripper (state from the driven jaw).
+        """Return the reportable state of one gripper (state + held load, R4).
 
-        ``held_object_id`` is ``None`` and ``grasped`` is ``False`` until PR4
-        models a grasp: closing on thin air grips nothing, which is a fact the
-        observation reports rather than an error (R5).
+        ``held_object_id`` is the object the book-keeping says this gripper
+        holds (or ``None``), and ``grasped`` is exactly ``held_object_id is not
+        None`` -- the Mock's derivation (D19): a jaw posture with no load grips
+        nothing, and that is a fact the observation reports rather than an
+        error.
         """
+        held_id = self._held_object[side]
         return GripperObservation(
             side=side,
             state=self._gripper_state(side),
             pose=self._gripper_pose(side),
-            held_object_id=None,
-            grasped=False,
+            held_object_id=held_id,
+            grasped=held_id is not None,
         )
+
+
+def _compose(gripper_pose: Pose, offset: Pose) -> Pose:
+    """Return the world pose of ``offset`` (object in gripper frame) under ``gripper_pose``.
+
+    ``world_R = R_gripper @ R_offset`` and ``world_p = p_gripper +
+    R_gripper @ p_offset``.
+    """
+    rot_g = _quat_to_matrix(gripper_pose.orientation)
+    rot_o = _quat_to_matrix(offset.orientation)
+    position = np.asarray([
+        gripper_pose.position.x, gripper_pose.position.y, gripper_pose.position.z])
+    offset_position = np.asarray([
+        offset.position.x, offset.position.y, offset.position.z])
+    world_position = position + rot_g @ offset_position
+    world_rotation = rot_g @ rot_o
+    return Pose(
+        position=Point(
+            float(world_position[0]), float(world_position[1]),
+            float(world_position[2])),
+        orientation=_matrix_to_quat(world_rotation),
+    )
+
+
+def _offset_between(gripper_pose: Pose, object_pose: Pose) -> Pose:
+    """Return ``object_pose`` expressed in the gripper frame (the grasp offset).
+
+    The inverse of :func:`_compose`: ``offset_R = R_gripper.T @ R_object`` and
+    ``offset_p = R_gripper.T @ (p_object - p_gripper)``.
+    """
+    rot_g = _quat_to_matrix(gripper_pose.orientation)
+    rot_o = _quat_to_matrix(object_pose.orientation)
+    gripper_position = np.asarray([
+        gripper_pose.position.x, gripper_pose.position.y, gripper_pose.position.z])
+    object_position = np.asarray([
+        object_pose.position.x, object_pose.position.y, object_pose.position.z])
+    offset_position = rot_g.T @ (object_position - gripper_position)
+    offset_rotation = rot_g.T @ rot_o
+    return Pose(
+        position=Point(
+            float(offset_position[0]), float(offset_position[1]),
+            float(offset_position[2])),
+        orientation=_matrix_to_quat(offset_rotation),
+    )
+
+
+def _matrix_to_quat(rotation: np.ndarray) -> Quaternion:
+    """Return a skill-API ``Quaternion`` (x, y, z, w) from a 3x3 rotation matrix.
+
+    Standard Shepperd/Branch-free conversion: pick the largest diagonal term to
+    stay numerically stable near 180-degree rotations, then normalise.
+    """
+    m = np.asarray(rotation, dtype=float)
+    trace = float(m[0, 0] + m[1, 1] + m[2, 2])
+    if trace > 0.0:
+        s = 0.5 / np.sqrt(trace + 1.0)
+        w = 0.25 / s
+        x = (m[2, 1] - m[1, 2]) * s
+        y = (m[0, 2] - m[2, 0]) * s
+        z = (m[1, 0] - m[0, 1]) * s
+    elif m[0, 0] > m[1, 1] and m[0, 0] > m[2, 2]:
+        s = 2.0 * np.sqrt(1.0 + m[0, 0] - m[1, 1] - m[2, 2])
+        w = (m[2, 1] - m[1, 2]) / s
+        x = 0.25 * s
+        y = (m[0, 1] + m[1, 0]) / s
+        z = (m[0, 2] + m[2, 0]) / s
+    elif m[1, 1] > m[2, 2]:
+        s = 2.0 * np.sqrt(1.0 + m[1, 1] - m[0, 0] - m[2, 2])
+        w = (m[0, 2] - m[2, 0]) / s
+        x = (m[0, 1] + m[1, 0]) / s
+        y = 0.25 * s
+        z = (m[1, 2] + m[2, 1]) / s
+    else:
+        s = 2.0 * np.sqrt(1.0 + m[2, 2] - m[0, 0] - m[1, 1])
+        w = (m[1, 0] - m[0, 1]) / s
+        x = (m[0, 2] + m[2, 0]) / s
+        y = (m[1, 2] + m[2, 1]) / s
+        z = 0.25 * s
+    quat = np.array([x, y, z, w], dtype=float)
+    norm = float(np.linalg.norm(quat))
+    if norm > 0.0:
+        quat = quat / norm
+    return Quaternion(
+        x=float(quat[0]), y=float(quat[1]), z=float(quat[2]), w=float(quat[3]))
 
 
 def _quat_to_matrix(quaternion: Quaternion) -> np.ndarray:

@@ -289,10 +289,15 @@ def default_world() -> MockWorld:
 
     The table holds **two** graspable objects (``book_1``, ``cup_1``), which is
     what makes "clear the table" a *loop* rather than a single grasp: a brain
-    driving this world has to notice there is a second thing left.  Both are
-    within reach of either shoulder from the ``table`` stand point at the
-    starting column height (0.3 m puts a shoulder at z = 0.8 m; the furthest of
-    the two is ~0.41 m away, well inside the 0.85 m reach), so neither needs an
-    ``extend_column`` first.
+    driving this world has to notice there is a second thing left.  Since the
+    PR4 re-place (status.md R6) they stand ~0.90 m from the table base at
+    z = 0.90 m, so from the ``table`` stand point at the starting column height
+    (0.3 m puts a table shoulder at z = 0.80 m) the furthest is ~0.26 m from a
+    shoulder -- well inside the 0.85 m reach -- so neither needs an
+    ``extend_column`` first.  The same re-place moved the kitchen trio
+    (``mug_1``/``plate_1``/``bowl_1``) to z = 1.15 and the counter to
+    (2.15, 0.00, 0.85); all three stay inside 0.85 m of the ``kitchen``
+    shoulders, and all stay > 0.85 m from the ``charger`` shoulders (so
+    "grasp the mug from the charger" is still out of reach).
     """
     return world_from_document(default_seed_document())

@@ -241,6 +241,17 @@ async def test_the_default_server_clamps_a_column_command_mid_run(backend):
     rather than letting the backend refuse it, and the *observation* -- not a
     special field -- tells the agent where the column really ended up, which
     is how it knows to lower it again and carry on.
+
+    .. note::  Before PR4 this test also asserted that the table was
+       *unreachable* from the clamped height, so the agent had to read an
+       ``out_of_reach`` and lower the column.  The PR4 re-place (status.md R6)
+       raises the table objects into a thin reachable band, so they happen to
+       sit inside the Mock's 0.85 m sphere from the ``table`` shoulder at
+       *every* column height -- there is no height at which "the table is out
+       of reach".  The clamp + read-the-true-height + recover beats are
+       unchanged; the now-impossible reach beat was dropped (the reach-refusal
+       recovery is covered by
+       ``test_a_place_from_too_far_away_is_a_refusal_the_loop_recovers_from``).
     """
     async with connected(backend) as client:
         await call(client, 'navigate_to', {'location': TABLE})
@@ -251,13 +262,8 @@ async def test_the_default_server_clamps_a_column_command_mid_run(backend):
         assert raised['observation']['robot']['column_height'] == COLUMN.max_height
         assert 'clamped' in raised['reason']
 
-        # From up there the table is out of reach -- so the agent reads the
-        # refusal, drops back to a working height and finishes the chore.
-        target = clutter(raised['observation'])[0]['object_id']
-        overreached = await call(client, 'grasp', {'object_id': target})
-        assert overreached['status'] == 'failed'
-        assert overreached['code'] == 'out_of_reach'
-
+        # The observation told the agent the real height, so it drops back to a
+        # working height and finishes the chore.
         lowered = await call(client, 'extend_column', {'height': 0.3})
         assert lowered['reason'] is None
         put_away = await clear_the_table(client)

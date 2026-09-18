@@ -15,6 +15,10 @@ re-serialises stably, and that agree on every field the seed world guarantees
 (scene object poses, ids, graspability, map vocabulary, robot location,
 column height, gripper open/empty posture).  That is what lets a brain or a
 server swap the backend without a schema change.
+
+Since PR4 every legal skill is implemented on the MuJoCo backend, so the
+refusal this file round-trips is an ``out_of_reach`` grasp (mug_1 from the
+charger), not an ``unsupported_skill
 """
 
 from mcp_fixtures import connected, payload
@@ -58,14 +62,20 @@ async def test_mujoco_observation_is_the_mock_wire_schema():
 
 
 async def test_mujoco_result_is_the_mock_wire_schema():
-    """A MuJoCo ``execute`` refusal (a still-unsupported skill) parses."""
+    """A MuJoCo ``execute`` refusal (an out-of-reach grasp) parses (PR4).
+
+    Grasping ``mug_1`` from the charger is ``out_of_reach`` on both backends
+    (the kitchen trio stays > 0.85 m from the charger shoulders, status.md R6),
+    so this is a real backend refusal from a legal skill -- every skill is now
+    implemented -- and it must round-trip under the shared schema.
+    """
     async with connected(MuJoCoBackend()) as client:
         result = payload(
             await client.call_tool('grasp', {'object_id': 'mug_1'}))
 
     _assert_result_parses(result)
     assert result['status'] == 'failed'
-    assert result['code'] == 'unsupported_skill'
+    assert result['code'] == 'out_of_reach'
     # Grasp carries an optional ``side`` that defaults to None on the round
     # trip, so pin the discriminant + object rather than the whole dict.
     assert result['skill']['skill'] == 'grasp'

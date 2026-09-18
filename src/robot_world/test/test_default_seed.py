@@ -33,13 +33,18 @@ EXPECTED_LOCATIONS = {
 }
 
 #: object_id -> (label, x, y, z, graspable), in the order the seed lists them.
+#:
+#: These are the PR4 re-place (status.md R6): the graspable objects sit inside
+#: the real 5-DOF arm's reachable workspace (a thin z-band above the shoulder),
+#: not at the old table/counter surfaces, which the arm cannot reach at the
+#: seed column height.
 EXPECTED_OBJECTS = (
-    ('mug_1', 'mug', 2.30, 0.10, 0.90, True),
-    ('plate_1', 'plate', 2.30, -0.10, 0.90, True),
-    ('bowl_1', 'bowl', 2.25, 0.00, 0.92, True),
-    ('counter_1', 'counter', 2.40, 0.00, 0.45, False),
-    ('book_1', 'book', 0.30, 2.10, 0.75, True),
-    ('cup_1', 'cup', 0.30, 1.90, 0.75, True),
+    ('mug_1', 'mug', 2.10, 0.10, 1.15, True),
+    ('plate_1', 'plate', 2.10, -0.10, 1.15, True),
+    ('bowl_1', 'bowl', 2.20, 0.00, 1.15, True),
+    ('counter_1', 'counter', 2.15, 0.00, 0.85, False),
+    ('book_1', 'book', 0.10, 2.00, 0.90, True),
+    ('cup_1', 'cup', 0.15, 2.00, 0.90, True),
     ('sofa_1', 'sofa', -2.00, 1.60, 0.40, False),
 )
 
