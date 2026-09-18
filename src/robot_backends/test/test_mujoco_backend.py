@@ -406,6 +406,11 @@ def _driven_qpos(backend: MuJoCoBackend, side: Side) -> float:
     return float(backend._data.qpos[backend._gripper_joints[side]['driven'][0]])
 
 
+def _mirror_qpos(backend: MuJoCoBackend, side: Side) -> float:
+    """Return the mirror gripper joint's current qpos."""
+    return float(backend._data.qpos[backend._gripper_joints[side]['mirror'][0]])
+
+
 def test_move_gripper_in_reach_lands_the_gripper(backend):
     """A pose derived from the arm's own FK is reachable and hit within R8 tol."""
     side = Side.LEFT
@@ -477,6 +482,8 @@ def test_close_then_open_gripper_flips_the_state(backend):
     assert closed.status is SkillStatus.OK
     assert closed.observation.robot.gripper(side).state is GripperState.CLOSED
     assert _driven_qpos(backend, side) == pytest.approx(0.0, abs=1e-9)
+    assert _mirror_qpos(backend, side) == pytest.approx(0.0, abs=1e-9)
+    assert _mirror_qpos(backend, side) == pytest.approx(-_driven_qpos(backend, side), abs=1e-9)
     assert closed.observation.robot.gripper(side).grasped is False
     # The jaws physically moved, so the reported orientation changed (the jaw
     # midpoint is on the wrist roll axis, so it does not translate).
@@ -494,6 +501,8 @@ def test_close_then_open_gripper_flips_the_state(backend):
     assert reopened.reason is None
     assert reopened.observation.robot.gripper(side).state is GripperState.OPEN
     assert _driven_qpos(backend, side) == pytest.approx(-1.5, abs=1e-9)
+    assert _mirror_qpos(backend, side) == pytest.approx(1.5, abs=1e-9)
+    assert _mirror_qpos(backend, side) == pytest.approx(-_driven_qpos(backend, side), abs=1e-9)
 
     idempotent = backend.execute(OpenGripper(side))
     assert idempotent.status is SkillStatus.OK
