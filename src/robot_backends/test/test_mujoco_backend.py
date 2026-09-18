@@ -30,6 +30,7 @@ from robot_skills import (
     NavigateTo,
     Observation,
     OpenGripper,
+    Place,
     Point,
     Pose,
     Quaternion,
@@ -353,17 +354,26 @@ def test_extend_column_low_then_high(backend, document):
                       document.locations['table'], tolerance=_POSE_TOLERANCE)
 
 
-def test_unsupported_skill_still_refused_and_leaves_world_unchanged(backend):
-    """A legal-but-unimplemented skill (Grasp) is refused, world unchanged (PR2)."""
+def test_grasp_out_of_reach_refused_and_leaves_world_unchanged(backend):
+    """Grasping mug_1 from the charger is OUT_OF_REACH; the world is untouched.
+
+    Every legal skill is now implemented (PR4), so the PR2/PR3
+    "still-unsupported skill is refused unchanged" guard is replaced by this:
+    a *reachable-nowhere* grasp, which is the remaining way a legal grasp fails
+    without mutating anything.  The kitchen trio stays > 0.85 m from the charger
+    shoulders (status.md R6), so the Mock's distance oracle and the sim's
+    position-only IK agree that it is unreachable.
+    """
     backend.reset()
     before = backend.get_observation()
 
     result = backend.execute(Grasp('mug_1'))
 
     assert result.status is SkillStatus.FAILED
-    assert result.code is FailureCode.UNSUPPORTED_SKILL
+    assert result.code is FailureCode.OUT_OF_REACH
     assert result.code.is_backend_refusal is True
-    assert result.reason
+    assert "'mug_1'" in result.reason
+    assert "'charger'" in result.reason
     # Refused with nothing moved.
     assert result.observation == before
     assert backend.get_observation() == before
@@ -519,3 +529,203 @@ def test_reset_homes_grippers_open(backend):
     assert _driven_qpos(backend, side) <= -0.75
     assert _driven_qpos(backend, side) == pytest.approx(-1.5, abs=1e-9)
     assert observation.robot.gripper(side).state is GripperState.OPEN
+
+
+# -- PR4: grasp / place ------------------------------------------------------
+
+#: The kitchen-counter drop target for a clear-the-table run (counter center
+#: (2.15, 0.00, 0.85) + DROP_CLEARANCE 0.10), and the spot beside it.
+_PLACE_FIRST = (2.15, 0.00, 0.95)
+_PLACE_SECOND = (2.15, 0.15, 0.95)
+
+#: Tolerance for asserting a commanded place pose reads back exactly.  The
+#: place writes the free-joint qpos verbatim, so position is exact; the
+#: carried-pose checks below allow for position-only IK's 1e-4 convergence.
+_PLACE_TOLERANCE = 1e-6
+
+#: Tolerance for "the object rides with the gripper" checks: position-only IK
+#: converges to 1e-4, so the object sits that far from the gripper frame.
+_CARRY_TOLERANCE = 5e-3
+
+
+def test_grasp_unknown_object_refused(backend):
+    """Grasp of an id not in the scene -> UNKNOWN_OBJECT listing the scene (R3)."""
+    backend.reset()
+    before = backend.get_observation()
+
+    result = backend.execute(Grasp('nope_1'))
+
+    assert result.status is SkillStatus.FAILED
+    assert result.code is FailureCode.UNKNOWN_OBJECT
+    assert "no object 'nope_1' in the scene" in result.reason
+    assert 'book_1' in result.reason and 'mug_1' in result.reason
+    assert result.observation == before
+    assert backend.get_observation() == before
+
+
+def test_grasp_non_graspable_object_refused(backend):
+    """Grasp of a present but non-graspable object -> NOT_GRASPABLE (R3)."""
+    backend.reset()
+    before = backend.get_observation()
+
+    result = backend.execute(Grasp('counter_1'))
+
+    assert result.status is SkillStatus.FAILED
+    assert result.code is FailureCode.NOT_GRASPABLE
+    assert "'counter_1' (counter) is not graspable" in result.reason
+    assert result.observation == before
+
+
+def test_grasp_already_held_object_refused(backend):
+    """Grasp of an object already held -> OBJECT_ALREADY_HELD (R3)."""
+    backend.reset()
+    backend.execute(NavigateTo('kitchen'))
+    held = backend.execute(Grasp('mug_1'))
+    assert held.status is SkillStatus.OK
+    before = backend.get_observation()
+
+    result = backend.execute(Grasp('mug_1'))
+
+    assert result.status is SkillStatus.FAILED
+    assert result.code is FailureCode.OBJECT_ALREADY_HELD
+    assert "object 'mug_1' is already held by the left gripper" in result.reason
+    assert result.observation == before
+
+
+def test_grasp_occupied_named_gripper_refused(backend):
+    """Grasp with a named, already-holding side -> GRIPPER_OCCUPIED (R3)."""
+    backend.reset()
+    backend.execute(NavigateTo('kitchen'))
+    assert backend.execute(Grasp('mug_1', side=Side.LEFT)).status is SkillStatus.OK
+
+    result = backend.execute(Grasp('bowl_1', side=Side.LEFT))
+
+    assert result.status is SkillStatus.FAILED
+    assert result.code is FailureCode.GRIPPER_OCCUPIED
+    assert "the left gripper already holds 'mug_1'" in result.reason
+
+
+def test_grasp_both_grippers_occupied_refused(backend):
+    """Grasp with no side named and both grippers full -> GRIPPER_OCCUPIED (R3)."""
+    backend.reset()
+    backend.execute(NavigateTo('kitchen'))
+    assert backend.execute(Grasp('mug_1')).status is SkillStatus.OK
+    assert backend.execute(Grasp('bowl_1')).status is SkillStatus.OK
+
+    backend.execute(NavigateTo('table'))
+    result = backend.execute(Grasp('book_1'))
+
+    assert result.status is SkillStatus.FAILED
+    assert result.code is FailureCode.GRIPPER_OCCUPIED
+    assert 'both grippers are occupied (' in result.reason
+    assert "left holds 'mug_1'" in result.reason
+    assert "right holds 'bowl_1'" in result.reason
+
+
+def test_place_with_empty_gripper_refused_named_and_unnamed(backend):
+    """Place with nothing held -> GRIPPER_EMPTY, named side and generic (R3)."""
+    backend.reset()
+    before = backend.get_observation()
+    target = Pose.from_xyz(*_PLACE_FIRST)
+
+    generic = backend.execute(Place(target))
+    assert generic.status is SkillStatus.FAILED
+    assert generic.code is FailureCode.GRIPPER_EMPTY
+    assert generic.reason == (
+        'no gripper is holding an object, there is nothing to place')
+
+    named = backend.execute(Place(target, side=Side.LEFT))
+    assert named.status is SkillStatus.FAILED
+    assert named.code is FailureCode.GRIPPER_EMPTY
+    assert named.reason == (
+        'the left gripper is empty, there is nothing to place')
+
+    assert backend.get_observation() == before
+
+
+def test_place_out_of_reach_refused_and_object_still_held(backend):
+    """A far place target -> OUT_OF_REACH, and the gripper keeps its load (R3)."""
+    backend.reset()
+    backend.execute(NavigateTo('table'))
+    assert backend.execute(Grasp('book_1')).status is SkillStatus.OK
+
+    far = Pose.from_xyz(5.0, 5.0, 5.0)
+    result = backend.execute(Place(far))
+
+    assert result.status is SkillStatus.FAILED
+    assert result.code is FailureCode.OUT_OF_REACH
+    assert "'book_1'" in result.reason
+    assert "'table'" in result.reason
+    # The grasp is untouched: the object is still carried.
+    held = result.observation.find_object('book_1')
+    assert held.held_by is Side.LEFT
+    assert result.observation.robot.gripper(Side.LEFT).held_object_id == 'book_1'
+
+
+def test_clear_the_table_loop_in_mujoco(backend):
+    """The PR4 milestone in the sim: grasp + carry + place clear the table.
+
+    A blind loop over the sim seam (navigate -> grasp -> navigate -> place),
+    using the re-placed seed (status.md R6).  Both table objects move to the
+    counter drop spots; both end unheld, at exactly their commanded poses, with
+    both grippers empty.
+    """
+    backend.reset()
+
+    for target, first in (('book_1', True), ('cup_1', False)):
+        assert backend.execute(NavigateTo('table')).status is SkillStatus.OK
+        grasped = backend.execute(Grasp(target))
+        assert grasped.status is SkillStatus.OK, grasped.reason
+        assert grasped.observation.find_object(target).held_by is Side.LEFT
+
+        assert backend.execute(NavigateTo('kitchen')).status is SkillStatus.OK
+        spot = _PLACE_FIRST if first else _PLACE_SECOND
+        pose = Pose.from_xyz(*spot)
+        placed = backend.execute(Place(pose))
+        assert placed.status is SkillStatus.OK, placed.reason
+
+    final = backend.get_observation()
+    for object_id, spot in (('book_1', _PLACE_FIRST), ('cup_1', _PLACE_SECOND)):
+        item = final.find_object(object_id)
+        assert item.held_by is None
+        assert_pose_close(item.pose, Pose.from_xyz(*spot),
+                          tolerance=_PLACE_TOLERANCE)
+    for gripper in final.robot.grippers:
+        assert gripper.held_object_id is None
+        assert gripper.grasped is False
+
+
+def test_grasp_and_place_flip_held_by_and_move_the_object(backend):
+    """Grasp sets held_by/grasped; a navigate carries the object with the arm."""
+    backend.reset()
+    backend.execute(NavigateTo('table'))
+
+    grasped = backend.execute(Grasp('book_1'))
+    assert grasped.status is SkillStatus.OK
+    item = grasped.observation.find_object('book_1')
+    assert item.held_by is Side.LEFT
+    assert grasped.observation.robot.gripper(Side.LEFT).grasped is True
+    assert grasped.observation.robot.gripper(Side.LEFT).held_object_id == 'book_1'
+    # Attach-on-close (R1): the reported object jumped to the gripper's position
+    # (the object keeps its own orientation -- the grasp offset captured that).
+    carried_pose = item.pose
+    assert carried_pose.position.distance_to(
+        grasped.observation.robot.gripper(Side.LEFT).pose.position) < _CARRY_TOLERANCE
+
+    # A navigate moves the base, so the held object rides along with the arm.
+    moved = backend.execute(NavigateTo('kitchen')).observation
+    item_moved = moved.find_object('book_1')
+    assert item_moved.held_by is Side.LEFT
+    assert item_moved.pose.position.distance_to(carried_pose.position) > 0.5
+    assert item_moved.pose.position.distance_to(
+        moved.robot.gripper(Side.LEFT).pose.position) < _CARRY_TOLERANCE
+
+    # place releases it, at exactly the commanded pose, and empties the gripper.
+    target = Pose.from_xyz(*_PLACE_FIRST)
+    placed = backend.execute(Place(target))
+    assert placed.status is SkillStatus.OK
+    assert placed.reason == "released 'book_1' from the left gripper"
+    item_placed = placed.observation.find_object('book_1')
+    assert item_placed.held_by is None
+    assert_pose_close(item_placed.pose, target, tolerance=_PLACE_TOLERANCE)
+    assert placed.observation.robot.gripper(Side.LEFT).grasped is False
