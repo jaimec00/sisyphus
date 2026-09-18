@@ -14,17 +14,25 @@ step cannot perturb them); the robot comes up at ``start_location`` with column
 at ``start_column_height`` and empty/open grippers.
 """
 
+import math
+
 from mock_backend_fixtures import assert_pose_close
+import mujoco
 import pytest
 from robot_backends import MockBackend, MuJoCoBackend, RobotBackend
 from robot_skills import (
+    CloseGripper,
     ExtendColumn,
     FailureCode,
     Grasp,
     GripperState,
+    MoveGripper,
     NavigateTo,
     Observation,
+    OpenGripper,
+    Point,
     Pose,
+    Quaternion,
     Side,
     SIDE_ORDER,
     SkillResult,
@@ -365,3 +373,149 @@ def test_execute_rejects_a_non_skill(backend):
     """Passing a raw dict is a programming error, not a skill refusal."""
     with pytest.raises(TypeError):
         backend.execute({'skill': 'navigate_to', 'location': 'kitchen'})
+
+
+#: A moderate arm configuration (left arm) used to derive an in-reach target.
+#: Deliberately away from joint limits so the solver converges reliably (R8).
+_ARM_CONFIG = (0.3, 0.4, 0.9, 0.0, 0.1)
+
+#: Read-back tolerances for a solved move_gripper (R8).
+_MOVE_POSITION_TOLERANCE = 5e-3
+_MOVE_ORIENTATION_TOLERANCE = 2e-2
+
+#: How far from the shoulder the out-of-reach target sits.
+_FAR_DISTANCE = 2.0
+
+
+def _quat_angle(left: Quaternion, right: Quaternion) -> float:
+    """Return the geodesic angle (rad) between two unit quaternions."""
+    dot = abs(left.x * right.x + left.y * right.y
+              + left.z * right.z + left.w * right.w)
+    return 2.0 * math.acos(min(1.0, dot))
+
+
+def _set_arm(backend: MuJoCoBackend, side: Side, values) -> None:
+    """Write an arm's five joint values via the backend's name-based hook (R8)."""
+    for value, (qpos_adr, _) in zip(values, backend._arm_joints[side].values()):
+        backend._data.qpos[qpos_adr] = value
+    mujoco.mj_forward(backend._model, backend._data)
+
+
+def _driven_qpos(backend: MuJoCoBackend, side: Side) -> float:
+    """Return the driven gripper joint's current qpos."""
+    return float(backend._data.qpos[backend._gripper_joints[side]['driven'][0]])
+
+
+def _mirror_qpos(backend: MuJoCoBackend, side: Side) -> float:
+    """Return the mirror gripper joint's current qpos."""
+    return float(backend._data.qpos[backend._gripper_joints[side]['mirror'][0]])
+
+
+def test_move_gripper_in_reach_lands_the_gripper(backend):
+    """A pose derived from the arm's own FK is reachable and hit within R8 tol."""
+    side = Side.LEFT
+    backend.reset()
+    _set_arm(backend, side, _ARM_CONFIG)
+    target = backend.get_observation().robot.gripper(side).pose
+
+    backend.reset()
+    result = backend.execute(MoveGripper(side, target))
+
+    assert result.status is SkillStatus.OK
+    assert result.reason is None
+    reached = result.observation.robot.gripper(side).pose
+    assert reached.position.distance_to(target.position) < _MOVE_POSITION_TOLERANCE
+    assert _quat_angle(reached.orientation, target.orientation) < _MOVE_ORIENTATION_TOLERANCE
+    # The five arm position actuators are commanded to the solved values too, so
+    # the servo holds the solved posture rather than springing back (R3).
+    for (qpos_adr, ctrl_id) in backend._arm_joints[side].values():
+        assert backend._data.ctrl[ctrl_id] == pytest.approx(
+            float(backend._data.qpos[qpos_adr]))
+
+
+def test_move_gripper_to_current_pose_is_a_noop(backend):
+    """Commanding the gripper's own post-reset pose succeeds and moves nothing."""
+    side = Side.LEFT
+    backend.reset()
+    before = backend.get_observation().robot.gripper(side).pose
+
+    result = backend.execute(MoveGripper(side, before))
+
+    assert result.status is SkillStatus.OK
+    after = result.observation.robot.gripper(side).pose
+    assert after.position.distance_to(before.position) < _MOVE_POSITION_TOLERANCE
+    assert _quat_angle(after.orientation, before.orientation) < _MOVE_ORIENTATION_TOLERANCE
+
+
+def test_move_gripper_out_of_reach_is_refused(backend):
+    """A pose far beyond the arm's reach fails with the Mock's reason shape (R3)."""
+    side = Side.LEFT
+    backend.reset()
+    before = backend.get_observation()
+    far = Pose(
+        position=Point(_FAR_DISTANCE, 0.0, before.robot.column_height + 0.5),
+        orientation=Quaternion(),
+    )
+
+    result = backend.execute(MoveGripper(side, far))
+
+    assert result.status is SkillStatus.FAILED
+    assert result.code is FailureCode.OUT_OF_REACH
+    assert result.code.is_backend_refusal is True
+    assert f'{_FAR_DISTANCE:.2f} m' in result.reason or '2.01 m' in result.reason
+    assert '0.85 m' in result.reason
+    assert "'charger'" in result.reason
+    assert f'{side.value} shoulder' in result.reason
+    # Refused up front: the world (and the arm) is untouched.
+    assert result.observation == before
+
+
+def test_close_then_open_gripper_flips_the_state(backend):
+    """close/open write the jaws (driven + mirror) and are observable (R5/R6)."""
+    side = Side.LEFT
+    opened = backend.reset()
+    open_pose = opened.robot.gripper(side).pose
+    assert opened.robot.gripper(side).state is GripperState.OPEN
+
+    closed = backend.execute(CloseGripper(side))
+
+    assert closed.status is SkillStatus.OK
+    assert closed.observation.robot.gripper(side).state is GripperState.CLOSED
+    assert _driven_qpos(backend, side) == pytest.approx(0.0, abs=1e-9)
+    assert _mirror_qpos(backend, side) == pytest.approx(0.0, abs=1e-9)
+    assert _mirror_qpos(backend, side) == pytest.approx(-_driven_qpos(backend, side), abs=1e-9)
+    assert closed.observation.robot.gripper(side).grasped is False
+    # The jaws physically moved, so the reported orientation changed (the jaw
+    # midpoint is on the wrist roll axis, so it does not translate).
+    moved = closed.observation.robot.gripper(side).pose
+    assert _quat_angle(moved.orientation, open_pose.orientation) > 1e-3
+
+    # Idempotent: closing an already-closed gripper still succeeds (D19).
+    again = backend.execute(CloseGripper(side))
+    assert again.status is SkillStatus.OK
+    assert again.reason == f'the {side.value} gripper was already closed'
+
+    reopened = backend.execute(OpenGripper(side))
+
+    assert reopened.status is SkillStatus.OK
+    assert reopened.reason is None
+    assert reopened.observation.robot.gripper(side).state is GripperState.OPEN
+    assert _driven_qpos(backend, side) == pytest.approx(-1.5, abs=1e-9)
+    assert _mirror_qpos(backend, side) == pytest.approx(1.5, abs=1e-9)
+    assert _mirror_qpos(backend, side) == pytest.approx(-_driven_qpos(backend, side), abs=1e-9)
+
+    idempotent = backend.execute(OpenGripper(side))
+    assert idempotent.status is SkillStatus.OK
+    assert idempotent.reason == f'the {side.value} gripper was already open'
+
+
+def test_reset_homes_grippers_open(backend):
+    """Reset homes each gripper OPEN -- driven qpos at its lower limit (R6)."""
+    side = Side.LEFT
+    backend.execute(CloseGripper(side))
+
+    observation = backend.reset()
+
+    assert _driven_qpos(backend, side) <= -0.75
+    assert _driven_qpos(backend, side) == pytest.approx(-1.5, abs=1e-9)
+    assert observation.robot.gripper(side).state is GripperState.OPEN

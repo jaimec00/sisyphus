@@ -59,9 +59,20 @@ reject, don't-clamp semantics (R2): a height outside the column's travel is
 refused with ``OUT_OF_RANGE`` and the sim is left unchanged; the safety layer
 (robot_mcp) owns clamping.  Every *other* legal skill keeps PR1's refusal --
 ``status=failed`` with :class:`~robot_skills.FailureCode.UNSUPPORTED_SKILL` and
-an unchanged world (the ABC's total contract; see :meth:`execute`).  Grasp/place
-/IK and arm kinematics arrive in PR3+, and the primitive scene geometry below is
-a placeholder for roadmap #4's visuals.
+an unchanged world (the ABC's total contract; see :meth:`execute`).
+
+**Skills (PR3).**  :meth:`execute` additionally implements ``move_gripper``,
+``open_gripper`` and ``close_gripper``.  ``move_gripper`` targets the *reported*
+gripper frame (jaw midpoint + upper-jaw orientation, R2) and solves for the
+five arm joints with :func:`~robot_backends.ik.solve_ik`; a pose the arm cannot
+reach (the solver's residual never falls below tolerance) is refused with
+``OUT_OF_REACH``, whose reason reuses :class:`~robot_backends.mock_world.RobotModel`
+so it stays semantically identical to the Mock's.  ``open_gripper`` /
+``close_gripper`` write the driven joint *and* its independent mirror (R5) and
+never refuse (D19 idempotence).  All three write qpos **and** the matching
+position actuators (servo hold) then ``mj_forward`` -- no ``mj_step`` (R4).
+``grasp``/``place`` stay ``UNSUPPORTED_SKILL`` until PR4, and the primitive
+scene geometry below is a placeholder for roadmap #4's visuals.
 """
 
 from __future__ import annotations
@@ -69,16 +80,22 @@ from __future__ import annotations
 from typing import Mapping
 
 import mujoco
+import numpy as np
 
+from robot_backends.ik import solve_ik
 from robot_backends.interface import RobotBackend
+from robot_backends.mock_world import RobotModel
 from robot_description.mjcf_model import load_mjcf_model_with_scene
 from robot_skills import (
+    CloseGripper,
     ExtendColumn,
     FailureCode,
     GripperObservation,
     GripperState,
+    MoveGripper,
     NavigateTo,
     Observation,
+    OpenGripper,
     Point,
     Pose,
     Quaternion,
@@ -115,6 +132,13 @@ _WHEEL_JOINTS = ('base_left_wheel', 'base_back_wheel', 'base_right_wheel')
 #: wrist by ``fusestatic``).  These name patterns select the jaw bodies.
 _JAW_UPPER = 'gripper_upper_jaw_link'
 _JAW_LOWER = 'gripper_lower_jaw_link'
+
+#: The five revolute arm joints per side, in kinematic order (base -> tip).
+#: A side's joint is named ``<side>_<suffix>``; :meth:`MuJoCoBackend._arm_fk`
+#: writes exactly these and nothing else (R1), so the IK solve variables cannot
+#: leak into the base, column or jaws.
+_ARM_JOINT_SUFFIXES = (
+    'shoulder_pan', 'shoulder_lift', 'elbow_flex', 'wrist_flex', 'wrist_roll')
 
 
 class _SkillRefused(Exception):
@@ -204,8 +228,10 @@ class MuJoCoBackend(RobotBackend):
     :class:`~robot_skills.FailureCode.UNSUPPORTED_SKILL`, leaving the world
     unchanged -- exactly what the ABC's *total* contract asks for ("a skill
     that cannot be carried out returns ``status=failed`` ... and leaves the
-    world state unchanged").  ``navigate_to``/``extend_column`` never raise for
-    a legal :class:`Skill` either; only a non-``Skill`` raises ``TypeError``.
+    world state unchanged").  PR3 adds ``move_gripper`` (IK over the five arm
+    joints) and ``open_gripper``/``close_gripper`` (driven + mirror jaw joints).
+    Only ``move_gripper`` can refuse (``OUT_OF_REACH``); ``grasp``/``place``
+    raise :class:`TypeError` for a non-``Skill`` and stay unsupported until PR4.
     """
 
     def __init__(
@@ -251,9 +277,36 @@ class MuJoCoBackend(RobotBackend):
         # (R2 preferred source) so the backend agrees with the MJCF it compiled.
         self._column_range = self._joint_range(_COLUMN_JOINT)
 
-        # Arms + grippers + mirrors are returned to joint zero (their position
-        # actuator's servo target) on reset.  The free joint is /excluded/ from
-        # the joint sweep (R5): it is homed to the start-location pose instead.
+        # Arm + gripper joints, by name (R5): the five arm joints keep the IK
+        # solve variables (qpos adr + matching position actuator), and each
+        # side's gripper pairs the *driven* joint with its independent mirror
+        # (MuJoCo drops the URDF mimic -- R5 -- so both must be commanded).
+        self._arm_joints: dict[Side, dict[str, tuple[int, int]]] = {}
+        self._gripper_joints: dict[Side, dict[str, tuple[int, int]]] = {}
+        self._arm_ranges: dict[Side, tuple[tuple[float, float], ...]] = {}
+        self._gripper_ranges: dict[Side, tuple[tuple[float, float], tuple[float, float]]] = {}
+        for side in SIDE_ORDER:
+            names = [f'{side.value}_{suffix}' for suffix in _ARM_JOINT_SUFFIXES]
+            self._arm_joints[side] = {
+                name: (self._joint_qposadr(name), self._actuator_id(name))
+                for name in names
+            }
+            self._arm_ranges[side] = tuple(
+                self._joint_range(name) for name in names)
+            driven = f'{side.value}_gripper'
+            mirror = f'{driven}_mirror'
+            self._gripper_joints[side] = {
+                'driven': (self._joint_qposadr(driven), self._actuator_id(driven)),
+                'mirror': (self._joint_qposadr(mirror), self._actuator_id(mirror)),
+            }
+            self._gripper_ranges[side] = (
+                self._joint_range(driven), self._joint_range(mirror))
+
+        # Arms + grippers + mirrors are returned to their home posture on reset
+        # (defined by ``_HOME_JOINTS``): arm joints to zero, gripper jaws to
+        # OPEN (R6).  The free joint is /excluded/ from the joint sweep (R5):
+        # it is homed to the start-location pose instead, and the grippers are
+        # written explicitly (their home is not joint zero).
         self._home_joints = self._joint_ids_excluding(
             _WHEEL_JOINTS + (_COLUMN_JOINT, _BASE_FREE))
         self._home_position_actuators = self._actuator_ids_excluding(
@@ -277,6 +330,14 @@ class MuJoCoBackend(RobotBackend):
             body_id = self._body_id(f'{side.value}_{_JAW_UPPER}')
             self._jaw_upper[side] = body_id
             self._jaw_lower[side] = self._body_id(f'{side.value}_{_JAW_LOWER}')
+
+        # The shared body-constants model (R3): the Mock's kinematic stand-in,
+        # reused wholesale so the refusal reason matches the Mock's exactly.
+        self._robot = RobotModel()
+
+        # Per-side arm qpos snapshots for the IK solver's restore contract.
+        self._arm_snapshot: dict[Side, np.ndarray] = {
+            side: np.zeros(len(_ARM_JOINT_SUFFIXES)) for side in SIDE_ORDER}
 
     # -- model-role resolution ---------------------------------------------
 
@@ -369,13 +430,24 @@ class MuJoCoBackend(RobotBackend):
         data.qpos[self._column_qpos_adr] = height
         data.ctrl[self._column_ctrl] = height
 
-        # Arms + grippers + mirrors: home at joint zero (position actuators --
-        # a ctrl of 0 makes the zero joint the servo's target).  The free joint
-        # is excluded from this sweep (R5) -- it was homed above instead.
+        # Arms: home at joint zero (position actuators -- a ctrl of 0 makes the
+        # zero joint the servo's target).  The free joint is excluded from this
+        # sweep (R5) -- it was homed above instead.  Grippers are homed OPEN
+        # just below (R6): their home is not joint zero.
         for jid in self._home_joints:
             data.qpos[self._model.jnt_qposadr[jid]] = 0.0
         for aid in self._home_position_actuators:
             data.ctrl[aid] = 0.0
+
+        # Grippers home OPEN (R6): the driven jaw at its lower limit and the
+        # mirror at the symmetric positive target, each with its position
+        # actuator commanded to the same value so the servo holds the posture.
+        for side in SIDE_ORDER:
+            open_qpos, open_ctrl = self._gripper_target(side, closed=False)
+            for key in ('driven', 'mirror'):
+                qpos_adr, ctrl_id = self._gripper_joints[side][key]
+                data.qpos[qpos_adr] = open_qpos[key]
+                data.ctrl[ctrl_id] = open_ctrl[key]
 
         self._location = self._document.start_location
         mujoco.mj_forward(self._model, data)
@@ -427,9 +499,10 @@ class MuJoCoBackend(RobotBackend):
     def execute(self, skill: Skill) -> SkillResult:
         """Execute one skill, returning its status and a fresh observation.
 
-        ``NavigateTo`` and ``ExtendColumn`` dispatch to their handlers (PR2);
-        every other skill is a clean ``status=failed`` with
-        ``UNSUPPORTED_SKILL`` and an unchanged observation.  Per the ABC's
+        ``NavigateTo`` and ``ExtendColumn`` (PR2) plus ``MoveGripper``,
+        ``OpenGripper`` and ``CloseGripper`` (PR3) dispatch to their handlers;
+        ``Grasp``/``Place`` and any other skill are a clean ``status=failed``
+        with ``UNSUPPORTED_SKILL`` and an unchanged observation.  Per the ABC's
         *total* contract this never raises for a legal :class:`Skill`, and it
         only raises for something that is not a ``Skill`` at all.
         """
@@ -441,6 +514,12 @@ class MuJoCoBackend(RobotBackend):
                 note = self._navigate_to(skill)
             elif isinstance(skill, ExtendColumn):
                 note = self._extend_column(skill)
+            elif isinstance(skill, MoveGripper):
+                note = self._move_gripper(skill)
+            elif isinstance(skill, OpenGripper):
+                note = self._open_gripper(skill)
+            elif isinstance(skill, CloseGripper):
+                note = self._close_gripper(skill)
             else:
                 return SkillResult.failure(
                     skill,
@@ -526,6 +605,187 @@ class MuJoCoBackend(RobotBackend):
         mujoco.mj_forward(self._model, data)
         return None
 
+    def _move_gripper(self, skill: MoveGripper) -> str | None:
+        """Move one gripper to a Cartesian pose by solving IK for the arm (PR3).
+
+        The target is the *reported* gripper frame (R2) -- jaw midpoint plus
+        upper-jaw orientation -- so a commanded pose and an observed pose can
+        never disagree.  ``solve_ik`` returns ``None`` when no start converges,
+        which is the honest reachability signal (R3): the skill is then refused
+        with ``OUT_OF_REACH`` and a Mock-shaped reason, and ``solve_ik``'s
+        ``restore`` contract means the sim is untouched.  On success the five
+        arm qpos slots and their position actuators are written to the solved
+        values (servo hold) and ``mj_forward`` advances kinematics -- no
+        ``mj_step`` (R4).
+        """
+        side = skill.side
+        position = skill.pose.position
+        target_rotation = _quat_to_matrix(skill.pose.orientation)
+        arm = self._arm_joints[side]
+        joint_adrs = self._arm_joint_adrs(side)
+        lower = np.array([rng[0] for rng in self._arm_ranges[side]])
+        upper = np.array([rng[1] for rng in self._arm_ranges[side]])
+        self._snapshot_arm(side)
+
+        solved = solve_ik(
+            np.array([position.x, position.y, position.z]),
+            target_rotation,
+            fk=lambda q: self._arm_fk(side, q),
+            joint_adrs=joint_adrs,
+            lower=lower,
+            upper=upper,
+            restore=lambda: self._restore_arm(side),
+        )
+        if solved is None:
+            raise _SkillRefused(
+                FailureCode.OUT_OF_REACH, self._unreachable_reason(
+                    side, position, 'move the gripper to'))
+
+        data = self._data
+        for value, (qpos_adr, ctrl_id) in zip(solved, arm.values()):
+            data.qpos[qpos_adr] = float(value)
+            data.ctrl[ctrl_id] = float(value)
+        mujoco.mj_forward(self._model, data)
+        return None
+
+    def _open_gripper(self, skill: OpenGripper) -> str | None:
+        """Open one gripper (driven + mirror jaws), idempotently (D19).
+
+        Always succeeds; an already-open gripper says so in an informational
+        reason (mirroring ``mock_backend._open_gripper``), otherwise ``None``.
+        """
+        side = skill.side
+        was_open = self._gripper_state(side) is GripperState.OPEN
+        self._set_gripper(side, closed=False)
+        return f'the {side.value} gripper was already open' if was_open else None
+
+    def _close_gripper(self, skill: CloseGripper) -> str | None:
+        """Close one gripper (driven + mirror jaws), idempotently (D19).
+
+        Closing on thin air grips nothing -- ``grasped`` stays ``False`` -- and
+        that is reported by the observation rather than raised here (R5).
+        """
+        side = skill.side
+        was_closed = self._gripper_state(side) is GripperState.CLOSED
+        self._set_gripper(side, closed=True)
+        if was_closed:
+            return f'the {side.value} gripper was already closed'
+        return None
+
+    # -- arm + gripper mechanics (PR3) -------------------------------------
+
+    def _shoulder(self, side: Side) -> Point:
+        """Return the world-frame shoulder point of one arm (Mock's model).
+
+        Reuses :class:`~robot_backends.mock_world.RobotModel` -- the shared
+        body-constants holder that reads the URDF -- so the refusal reason
+        below is semantically identical to the Mock's (R3).  The model ignores
+        base orientation, exactly as the Mock does.
+        """
+        return self._robot.shoulder(
+            self._base_pose(),
+            float(self._data.qpos[self._column_qpos_adr]),
+            side)
+
+    def _unreachable_reason(self, side: Side, target: Point, action: str) -> str:
+        """Return the Mock's exact ``OUT_OF_REACH`` reason text for ``target``."""
+        distance = target.distance_to(self._shoulder(side))
+        reach = self._robot.reach_radius
+        return (
+            f'cannot {action}: it is {distance:.2f} m from the {side.value} '
+            f'shoulder, beyond the {reach:.2f} m reach '
+            f'(robot is at {self._location!r})')
+
+    def _arm_fk(
+        self, side: Side, q: np.ndarray,
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """Set an arm's five qpos slots, forward, and return its task frame.
+
+        The IK callback (R1): it touches **only** the five arm joints -- never
+        the base, column or jaws -- and reports the jaw-midpoint position plus
+        the upper jaw's rotation matrix, the same frame :meth:`_gripper_frame`
+        reports (R2).
+        """
+        data = self._data
+        for value, (qpos_adr, _) in zip(q, self._arm_joints[side].values()):
+            data.qpos[qpos_adr] = float(value)
+        mujoco.mj_forward(self._model, data)
+        return self._task_frame(side)
+
+    def _arm_joint_adrs(self, side: Side) -> list[int]:
+        """Return an arm's five qpos slots in joint order."""
+        return [adr for adr, _ in self._arm_joints[side].values()]
+
+    def _task_frame(self, side: Side) -> tuple[np.ndarray, np.ndarray]:
+        """Return ``(jaw-midpoint, upper-jaw rotation matrix)`` from mjData.
+
+        The single source of the IK task frame (R2): both :meth:`_arm_fk` and
+        :meth:`_gripper_frame` read it, so the commanded target and the
+        reported observation cannot disagree.
+        """
+        data = self._data
+        upper = data.xpos[self._jaw_upper[side]]
+        lower = data.xpos[self._jaw_lower[side]]
+        midpoint = 0.5 * (np.asarray(upper) + np.asarray(lower))
+        quat = data.xquat[self._jaw_upper[side]]  # (w, x, y, z)
+        return midpoint, _wxyz_to_matrix(quat)
+
+    def _snapshot_arm(self, side: Side) -> None:
+        """Record an arm's five qpos values so a failed solve can restore them."""
+        self._arm_snapshot[side] = np.array(
+            [self._data.qpos[adr] for adr in self._arm_joint_adrs(side)])
+
+    def _restore_arm(self, side: Side) -> None:
+        """Put an arm's five qpos slots back and forward (the solve's exit path).
+
+        ``solve_ik`` calls this on every exit, so a refused solve leaves
+        ``mjData`` exactly as it found it (R1/R3 "world unchanged on refusal").
+        """
+        snapshot = self._arm_snapshot[side]
+        for value, qpos_adr in zip(snapshot, self._arm_joint_adrs(side)):
+            self._data.qpos[qpos_adr] = float(value)
+        mujoco.mj_forward(self._model, self._data)
+
+    def _gripper_target(
+        self, side: Side, *, closed: bool,
+    ) -> tuple[dict[str, float], dict[str, float]]:
+        """Return the ``(qpos, ctrl)`` targets for a gripper's jaws (R5/R6).
+
+        The mirror is commanded to the negated driven value: MuJoCo drops the
+        URDF's ``<mimic>``, so the two joints move independently and the
+        symmetric posture must be written out explicitly (R5).  ``open`` uses
+        the driven joint's lower limit (its URDF open angle) with the mirror at
+        the negated value; ``closed`` is zero on both.
+        """
+        lower, _ = self._gripper_ranges[side][0]
+        if closed:
+            return {'driven': 0.0, 'mirror': 0.0}, {'driven': 0.0, 'mirror': 0.0}
+        return (
+            {'driven': lower, 'mirror': -lower},
+            {'driven': lower, 'mirror': -lower},
+        )
+
+    def _set_gripper(self, side: Side, *, closed: bool) -> None:
+        """Write a gripper's jaw qpos and servo targets, then forward (R4/R5)."""
+        qpos, ctrl = self._gripper_target(side, closed=closed)
+        data = self._data
+        for key in ('driven', 'mirror'):
+            qpos_adr, ctrl_id = self._gripper_joints[side][key]
+            data.qpos[qpos_adr] = qpos[key]
+            data.ctrl[ctrl_id] = ctrl[key]
+        mujoco.mj_forward(self._model, data)
+
+    def _gripper_state(self, side: Side) -> GripperState:
+        """Return a gripper's OPEN/CLOSED state from the driven jaw's qpos (R6).
+
+        Derived (never hardcoded) so an open/close skill is observable: OPEN at
+        or below the midpoint of the driven joint's travel, CLOSED above it.
+        """
+        lower, upper = self._gripper_ranges[side][0]
+        driven_adr = self._gripper_joints[side]['driven'][0]
+        qpos = float(self._data.qpos[driven_adr])
+        return GripperState.OPEN if qpos <= (lower + upper) / 2.0 else GripperState.CLOSED
+
     # -- observation helpers ------------------------------------------------
 
     def _base_pose(self) -> Pose:
@@ -544,34 +804,66 @@ class MuJoCoBackend(RobotBackend):
         """Return the reported (world/map) pose of a welded scene object."""
         return _world_from_xpos(self._data, self._object_body[object_id])
 
-    def _gripper_pose(self, side: Side) -> Pose:
-        """Return the world-frame pose of one gripper (jaw midpoint, Q3).
+    def _gripper_frame(self, side: Side) -> tuple[Point, Quaternion]:
+        """Return the reported gripper frame: jaw midpoint and upper-jaw quat (Q3).
 
-        Position is the midpoint of the two open jaws -- the natural grasp
-        centre of an empty, open gripper.  Orientation is the upper jaw body's.
-        This is a PR1 placeholder read straight from the sim; PR2's arm
-        kinematics will report true commanded poses.
+        Position is the midpoint of the two jaws -- the natural grasp centre of
+        the gripper.  Orientation is the upper jaw body's.  This is the *one*
+        place that frame is derived (:meth:`_task_frame` is the numeric
+        twin), so IK's target and the observation agree by construction (R2).
         """
-        up = self._data.xpos[self._jaw_upper[side]]
-        lo = self._data.xpos[self._jaw_lower[side]]
-        mid = ((up[0] + lo[0]) * 0.5, (up[1] + lo[1]) * 0.5, (up[2] + lo[2]) * 0.5)
+        midpoint, _ = self._task_frame(side)
         quat = self._data.xquat[self._jaw_upper[side]]  # (w, x, y, z)
-        return Pose(
-            position=Point(mid[0], mid[1], mid[2]),
-            orientation=Quaternion(
+        return (
+            Point(float(midpoint[0]), float(midpoint[1]), float(midpoint[2])),
+            Quaternion(
                 x=float(quat[1]), y=float(quat[2]),
                 z=float(quat[3]), w=float(quat[0])),
         )
 
+    def _gripper_pose(self, side: Side) -> Pose:
+        """Return the world-frame pose of one gripper."""
+        position, orientation = self._gripper_frame(side)
+        return Pose(position=position, orientation=orientation)
+
     def _gripper_observation(self, side: Side) -> GripperObservation:
-        """Return the reportable state of one gripper (empty/open on reset)."""
+        """Return the reportable state of one gripper (state from the driven jaw).
+
+        ``held_object_id`` is ``None`` and ``grasped`` is ``False`` until PR4
+        models a grasp: closing on thin air grips nothing, which is a fact the
+        observation reports rather than an error (R5).
+        """
         return GripperObservation(
             side=side,
-            state=GripperState.OPEN,
+            state=self._gripper_state(side),
             pose=self._gripper_pose(side),
             held_object_id=None,
             grasped=False,
         )
+
+
+def _quat_to_matrix(quaternion: Quaternion) -> np.ndarray:
+    """Return the 3x3 rotation matrix of a skill-API ``Quaternion`` (x, y, z, w)."""
+    q = np.array([quaternion.x, quaternion.y, quaternion.z, quaternion.w], dtype=float)
+    norm = float(np.linalg.norm(q))
+    if norm > 0.0:
+        q = q / norm
+    x, y, z, w = q
+    return np.array([
+        [1 - 2 * (y * y + z * z), 2 * (x * y - z * w), 2 * (x * z + y * w)],
+        [2 * (x * y + z * w), 1 - 2 * (x * x + z * z), 2 * (y * z - x * w)],
+        [2 * (x * z - y * w), 2 * (y * z + x * w), 1 - 2 * (x * x + y * y)],
+    ])
+
+
+def _wxyz_to_matrix(quaternion: np.ndarray) -> np.ndarray:
+    """Return the 3x3 rotation matrix of a MuJoCo ``xquat`` (w, x, y, z)."""
+    w, x, y, z = (float(v) for v in quaternion)
+    return np.array([
+        [1 - 2 * (y * y + z * z), 2 * (x * y - z * w), 2 * (x * z + y * w)],
+        [2 * (x * y + z * w), 1 - 2 * (x * x + z * z), 2 * (y * z - x * w)],
+        [2 * (x * z - y * w), 2 * (y * z + x * w), 1 - 2 * (x * x + y * y)],
+    ])
 
 
 def _world_from_xpos(data: mujoco.MjData, body_id: int) -> Pose:
