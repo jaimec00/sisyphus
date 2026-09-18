@@ -21,7 +21,13 @@ from mcp import ClientSession, stdio_client, StdioServerParameters
 from mcp_fixtures import clean_environment
 import pytest
 from robot_backends import MockBackend
-from robot_skills import Grasp, NavigateTo
+from robot_skills import (
+    Grasp,
+    GripperState,
+    NavigateTo,
+    Observation,
+    SkillResult,
+)
 
 pytestmark = pytest.mark.anyio
 
@@ -31,17 +37,21 @@ pytestmark = pytest.mark.anyio
 TRANSPORT_TIMEOUT_SECONDS = 30.0
 
 
-def server_parameters() -> StdioServerParameters:
+def server_parameters(backend: str | None = None) -> StdioServerParameters:
     """Return the launch parameters for the server as the README documents it.
 
     The environment comes from :func:`~mcp_fixtures.clean_environment`: the
     workspace packages on ``PYTHONPATH``, minus the variables a spawned server
     must not inherit from whoever is running the suite (see
     ``INHERITED_ENV_TO_DROP`` -- a stray ``ROBOT_WORLD_STATE`` would point this
-    server at the developer's real world file).
+    server at the developer's real world file).  ``backend`` appends
+    ``--backend <name>``, so the same helper spawns the MuJoCo server too.
     """
+    args = ['-m', 'robot_mcp']
+    if backend is not None:
+        args += ['--backend', backend]
     return StdioServerParameters(
-        command=sys.executable, args=['-m', 'robot_mcp'], env=clean_environment())
+        command=sys.executable, args=args, env=clean_environment())
 
 
 async def test_a_client_drives_the_spawned_server_over_stdio():
@@ -74,3 +84,50 @@ async def test_a_client_drives_the_spawned_server_over_stdio():
 
                 observed = await session.call_tool('get_observation', {})
                 assert observed.structured_content == reference.get_observation().to_dict()
+
+
+async def test_a_client_drives_the_spawned_mujoco_server_over_stdio():
+    """``python -m robot_mcp --backend mujoco`` serves the same schema live (R4.2).
+
+    The heavy parity work is the in-process R2 stream; this proves the *flag*
+    end-to-end: a real subprocess, launched the way an MCP client config would
+    launch it, drives one minimal stream (navigate_to -> grasp -> observation)
+    and answers in the shared wire schema.  Nothing here compares against a
+    Mock -- the point is that the sim server speaks the same protocol and schema
+    as any other backend.
+    """
+    with anyio.fail_after(TRANSPORT_TIMEOUT_SECONDS):
+        async with stdio_client(server_parameters('mujoco')) as (read_stream, write_stream):
+            async with ClientSession(read_stream, write_stream) as session:
+                initialized = await session.initialize()
+                assert initialized.server_info.name == 'robot_mcp'
+
+                moved = await session.call_tool('navigate_to', {'location': 'table'})
+                assert not moved.is_error
+                moved_body = moved.structured_content
+                assert moved_body['status'] == 'ok'
+                assert moved_body['skill'] == {'skill': 'navigate_to', 'location': 'table'}
+                # The result parses under the shared seam and re-serialises stably.
+                assert SkillResult.from_dict(moved_body).to_dict() == moved_body
+                # The text block mirrors the structured content, exactly as the
+                # Mock server's does.
+                assert json.loads(moved.content[0].text) == moved_body
+
+                grasped = await session.call_tool('grasp', {'object_id': 'book_1'})
+                assert not grasped.is_error
+                grasp_body = grasped.structured_content
+                assert grasp_body['status'] == 'ok'
+                held = next(
+                    gripper for gripper in grasp_body['observation']['robot']['grippers']
+                    if gripper['held_object_id'] == 'book_1')
+                assert held['grasped'] is True
+                assert held['state'] == GripperState.CLOSED.value
+
+                observed = await session.call_tool('get_observation', {})
+                assert not observed.is_error
+                observed_body = observed.structured_content
+                assert Observation.from_dict(observed_body).to_dict() == observed_body
+                book = next(
+                    item for item in observed_body['objects']
+                    if item['object_id'] == 'book_1')
+                assert book['held_by'] == held['side']
