@@ -26,11 +26,26 @@ import math
 
 from mcp_fixtures import connected, payload
 import pytest
-from robot_backends import default_world, MockBackend
+from robot_backends import default_world, MockBackend, MuJoCoBackend
 from robot_safety import KeepOutBox, KeepOutBoxGuard, SafetyLayer, SafetyLimits
 from robot_skills import Point, Pose, SkillResult
 
 pytestmark = pytest.mark.anyio
+
+
+@pytest.fixture(params=[MockBackend, MuJoCoBackend], ids=['mock', 'mujoco'])
+def backend(request):
+    """Return the backend the blind driver runs against, Mock and MuJoCo both.
+
+    R3: the brain smoke is *the same driver* over either backend, so this local
+    fixture is parametrised over the two classes.  It is deliberately **not**
+    the global ``conftest.py`` fixture -- other files (world-state persistence,
+    the safety gate, tool-call routing) depend on that one being a Mock.  Each
+    parameter is a fresh instance seeded from the shared default world, so the
+    two runs are independent.
+    """
+    return request.param()
+
 
 #: Where the chore happens, and where the clutter goes.  Both are names the
 #: agent reads out of ``known_locations``; only the choice between them is a
