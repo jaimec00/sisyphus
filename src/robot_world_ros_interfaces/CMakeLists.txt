@@ -9,6 +9,9 @@ project(robot_world_ros_interfaces)
 
 find_package(ament_cmake REQUIRED)
 find_package(rosidl_default_generators REQUIRED)
+# The write srvs carry a geometry_msgs/Pose field; rosidl needs the
+# package found so its interfaces are in the include map.
+find_package(geometry_msgs REQUIRED)
 
 # Only the srv definitions live here (D35/R1): the node package
 # (robot_world_ros) is ament_python, and ament_python cannot generate custom
@@ -18,9 +21,14 @@ find_package(rosidl_default_generators REQUIRED)
 # required.
 rosidl_generate_interfaces(${PROJECT_NAME}
   "srv/GetWorld.srv"
+  "srv/UpdateObjectPose.srv"
+  "srv/AddObject.srv"
+  "srv/RemoveObject.srv"
+  DEPENDENCIES geometry_msgs
 )
 
 ament_export_dependencies(rosidl_default_runtime)
+ament_export_dependencies(geometry_msgs)
 
 # The gate (`scripts/check_test_integrity.py`) owns first-party packages by
 # their git-tracked package.xml and audits `no-result` as a FAILURE, so this

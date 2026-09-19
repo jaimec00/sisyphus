@@ -1,0 +1,16 @@
+# Register a new object in the world (perception saw something new).
+# held_by is deliberately absent: "which gripper holds this object" is robot
+# proprioception owned by the backend (set_held_by), not something perception
+# observes. A newly added object is registered as held by nobody.
+# Refused (success=false) for an object_id already in the scene, a non-identifier
+# label/object_id, or a pose the store rejects.
+string object_id
+string label
+geometry_msgs/Pose pose
+bool graspable
+---
+# success=true means the write committed to disk, error is empty.
+# success=false means the store refused and the scene is byte-identical;
+# error names the reason.
+bool success
+string error

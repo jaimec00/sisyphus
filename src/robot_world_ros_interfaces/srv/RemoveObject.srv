@@ -1,0 +1,9 @@
+# Drop an object from the world (perception no longer sees it).
+# Refused (success=false) for an unknown object_id: the scene is left untouched.
+string object_id
+---
+# success=true means the write committed to disk, error is empty.
+# success=false means the store refused and the scene is byte-identical;
+# error names the reason.
+bool success
+string error

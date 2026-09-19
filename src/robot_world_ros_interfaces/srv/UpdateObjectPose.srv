@@ -1,0 +1,11 @@
+# Move a registered object to a new world-frame pose.
+# Refused (success=false) for an unknown object_id or a pose the store rejects
+# (non-finite float, all-zero quaternion): the scene is left untouched.
+string object_id
+geometry_msgs/Pose pose
+---
+# success=true means the write committed to disk, error is empty.
+# success=false means the store refused and the scene is byte-identical;
+# error names the reason.
+bool success
+string error
