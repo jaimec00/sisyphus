@@ -1,0 +1,42 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>robot_nav</name>
+  <version>0.0.0</version>
+  <description>Nav2 localization layer: a static map derived from the world store and a ground-truth odom -&gt; base_link transform (D36).</description>
+  <maintainer email="hejaca00@gmail.com">Jaime</maintainer>
+  <license>MIT</license>
+
+  <buildtool_depend>ament_python</buildtool_depend>
+  <depend>rclpy</depend>
+  <depend>robot_world</depend>
+  <depend>robot_world_ros_interfaces</depend>
+  <depend>nav_msgs</depend>
+  <depend>geometry_msgs</depend>
+  <depend>tf2_ros</depend>
+
+  <!-- PR1/issue #121: the lifecycle base is rclpy's own LifecycleNode (the
+       Nav2 nav2_util.lifecycle_node Python binding is not shipped on
+       RoboStack; see docs/features/pr1-nav2-localization/implementation.md).
+       A real Nav2 lifecycle node (nav2_map_server) is stood up alongside it to
+       prove the Nav2 lifecycle machinery configures/activates headless. -->
+  <exec_depend>nav2_map_server</exec_depend>
+  <exec_depend>nav2_lifecycle_manager</exec_depend>
+  <exec_depend>nav2_msgs</exec_depend>
+  <exec_depend>launch</exec_depend>
+  <exec_depend>launch_ros</exec_depend>
+  <exec_depend>ament_index_python</exec_depend>
+
+  <test_depend>ament_copyright</test_depend>
+  <test_depend>ament_flake8</test_depend>
+  <test_depend>ament_pep257</test_depend>
+  <test_depend>python3-pytest</test_depend>
+  <test_depend>ament_index_python</test_depend>
+  <test_depend>tf2_ros</test_depend>
+  <test_depend>lifecycle_msgs</test_depend>
+  <test_depend>rclpy</test_depend>
+
+  <export>
+    <build_type>ament_python</build_type>
+  </export>
+</package>

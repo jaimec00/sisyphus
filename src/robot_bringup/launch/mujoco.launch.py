@@ -167,6 +167,17 @@ def generate_launch_description():
             PythonLaunchDescriptionSource(PathJoinSubstitution(
                 [FindPackageShare('robot_bringup'), 'launch',
                  'world.launch.py']))),
+        # The Nav2 localization layer (PR1/issue #121) -- ground-truth
+        # odom -> base_link, the world-derived static map, and the Nav2
+        # lifecycle nodes -- comes up the same way: its definition lives
+        # in robot_nav's own launch file and is included here, not
+        # duplicated.  It is a runtime consumer of the world service
+        # above, so it is included after it (the map node retries until
+        # the service appears).
+        IncludeLaunchDescription(
+            PythonLaunchDescriptionSource(PathJoinSubstitution(
+                [FindPackageShare('robot_nav'), 'launch',
+                 'nav.launch.py']))),
         simulator,
         # Controllers only come up once the sim node is running (dfki-ric
         # embeds the controller_manager; it must be up for the spawners).
