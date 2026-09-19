@@ -1,0 +1,14 @@
+# Move a registered object to a new world-frame pose.
+# Refused (success=false) for an unknown object_id or a pose the store rejects
+# (non-finite float, all-zero quaternion): the scene is left untouched.
+string object_id
+geometry_msgs/Pose pose
+---
+# success=true means the write committed atomically to disk; error is empty.
+# success=false means the write did NOT durably commit. Two cases, told apart
+# by error: the store refused the input and left the scene unchanged, or the
+# atomic disk write failed and the change is held in the store's memory to be
+# re-written on the next mutation (robot_world's dirty-flag design, D23) --
+# not "rejected".
+bool success
+string error

@@ -11,7 +11,7 @@
     "robot_safety": 176,
     "robot_skills": 106,
     "robot_world": 61,
-    "robot_world_ros": 2,
-    "robot_world_ros_interfaces": 2
+    "robot_world_ros": 8,
+    "robot_world_ros_interfaces": 8
   }
 }
