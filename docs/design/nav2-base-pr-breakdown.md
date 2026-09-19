@@ -44,7 +44,18 @@ localization is deferred to real hardware (nothing produces a scan today).
 - **Test:** Nav2 lifecycle nodes start headless; the TF tree is complete and
   connected; localization holds the robot at a known pose.
 
-### PR2 — Nav2 planning + holonomic control on the base
+### PR2 — drivable base + Nav2 planning + holonomic control
+PR1 surfaced that the base is **welded**, not floating: `fusestatic` folds the
+static trunk into the world body, so there is no base joint in the ROS-sim path.
+PR2 must therefore first make the base *movable*, then drive it.
+
+- **Free the base** in the ROS-sim path (`write_mjcf_model` with the existing
+  `_wrap_base_freejoint` seam) and add a **floor + wheel contact** so the
+  velocity-commanded wheels actually move the base instead of dropping it under
+  gravity (the in-process backend records this no-floor limitation as deferred).
+- **Live ground-truth odometry**: swap `ground_truth_odom`'s constant-pose seam
+  for the dfki-ric `GetBodyState` service (`/mujoco_get_body_state`) so
+  `odom → base_link` tracks the now-movable base.
 - Bring up costmaps + a global planner + a holonomic controller (DWB or MPPI
   configured for omni-drive, not differential).
 - Wire `cmd_vel` (Twist) → 3 wheel velocities through the omni inverse
