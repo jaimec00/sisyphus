@@ -4,7 +4,7 @@
     "_workspace_tooling": 192,
     "robot_backends": 113,
     "robot_brain": 57,
-    "robot_bringup": 4,
+    "robot_bringup": 7,
     "robot_description": 52,
     "robot_mcp": 102,
     "robot_perception": 0,

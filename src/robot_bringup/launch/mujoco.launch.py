@@ -43,9 +43,10 @@ import os
 
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
-from launch.actions import (DeclareLaunchArgument, LogInfo,
-                            RegisterEventHandler, Shutdown)
+from launch.actions import (DeclareLaunchArgument, IncludeLaunchDescription,
+                            LogInfo, RegisterEventHandler, Shutdown)
 from launch.event_handlers import OnProcessStart
+from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import (Command, LaunchConfiguration,
                                   PathJoinSubstitution)
 from launch_ros.actions import Node
@@ -157,6 +158,15 @@ def generate_launch_description():
                 {'use_sim_time': use_sim_time},
             ],
         ),
+        # The world-state query service (PR3/issue #117) comes up alongside
+        # the sim/control stack: it is an independent concern with no sim
+        # dependency, so its node definition lives in its own launch file and
+        # is included here rather than duplicated. No use_sim_time remap --
+        # the world node is a pure state service and never reads /clock.
+        IncludeLaunchDescription(
+            PythonLaunchDescriptionSource(PathJoinSubstitution(
+                [FindPackageShare('robot_bringup'), 'launch',
+                 'world.launch.py']))),
         simulator,
         # Controllers only come up once the sim node is running (dfki-ric
         # embeds the controller_manager; it must be up for the spawners).
