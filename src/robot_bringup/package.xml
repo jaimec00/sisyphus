@@ -36,6 +36,9 @@
   <exec_depend>velocity_controllers</exec_depend>
   <!-- PR3/issue #117: the world-state query service the bringup launches. -->
   <exec_depend>robot_world_ros</exec_depend>
+  <!-- PR1/issue #121: the Nav2 localization layer the bringup launches
+       (robot_nav's nav.launch.py is included by mujoco.launch.py). -->
+  <exec_depend>robot_nav</exec_depend>
 
   <test_depend>ament_copyright</test_depend>
   <test_depend>ament_flake8</test_depend>
@@ -48,6 +51,12 @@
   <test_depend>robot_world_ros_interfaces</test_depend>
   <test_depend>robot_world</test_depend>
   <test_depend>geometry_msgs</test_depend>
+  <!-- PR1/issue #121: the nav-localization integration test asserts the /map
+       grid (nav_msgs) published by robot_nav's map node, and probes the two
+       lifecycle nodes' state (lifecycle_msgs) to prove map_node and the real
+       nav2_map_server reach ACTIVE headless. -->
+  <test_depend>nav_msgs</test_depend>
+  <test_depend>lifecycle_msgs</test_depend>
 
   <export>
     <build_type>ament_python</build_type>
