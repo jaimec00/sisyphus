@@ -12,6 +12,12 @@ prefix="$repo_root/node"
 
 mkdir -p "$prefix"
 
+# node/ is gitignored but NOT colcon-ignored: openclaw's native FFI dependency
+# (koffi) ships a CMakeLists.txt deep in node_modules/, so a fresh worktree's
+# full `pixi run build` discovers it as a spurious colcon package and aborts.
+# Drop COLCON_IGNORE so colcon skips the whole prefix.
+touch "$prefix/COLCON_IGNORE"
+
 # The prefix manifest is generated, not tracked. Its `allowScripts` field names
 # the dependencies permitted to run install-time lifecycle scripts -- openclaw's
 # own postinstall unpacks its bundled plugins, and the other three build or
