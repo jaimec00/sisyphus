@@ -56,6 +56,10 @@ from launch_ros.substitutions import FindPackageShare
 #: Runtime file the sim plugin loads (never checked in; derived at launch).
 DEFAULT_MJCF = os.path.join(os.path.expanduser('~'), '.ros',
                             'sisyphus_derived_scene.xml')
+#: The live world-state file the world service (and the Nav2 map derived from
+#: it) read; matches world.launch.py's default so the bringup's pieces agree.
+DEFAULT_WORLD_STATE = os.path.join(os.path.expanduser('~'), '.ros',
+                                   'sisyphus_world.json')
 
 
 def _robot_description_xacro():
@@ -148,6 +152,10 @@ def generate_launch_description():
         DeclareLaunchArgument(
             'mjcf_path', default_value=DEFAULT_MJCF,
             description='Runtime path for the derived MJCF the sim loads.'),
+        DeclareLaunchArgument(
+            'world_state_path', default_value=DEFAULT_WORLD_STATE,
+            description=('Live world-state file the world service and the Nav2'
+                         ' map derive from.')),
         Node(
             package='robot_state_publisher',
             executable='robot_state_publisher',
@@ -166,7 +174,10 @@ def generate_launch_description():
         IncludeLaunchDescription(
             PythonLaunchDescriptionSource(PathJoinSubstitution(
                 [FindPackageShare('robot_bringup'), 'launch',
-                 'world.launch.py']))),
+                 'world.launch.py'])),
+            launch_arguments={
+                'world_state_path': LaunchConfiguration('world_state_path'),
+            }.items()),
         # The Nav2 localization layer (PR1/issue #121) -- ground-truth
         # odom -> base_link, the world-derived static map, and the Nav2
         # lifecycle nodes -- comes up the same way: its definition lives
@@ -177,7 +188,15 @@ def generate_launch_description():
         IncludeLaunchDescription(
             PythonLaunchDescriptionSource(PathJoinSubstitution(
                 [FindPackageShare('robot_nav'), 'launch',
-                 'nav.launch.py']))),
+                 'nav.launch.py'])),
+            # Forward the world-state path so the Nav2 layer's map (and the
+            # demo PGM it renders) derive from the same world file the rest of
+            # the bringup was pointed at -- otherwise the include falls back to
+            # nav.launch.py's own default and can disagree with world.launch.py.
+            launch_arguments={
+                'world_state_path': LaunchConfiguration('world_state_path'),
+                'use_sim_time': use_sim_time,
+            }.items()),
         simulator,
         # Controllers only come up once the sim node is running (dfki-ric
         # embeds the controller_manager; it must be up for the spawners).

@@ -84,3 +84,78 @@ def test_nav_launch_generates_expected_nodes():
                                  getattr(produced, 'node_executable', '?')))
     flat = ' '.join('%s/%s' % item for item in seen)
     assert 'nav2_map_server/map_server' in flat, flat
+
+
+def test_nav_launch_declares_the_pr2_planning_stack():
+    """PR2 (issue #124): the launch declares the omni bridge + nav2_bringup.
+
+    Two additions over PR1: the ``omni_base_controller`` node (the
+    ``/cmd_vel`` -> wheels bridge, RULING 5) and an ``IncludeLaunchDescription``
+    of nav2_bringup's ``navigation.launch.py`` (the costmaps / NavFn / MPPI
+    planner-controller stack, RULING 4).  The launch must NOT include
+    nav2_bringup's localization/bringup files (those assume map_server + AMCL;
+    our localization is ground-truth, PR1) -- it includes ``navigation.launch.py``
+    only.
+    """
+    import importlib.util
+    from launch.actions import IncludeLaunchDescription
+    from launch.utilities import perform_substitutions
+    from launch.launch_context import LaunchContext
+    from launch_ros.actions import Node
+    path = _launch_path('robot_nav', 'nav.launch.py')
+    spec = importlib.util.spec_from_file_location('robot_nav_launch_pr2', path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    description = module.generate_launch_description()
+
+    nodes = set()
+    includes = []
+    for action in description.entities:
+        if isinstance(action, Node):
+            nodes.add((getattr(action, 'node_package', '?'),
+                       getattr(action, 'node_executable', '?')))
+        elif isinstance(action, IncludeLaunchDescription):
+            source = action.launch_description_source
+            location = getattr(
+                source, '_LaunchDescriptionSource__location', None)
+            context = LaunchContext()
+            try:
+                resolved = perform_substitutions(context, location)
+            except Exception:
+                resolved = repr(source)
+            includes.append(str(resolved))
+
+    assert ('robot_nav', 'omni_base_controller') in nodes, nodes
+    assert any(r.endswith(os.path.join('launch', 'navigation.launch.py'))
+               for r in includes), includes
+    # Localization must not be re-included (map_server + AMCL assume a scan).
+    assert not any(r.endswith('localization.launch.py') for r in includes), includes
+    assert not any(r.endswith('bringup_launch.py') for r in includes), includes
+
+
+def test_nav2_params_file_targets_the_holonomic_base():
+    """The shipped ``nav2.yaml`` matches the base: omni MPPI, NavFn, D29 frames.
+
+    RULING 4: the controller is MPPI with ``motion_model: Omni`` (the base is
+    holonomic), the planner is NavFn, the frames are map/odom/base_link, and the
+    costmaps carry static + inflation only (no scan-less obstacle layer).
+    """
+    import yaml
+    path = os.path.join(_install_share('robot_nav'), 'params', 'nav2.yaml')
+    assert os.path.isfile(path), path
+    with open(path) as handle:
+        cfg = yaml.safe_load(handle)
+    follow = cfg['controller_server']['ros__parameters']['FollowPath']
+    assert follow['plugin'] == 'nav2_mppi_controller::MPPIController'
+    assert follow['motion_model'] == 'Omni'
+    planner = (cfg['planner_server']['ros__parameters']
+               ['GridBased']['plugin'])
+    assert planner == 'nav2_navfn_planner::NavfnPlanner'
+    for costmap in ('local_costmap', 'global_costmap'):
+        params = cfg[costmap][costmap]['ros__parameters']
+        assert params['robot_base_frame'] == 'base_link'
+        assert params['plugins'] == ['static_layer', 'inflation_layer']
+    assert (cfg['global_costmap']['global_costmap']['ros__parameters']
+            ['global_frame']) == 'map'
+    assert (cfg['local_costmap']['local_costmap']['ros__parameters']
+            ['global_frame']) == 'odom'

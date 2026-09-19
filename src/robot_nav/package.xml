@@ -13,6 +13,7 @@
   <depend>robot_world_ros_interfaces</depend>
   <depend>nav_msgs</depend>
   <depend>geometry_msgs</depend>
+  <depend>std_msgs</depend>
   <depend>tf2_ros</depend>
 
   <!-- PR1/issue #121: the lifecycle base is rclpy's own LifecycleNode (the
@@ -21,6 +22,18 @@
        A real Nav2 lifecycle node (nav2_map_server) is stood up alongside it to
        prove the Nav2 lifecycle machinery configures/activates headless. -->
   <exec_depend>nav2_map_server</exec_depend>
+  <exec_depend>nav2_bringup</exec_depend>
+  <exec_depend>nav2_controller</exec_depend>
+  <exec_depend>nav2_planner</exec_depend>
+  <exec_depend>nav2_navfn_planner</exec_depend>
+  <exec_depend>nav2_mppi_controller</exec_depend>
+  <exec_depend>nav2_bt_navigator</exec_depend>
+  <exec_depend>nav2_behaviors</exec_depend>
+  <exec_depend>nav2_smoother</exec_depend>
+  <exec_depend>nav2_waypoint_follower</exec_depend>
+  <exec_depend>nav2_velocity_smoother</exec_depend>
+  <exec_depend>nav2_costmap_2d</exec_depend>
+  <exec_depend>mujoco_ros2_control</exec_depend>
   <exec_depend>nav2_lifecycle_manager</exec_depend>
   <exec_depend>nav2_msgs</exec_depend>
   <exec_depend>launch</exec_depend>
