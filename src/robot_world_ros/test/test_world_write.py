@@ -28,9 +28,10 @@ is fresh, no re-open, one shared store instance).
 
 ``rclpy`` is imported lazily, inside the tests (robot_bringup's idiom), so
 collecting this module needs no ROS runtime and a gap in the test env shows up
-as the failing test, not a collection abort. ``rclpy.init()`` is guarded on the
-default context so this module coexists with ``test_world_query.py`` (which
-leaves a context up): a second ``init`` on a live context is a ``RuntimeError``.
+as the failing test, not a collection abort. Both this module and
+``test_world_query.py`` guard ``rclpy.init()`` on the default context -- a
+second ``init`` on a live context is a ``RuntimeError`` -- so the two modules
+coexist regardless of collection order.
 """
 import json
 import os

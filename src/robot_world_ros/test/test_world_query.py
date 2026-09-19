@@ -48,6 +48,16 @@ EXPECTED_OBJECTS = ('mug_1', 'plate_1', 'bowl_1', 'counter_1', 'book_1',
                     'cup_1', 'sofa_1')
 
 
+def _init_rclpy():
+    """Init the default rclpy context only if none is up yet; return who owns it."""
+    import rclpy
+    from rclpy.utilities import get_default_context
+    owned = not get_default_context().ok()
+    if owned:
+        rclpy.init()
+    return owned
+
+
 def _temp_live_path():
     """Return a fresh temp live-state path (seeded from the shipped seed)."""
     directory = tempfile.mkdtemp(prefix='world_query_test_')
@@ -73,7 +83,7 @@ def test_get_world_returns_seed_document_exactly():
     # real, so start-up path resolution and store construction are exercised.
     os.environ['ROS_DOMAIN_ID'] = WORLD_QUERY_DOMAIN_ID
     os.environ['ROBOT_WORLD_STATE'] = live_path
-    rclpy.init()
+    owned = _init_rclpy()
     node = WorldQueryNode()
     try:
         response = node._handle_get_world(GetWorld.Request(), GetWorld.Response())
@@ -85,7 +95,8 @@ def test_get_world_returns_seed_document_exactly():
         assert node._service.srv_name == 'get_world'
     finally:
         node.destroy_node()
-        rclpy.shutdown()
+        if owned:
+            rclpy.shutdown()
 
     assert response.world_json == expected
 
@@ -108,7 +119,6 @@ def test_node_builds_and_responds_headless():
     what "returns the seed world exactly as the store reads it" means
     end-to-end.
     """
-    import rclpy
     from rclpy.executors import SingleThreadedExecutor
     from robot_world_ros.world_query_node import WorldQueryNode
     from robot_world_ros_interfaces.srv import GetWorld
@@ -118,7 +128,7 @@ def test_node_builds_and_responds_headless():
 
     os.environ['ROS_DOMAIN_ID'] = WORLD_QUERY_DOMAIN_ID
     os.environ['ROBOT_WORLD_STATE'] = live_path
-    rclpy.init()
+    _init_rclpy()
     node = WorldQueryNode()
 
     executor = SingleThreadedExecutor()

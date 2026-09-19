@@ -2,15 +2,18 @@
 # held_by is deliberately absent: "which gripper holds this object" is robot
 # proprioception owned by the backend (set_held_by), not something perception
 # observes. A newly added object is registered as held by nobody.
-# Refused (success=false) for an object_id already in the scene, a non-identifier
+# Refused (success=false) for an object_id already in the scene, a blank
 # label/object_id, or a pose the store rejects.
 string object_id
 string label
 geometry_msgs/Pose pose
 bool graspable
 ---
-# success=true means the write committed to disk, error is empty.
-# success=false means the store refused and the scene is byte-identical;
-# error names the reason.
+# success=true means the write committed atomically to disk; error is empty.
+# success=false means the write did NOT durably commit. Two cases, told apart
+# by error: the store refused the input and left the scene unchanged, or the
+# atomic disk write failed and the change is held in the store's memory to be
+# re-written on the next mutation (robot_world's dirty-flag design, D23) --
+# not "rejected".
 bool success
 string error

@@ -36,11 +36,20 @@ store writes to disk.
 | `/world_query/add_object` | `srv/AddObject` | `string object_id`, `string label`, `geometry_msgs/Pose pose`, `bool graspable` | `bool success`, `string error` |
 | `/world_query/remove_object` | `srv/RemoveObject` | `string object_id` | `bool success`, `string error` |
 
-`success=true` + `error=''` means the write committed — in memory **and**
-atomically to disk. `success=false` + a non-empty `error` means the store
-refused (unknown/duplicate `object_id`, a non-identifier `label`/`object_id`,
-or a pose the store rejects: a non-finite float or an all-zero quaternion) and
-the scene is left **byte-identical**. The handlers catch `(ValueError,
+`success=true` + `error=''` means the write committed atomically to disk
+(and is therefore visible to `get_world`, which snapshots the same store).
+`success=false` + a non-empty `error` means the write did **not** durably
+commit, in one of two cases, told apart by `error`:
+
+- *Refused* — unknown/duplicate `object_id`, blank `label`/`object_id`, or a
+  pose the store rejects (a non-finite float or an all-zero quaternion): the
+  scene is left unchanged.
+- *Commit failed* — the atomic disk write failed (read-only or full disk):
+  the change is held in the store's memory and re-written on the next
+  mutation (D23's dirty-flag design), so it is not lost, but `success=false`
+  means it is not yet durable.
+
+The handlers catch `(ValueError,
 TypeError)` — the two types every store/serialization refusal raises
 (`WorldStoreError` and `SerializationError` are both `ValueError` subclasses) —
 and never swallow anything else.
