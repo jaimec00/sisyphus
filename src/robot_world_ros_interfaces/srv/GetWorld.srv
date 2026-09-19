@@ -1,0 +1,7 @@
+# Return the current world document, exactly as the store reads it.
+# Request: empty (the read path is a snapshot of the store's current scene).
+---
+# The full world document as its canonical JSON (robot_world.document_text()),
+# byte-identical to what FileWorldStore writes to disk: named locations,
+# objects, start pose, start_column_height and world_schema_version.
+string world_json
