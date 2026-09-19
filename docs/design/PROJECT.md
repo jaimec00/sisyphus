@@ -50,12 +50,14 @@ both the differentiators and the real risks (D22).
   as a real package with a CI expand/parse gate (D27, PR #62).
 - **Done:** the URDF/MJCF body — PR1–PR8b all merged (see
   [`urdf-mjcf-pr-breakdown.md`](urdf-mjcf-pr-breakdown.md)); MuJoCo sim bringup
-  under `dfki-ric/mujoco_ros2_control` (D33).
-- **In flight:** the MuJoCo `RobotBackend` (Mock → Sim swap, D9/D34). Sequence
-  and per-PR acceptance in
-  [`mujoco-backend-pr-breakdown.md`](mujoco-backend-pr-breakdown.md).
-- **Not started:** perception writing into `robot_world`; any real hardware
-  (nothing purchased).
+  under `dfki-ric/mujoco_ros2_control` (D33); the MuJoCo `RobotBackend`
+  (Mock → Sim swap, D9/D34 — all 5 PRs merged); `robot_world` wrapped in a ROS 2
+  query service (D35 — PR1/PR2/PR3 merged).
+- **In flight:** step 5 base navigation — Nav2 on the classical/real track
+  (D36). Sequence and per-PR acceptance in
+  [`nav2-base-pr-breakdown.md`](nav2-base-pr-breakdown.md).
+- **Not started:** MoveIt arm planning (second half of step 5); perception on
+  the real/detector path; any real hardware (nothing purchased).
 
 ## Open questions (still genuinely open)
 - **Brain LLM choice** (which hosted model) + when/if to move to a self-hosted
@@ -70,8 +72,9 @@ both the differentiators and the real risks (D22).
   is the penciled PiPER upgrade (D26), which costs the single bus — unresolved.
 - **Nori Bot is UNVERIFIED** (arXiv 2605.16537) — the column crib and the
   agent↔hardware seam both lean on a paper we have not read (D26).
-- **RoboStack coverage** of Nav2 / `foxglove_bridge` / `mujoco_ros2_control` —
-  verify, and source-build any gaps inside the pixi env (D15).
+- **RoboStack coverage** of `foxglove_bridge` / `mujoco_ros2_control` —
+  verify, and source-build any gaps inside the pixi env (D15). Nav2 coverage is
+  now **verified** (`ros-jazzy-navigation2` v1.3.12 on channel, D36).
 
 *(Resolved and moved to [`spec.md`](spec.md): lift mechanism, gripper type,
 depth-camera class, base geometry — all settled by D26.)*
@@ -86,7 +89,8 @@ depth-camera class, base geometry — all settled by D26.)*
    examples, wired to `robot_mcp` over the **Mock** backend — text "clear the
    table" → tool-calls in a loop, safety-clamped, replies (D21). *(Smoke passed
    on Mock 2026-09-04; the context-free-subagent variant is still open.)*
-4. **Wrap `robot_world` in a ROS 2 query service** and let perception write into
-   it (D23).
-5. **Classical skills first** (D22): MoveIt pick-and-place of rigid objects +
-   Nav2; learned skills only where unavoidable.
+4. **~~Wrap `robot_world` in a ROS 2 query service~~ — done** (D35; PR1/PR2/PR3
+   merged).
+5. **Classical skills first** (D22): base navigation via Nav2 (D36, in flight —
+   see [`nav2-base-pr-breakdown.md`](nav2-base-pr-breakdown.md)), then MoveIt
+   pick-and-place of rigid objects; learned skills only where unavoidable.
