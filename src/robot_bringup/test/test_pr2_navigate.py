@@ -88,6 +88,24 @@ MIN_WZ_DYAWM = 0.5
 MAX_VX_YAWR = 1.4
 MIN_INTERMEDIATE_DELTA = 0.10
 
+#: Closed-loop ``NavigateToPose`` acceptance (issue #125, RULING 8).  The goal
+#: pose is chosen to exercise the **lateral (vy) + rotational (wz)** channels:
+#: it is *not* straight ahead of the start (which would be reachable with a pure
+#: ``vx`` plan), so the controller must use the freed lateral channel, and it
+#: carries a nonzero yaw.  The start is the charger at the origin, heading +x.
+GOAL_X = 0.60
+GOAL_Y = -0.45
+GOAL_YAW = -1.0
+#: The Nav2 goal checker tolerances this test holds the base to (nav2.yaml
+#: ``general_goal_checker``): the acceptance is *convergence within them*.
+GOAL_XY_TOLERANCE = 0.10
+GOAL_YAW_TOLERANCE = 0.15
+#: The base must settle (stop moving) after the goal before the assertion, so a
+#: still-transiting base is not measured: waits for the pose to hold still.
+SETTLE_PERIOD_S = 1.0
+#: How long the whole NavigateToPose goal gets to converge.
+GOAL_TIMEOUT_S = 120.0
+
 
 def _require_tool(name):
     """Return the path to an executable on PATH, failing loudly if absent."""
@@ -640,6 +658,229 @@ def _drive_probe_worker(vx, wz, duration, domain_id):
             print('[pr2-shm] reclaimed %d FastDDS /dev/shm segment(s)' % removed)
 
 
+def _run_goal_probe_in_subprocess(queue, domain_id):
+    """Child-process entry point: run one NavigateToPose probe onto ``queue``."""
+    import traceback
+
+    try:
+        result = _goal_probe_worker(domain_id)
+        queue.put(('ok', result))
+    except BaseException:  # noqa: BLE001 - relay everything to the parent
+        queue.put(('error', traceback.format_exc()))
+
+
+def _goal_probe(domain_id):
+    """Run the closed-loop goal probe in its **own process** and return it.
+
+    Same isolation contract as :func:`_drive_probe` (own process + own
+    ``ROS_DOMAIN_ID``, bounded bringup retry on a fresh domain).
+    """
+    import multiprocessing
+
+    last_error = None
+    for attempt in range(_BRINGUP_ATTEMPTS):
+        context = multiprocessing.get_context('spawn')
+        queue = context.Queue()
+        child = context.Process(
+            target=_run_goal_probe_in_subprocess,
+            args=(queue, domain_id + attempt))
+        child.start()
+        try:
+            kind, payload = queue.get(
+                timeout=GOAL_TIMEOUT_S + LAUNCH_READY_TIMEOUT_S + 60)
+        finally:
+            child.join(timeout=30)
+            if child.is_alive():
+                child.terminate()
+                child.join(timeout=10)
+        if kind == 'ok':
+            return payload
+        last_error = payload
+        if not _is_transient_bringup_failure(payload):
+            break
+        if attempt + 1 < _BRINGUP_ATTEMPTS:
+            print('[pr2-nav] goal bringup attempt %d/%d failed transiently; '
+                  'relaunching on a fresh domain' % (attempt + 1,
+                                                     _BRINGUP_ATTEMPTS))
+    raise AssertionError(last_error)
+
+
+def _goal_probe_worker(domain_id):
+    """Launch the bringup, send a ``NavigateToPose`` goal, return the base pose.
+
+    Spawns the *shipped* ``mujoco.launch.py`` headless on an isolated domain
+    (the same DDS / ``/dev/shm`` hardening and readiness gates as
+    :func:`_drive_probe_worker`), then sends a real ``nav2_msgs/action/
+    NavigateToPose`` goal on ``/navigate_to_pose`` chosen to exercise the
+    lateral + rotational channels, and waits for the action to succeed (or the
+    timeout).  Returns ``(dx, dy, dyaw, succeeded)`` of the ground-truth base
+    pose relative to the start -- the test asserts convergence within the goal
+    tolerances (RULING 8).
+    """
+    import rclpy
+    import geometry_msgs.msg
+    from nav2_msgs.action import NavigateToPose
+    from lifecycle_msgs.msg import State
+    from lifecycle_msgs.srv import GetState
+    from mujoco_ros2_control.srv import GetBodyState
+    from rclpy.action import ActionClient
+    from rclpy.executors import SingleThreadedExecutor
+    from rclpy.node import Node
+
+    directory = tempfile.mkdtemp(prefix='pr2_goal_e2e_')
+    world_path = os.path.join(directory, 'world.json')
+    _write_world_file(world_path)
+
+    domain = str(domain_id)
+    env = dict(os.environ, ROS_DOMAIN_ID=domain)
+    _reap_orphans()
+    _sweep_stale_shm()
+    shm_before = _shm_inventory()
+    process, group, output, reader = _spawn_launch(env, world_path)
+    os.environ['ROS_DOMAIN_ID'] = domain
+    context = rclpy.Context()
+    rclpy.init(context=context)
+    node = Node('pr2_goal_e2e_probe', context=context)
+    executor = None
+    try:
+        executor = SingleThreadedExecutor(context=context)
+        executor.add_node(node)
+
+        def _logs():
+            text = ''.join(output)
+            if not text:
+                return '<no output>'
+            return text[-8000:]
+
+        _ABORT_MARKERS = (
+            'Failed to bring up all requested nodes. Aborting bringup',
+            'process has died',
+        )
+
+        def _bringup_aborted():
+            text = ''.join(output)
+            return any(marker in text for marker in _ABORT_MARKERS)
+
+        def _lifecycle_active(node_name):
+            client = node.create_client(GetState, '/%s/get_state' % node_name)
+            deadline = time.monotonic() + LAUNCH_READY_TIMEOUT_S
+            while time.monotonic() < deadline:
+                executor.spin_once(timeout_sec=0.1)
+                if _bringup_aborted():
+                    return False
+                if not client.service_is_ready():
+                    continue
+                future = client.call_async(GetState.Request())
+                executor.spin_until_future_complete(future, timeout_sec=5.0)
+                if future.done() and future.result() is not None:
+                    if future.result().current_state.id == (
+                            State.PRIMARY_STATE_ACTIVE):
+                        return True
+            return False
+
+        assert _lifecycle_active('bt_navigator'), (
+            'bt_navigator never became ACTIVE\n%s' % _logs())
+        assert _lifecycle_active('controller_server'), (
+            'controller_server never became ACTIVE\n%s' % _logs())
+
+        state_client = node.create_client(GetBodyState, '/mujoco_get_body_state')
+        assert state_client.wait_for_service(timeout_sec=30.0), (
+            '/mujoco_get_body_state not available\n%s' % _logs())
+
+        def _base_state():
+            executor.spin_once(timeout_sec=0.05)
+            if not state_client.service_is_ready():
+                return None
+            request = GetBodyState.Request()
+            request.body_name = 'base_link'
+            future = state_client.call_async(request)
+            executor.spin_until_future_complete(future, timeout_sec=5.0)
+            if not future.done() or future.result() is None:
+                return None
+            response = future.result()
+            if not response.success:
+                return None
+            return response.pose
+
+        start = _base_state()
+        assert start is not None, (
+            'GetBodyState(base_link) failed; is the base free?\n%s' % _logs())
+
+        action_client = ActionClient(node, NavigateToPose, 'navigate_to_pose')
+        assert action_client.wait_for_server(timeout_sec=60.0), (
+            '/navigate_to_pose action server not available\n%s' % _logs())
+
+        goal = NavigateToPose.Goal()
+        goal.pose.header.frame_id = 'map'
+        goal.pose.header.stamp = node.get_clock().now().to_msg()
+        goal.pose.pose.position.x = GOAL_X
+        goal.pose.pose.position.y = GOAL_Y
+        goal.pose.pose.orientation = (
+            geometry_msgs.msg.Quaternion(
+                w=math.cos(GOAL_YAW / 2.0), z=math.sin(GOAL_YAW / 2.0)))
+
+        send_future = action_client.send_goal_async(goal)
+        executor.spin_until_future_complete(send_future, timeout_sec=30.0)
+        assert send_future.done() and send_future.result() is not None, (
+            'NavigateToPose goal was not accepted\n%s' % _logs())
+        goal_handle = send_future.result()
+        assert goal_handle.accepted, (
+            'NavigateToPose goal rejected\n%s' % _logs())
+
+        result_future = goal_handle.get_result_async()
+        deadline = time.monotonic() + GOAL_TIMEOUT_S
+        while time.monotonic() < deadline and not result_future.done():
+            executor.spin_once(timeout_sec=0.1)
+        succeeded = result_future.done()
+        if succeeded:
+            status = result_future.result().status
+            succeeded = int(status) == 4  # STATUS_SUCCEEDED
+
+        # Let the base settle before measuring: wait for the pose to hold still.
+        final = _base_state()
+        stable_since = time.monotonic()
+        settle_deadline = time.monotonic() + SETTLE_PERIOD_S * 5.0
+        previous = None
+        while time.monotonic() < settle_deadline:
+            executor.spin_once(timeout_sec=0.1)
+            pose = _base_state()
+            if pose is None:
+                continue
+            if previous is not None:
+                moved = math.hypot(
+                    pose.position.x - previous.position.x,
+                    pose.position.y - previous.position.y)
+                if moved < 1e-3:
+                    if time.monotonic() - stable_since >= SETTLE_PERIOD_S:
+                        final = pose
+                        break
+                else:
+                    stable_since = time.monotonic()
+            previous = pose
+            if pose is not None:
+                final = pose
+
+        def _wrap(angle):
+            return math.atan2(math.sin(angle), math.cos(angle))
+
+        start_yaw = _wrap(_yaw_from_quaternion(start.orientation))
+        end_yaw = _wrap(_yaw_from_quaternion(final.orientation))
+        return (final.position.x - start.position.x,
+                final.position.y - start.position.y,
+                _wrap(end_yaw - start_yaw),
+                succeeded)
+    finally:
+        if executor is not None:
+            executor.shutdown()
+        node.destroy_node()
+        context.try_shutdown()
+        _terminate_group(process, group)
+        _reap_orphans()
+        removed = _cleanup_shm(shm_before)
+        if removed:
+            print('[pr2-shm] reclaimed %d FastDDS /dev/shm segment(s)' % removed)
+
+
 def test_base_drives_under_wheel_commands():
     """The base DRIVES under ``/cmd_vel`` wheel commands (open-loop, direction).
 
@@ -690,3 +931,51 @@ def test_base_drives_under_wheel_commands():
     assert max_travel >= MIN_INTERMEDIATE_DELTA, (
         'pure +vx=%.2f: base never displaced (max travel %.3f m) -- not a drive'
         % (VX_COMMAND, max_travel))
+
+
+def test_base_converges_on_a_lateral_navigate_to_pose_goal():
+    """The base CONVERGES on a NavigateToPose goal that needs vy + wz (#125, R8).
+
+    The closed-loop half of the #125 acceptance.  Composes the full bringup
+    (sim + controllers + world + the whole Nav2 layer) via the *shipped*
+    ``mujoco.launch.py`` on an isolated ROS domain, and sends a real
+    ``nav2_msgs/action/NavigateToPose`` goal on ``/navigate_to_pose``.  The goal
+    pose is deliberately **off-axis** (``GOAL_Y != 0``) and carries a nonzero
+    yaw, so reaching it exercises the freed **lateral (vy)** channel and the
+    rotational channel -- the controller must translate sideways, which the
+    plain-cylinder sim could not do (a ``vy`` command rotated the base instead
+    of translating it; the rim-roller model, #125, is what makes it work).
+
+    Asserts the ground-truth base pose (``GetBodyState('base_link')``) converges
+    in **position AND heading** within the goal tolerances
+    (``xy_goal_tolerance = 0.10``, ``yaw_goal_tolerance = 0.15``), i.e. the
+    action succeeds and the measured pose lands inside those bounds.
+
+    Reuses the PR2 DDS / ``/dev/shm`` hardening and readiness gates unchanged
+    (distinct ``ROS_DOMAIN_ID``, per-probe subprocess, liveness-guarded sweeps +
+    orphan reaping, bounded bringup retry) -- only the drive is new.
+    """
+    if not _have_package('mujoco_ros2_control'):
+        pytest.skip(
+            'mujoco_ros2_control (dfki-ric, source-build via robot.repos, D33) '
+            'is not installed; the closed-loop acceptance needs the live sim. '
+            'Build it with: `vcs import src < robot.repos && pixi run build`.')
+
+    dx, dy, dyaw, succeeded = _goal_probe(NAV2_DOMAIN_ID + 2)
+
+    assert succeeded, (
+        'NavigateToPose goal (%.2f, %.2f, yaw %.2f) did not succeed; the base '
+        'ended at dx=%+.3f dy=%+.3f dyaw=%+.3f' % (
+            GOAL_X, GOAL_Y, GOAL_YAW, dx, dy, dyaw))
+    # The measured ground-truth pose must land inside the goal tolerances.
+    xy_error = math.hypot(dx - GOAL_X, dy - GOAL_Y)
+    yaw_error = abs(math.atan2(math.sin(dyaw - GOAL_YAW),
+                               math.cos(dyaw - GOAL_YAW)))
+    assert xy_error <= GOAL_XY_TOLERANCE, (
+        'base converged to dx=%+.3f dy=%+.3f (xy error %.3f > tolerance %.2f); '
+        'the lateral channel did not deliver the goal position'
+        % (dx, dy, xy_error, GOAL_XY_TOLERANCE))
+    assert yaw_error <= GOAL_YAW_TOLERANCE, (
+        'base converged to dyaw=%+.3f (yaw error %.3f > tolerance %.2f); the '
+        'rotational channel did not deliver the goal heading'
+        % (dyaw, yaw_error, GOAL_YAW_TOLERANCE))

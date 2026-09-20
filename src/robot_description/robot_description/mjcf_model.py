@@ -49,6 +49,7 @@ is a runtime need of ``load_mjcf_model``.
 
 from __future__ import annotations
 
+import math
 from pathlib import Path
 import tempfile
 from typing import Dict
@@ -101,6 +102,56 @@ _BASE_DIAGINERTIA = '0.1 0.1 0.1'
 #: the floor derivation needs from it (kept in sync by
 #: ``test_write_mjcf_model_floor_top_is_one_wheel_radius_below_the_base``).
 _WHEEL_RADIUS = 0.05
+
+#: The three drivable wheel-link bodies the rim rollers hang off, in the
+#: derived MJCF (URDF wheel names, ``base.xacro`` ``omni_wheel`` macro).
+_WHEEL_LINK_BODIES = ('base_left_wheel_link', 'base_back_wheel_link',
+                      'base_right_wheel_link')
+
+#: -- Rim-roller model (issue #125) ------------------------------------------
+#: The URDF models each omniwheel as a plain cylinder, so the sim's wheel/floor
+#: contact scrubs: lateral (vy) transport and yaw do not deliver commanded
+#: speed.  The *sim* path fixes that by giving each wheel a ring of freely
+#: spinning barrel rollers around its rim (a real omniwheel), so the contact
+#: can slide along the wheel's axle without slipping.
+#:
+#: These constants are sim-contact fidelity only -- the URDF wheel stays a
+#: plain cylinder (D29) and the welded/in-process models are untouched (R1).
+_ROLLER_COUNT = 8
+#: Roller barrel cross-section radius, m (~7 mm: real omniwheel rollers).
+_ROLLER_RADIUS = 0.007
+#: Roller barrel half-length, m (full length 0.02 < ``wheel_width`` 0.03).
+_ROLLER_HALF_LENGTH = 0.01
+#: Roller-centre radius, m: the roller *surfaces* are this plus
+#: :data:`_ROLLER_RADIUS` from the axle, i.e. back at ``_WHEEL_RADIUS`` = 0.05
+#: -- the contact radius the floor height (``FLOOR_BODIES``) and
+#: ``base_footprint`` already assume.
+_ROLLER_CENTER_RADIUS = _WHEEL_RADIUS - _ROLLER_RADIUS
+#: Wheel-hub collision radius, m.  Shrunk below :data:`_ROLLER_CENTER_RADIUS`
+#: so the hub cylinder can never reach the floor: only the rollers contact.
+#: MJCF-only -- the URDF hub keeps radius ``wheel_radius``.
+_HUB_RADIUS = 0.040
+#: Contact bitfields for the shrunk hub.  MuJoCo collides two geoms iff
+#: ``(contype1 & conaffinity2) | (contype2 & conaffinity1)``; setting BOTH of the
+#: hub's bits to 0 makes the hub never participate in any contact.  That is
+#: required, not cosmetic: the hub (radius :data:`_HUB_RADIUS`) radially
+#: overlaps the rollers (inner edge at ``_ROLLER_CENTER_RADIUS -
+#: _ROLLER_RADIUS``), and the hub geom and the roller geoms sit on *different*
+#: bodies (the wheel link and the roller bodies), so MuJoCo would otherwise
+#: generate hub<->roller contacts and jam the rollers -- probed: with the hub
+#: colliding, roller joint velocities stay near zero and the base barely
+#: rotates.  The rollers carry the floor contact; the hub is then structural
+#: (and visual) only.
+_HUB_CONTYPE = 0
+_HUB_CONAFFINITY = 0
+#: Roller barrel mass, kg (small but well above ``mjMINVAL``).
+_ROLLER_MASS = 0.01
+#: Roller barrel inertia: solid cylinder about its barrel axis (I_AXIS) and
+#: transverse to it (I_TRANS), from the mass/dimensions above so a retune
+#: cannot leave a stale tensor behind.
+_ROLLER_I_AXIS = _ROLLER_MASS * _ROLLER_RADIUS ** 2 / 2.0
+_ROLLER_I_TRANS = _ROLLER_MASS * (
+    3.0 * _ROLLER_RADIUS ** 2 + (2.0 * _ROLLER_HALF_LENGTH) ** 2) / 12.0
 
 #: Newline used to assemble the multi-line :data:`FLOOR_BODIES` fragment
 #: (``_insert_world_bodies`` re-indents it line by line).
@@ -298,6 +349,120 @@ def _wrap_base_freejoint(merged: str) -> str:
     return merged[:oi + len(open_tag)] + '\n' + wrapped + merged[ci:]
 
 
+def _roller_body_xml(body_name: str, k: int) -> str:
+    """Return one rim-roller ``<body>`` block (child of a wheel-link body).
+
+    ``k`` is the roller index; ``theta = 2*pi*k/_ROLLER_COUNT`` is its angle
+    around the wheel's rim in the **wheel-link frame**, where (per
+    ``base.xacro``'s ``omni_wheel`` macro) +z is the wheel's spin axis pointing
+    radially outward and the rim circle lies in the local xy-plane.  The roller
+    centre therefore sits at
+    ``(_ROLLER_CENTER_RADIUS*cos theta, _ROLLER_CENTER_RADIUS*sin theta, 0)``.
+
+    **Roller axis = the rolling-tangent direction.**  In the wheel-link frame a
+    wheel rolling "forward" turns about its rim, so the rolling direction at rim
+    angle ``theta`` is the *circumferential tangent*
+    ``d = (-sin theta, cos theta, 0)``.  A real omniwheel's job is to let the
+    contact slide freely **along the wheel's axle** (the spin axis, local +z)
+    while gripping in the rolling direction -- which means each roller's own
+    spin axis must be the rolling direction ``d``, *not* the axle.  (Setting it
+    to the axle instead would let the wheel skate forward and grip sideways --
+    exactly inverted, and probed: the base then barely rotates under a yaw
+    command, since the rollers absorb the rolling motion.)  So the hinge axis is
+    ``d = (-sin theta, cos theta, 0)``: parallel to the wheel plane, orthogonal
+    to both the axle (local +z) and the radial spoke.
+
+    The body is placed at the rim with an *identity* quat; both the hinge
+    ``axis`` and the capsule geom orientation are written in that parent frame
+    directly (the geom via ``fromto``, MuJoCo's endpoint form -- a capsule's
+    default axis is +z, and ``fromto`` re-aims it along ``d``).  Writing the
+    axis explicitly (rather than baking theta into a body euler) keeps the
+    roller's own frame axis-aligned with the wheel link, so the axis claim is
+    checkable: ``axis . spin_axis == 0`` (parallel to the wheel plane).
+
+    The rollers are passive: an unactuated hinge joint (no ``range``, no
+    actuator) shows up as ``+1`` nbody / ``+1`` nq / ``+1`` nv while ``nu`` is
+    unchanged (R4).
+    """
+    theta = 2.0 * math.pi * k / _ROLLER_COUNT
+    cx = _ROLLER_CENTER_RADIUS * math.cos(theta)
+    cy = _ROLLER_CENTER_RADIUS * math.sin(theta)
+    dx = -math.sin(theta)
+    dy = math.cos(theta)
+    h = _ROLLER_HALF_LENGTH
+    name = f'{body_name}_roller_{k}'
+    return (
+        f'    <body name="{name}" pos="{cx:.8g} {cy:.8g} 0">' + _NL
+        + f'      <inertial pos="0 0 0" mass="{_ROLLER_MASS:g}" '
+        + f'diaginertia="{_ROLLER_I_AXIS:g} {_ROLLER_I_TRANS:g} '
+        + f'{_ROLLER_I_TRANS:g}"/>' + _NL
+        + f'      <joint name="{name}" type="hinge" '
+        + f'axis="{dx:.8g} {dy:.8g} 0"/>' + _NL
+        + f'      <geom name="{name}_geom" type="capsule" '
+        + f'size="{_ROLLER_RADIUS:g}" '
+        + f'fromto="{-h * dx:.8g} {-h * dy:.8g} 0 {h * dx:.8g} {h * dy:.8g} 0"/>'
+        + _NL
+        + '    </body>'
+    )
+
+
+def _shrink_hub_radius(merged: str, body_name: str) -> str:
+    """Shrink the wheel hub's cylinder geoms to :data:`_HUB_RADIUS` (MJCF-only).
+
+    The URDF wheel is a cylinder of radius ``_WHEEL_RADIUS``; if it stayed that
+    size it would sit *below* the rollers and keep touching the floor, so the
+    rollers would never bear the load.  Rewriting its derived ``<geom
+    size="0.05 0.015" type="cylinder"/>`` to radius :data:`_HUB_RADIUS` (both
+    the collision and the visual copy -- physics only reads the collision one,
+    but the two should not disagree) leaves **only** the rollers contacting.
+    Done on the derived MJCF text, never the URDF: ``test_description.py`` (D29)
+    parses the URDF and must keep seeing a plain ``wheel_radius`` cylinder.
+
+    Scoped to ``body_name``'s slice of the text so only that wheel's hub shrinks.
+    """
+    start = merged.index(f'<body name="{body_name}"')
+    end = merged.index('</body>', start)
+    segment = merged[start:end]
+    old = f'size="{_WHEEL_RADIUS:g} 0.015" type="cylinder"'
+    new = (f'size="{_HUB_RADIUS:g} 0.015" type="cylinder" '
+           + f'contype="{_HUB_CONTYPE}" conaffinity="{_HUB_CONAFFINITY}"')
+    assert old in segment, (body_name, old)
+    segment = segment.replace(old, new)
+    return merged[:start] + segment + merged[end:]
+
+
+def _add_rim_rollers(merged: str) -> str:
+    """Give each drivable wheel a ring of passive rim rollers (issue #125, R2).
+
+    Called by :func:`write_mjcf_model` only for the drivable model
+    (``base_free_joint=True``).  For each of the three wheel-link bodies it:
+
+    1. appends ``_ROLLER_COUNT`` roller ``<body>`` blocks as the body's last
+       children (see :func:`_roller_body_xml`); and
+    2. shrinks that wheel's hub cylinder geoms to :data:`_HUB_RADIUS` (see
+       :func:`_shrink_hub_radius`) so the hub never reaches the floor.
+
+    The welded escape hatch (``base_free_joint=False``) never calls this, so it
+    stays the PR8b model verbatim (no rollers, nq = nv = 18, nbody = 19, R5);
+    likewise ``load_mjcf_model`` / ``load_mjcf_model_with_scene`` never route
+    here (R1).  The wheel-link bodies are found by name because they are
+    movable bodies, so they survive ``fusestatic`` in the derived MJCF.
+    """
+    for body_name in _WHEEL_LINK_BODIES:
+        merged = _shrink_hub_radius(merged, body_name)
+
+    for body_name in _WHEEL_LINK_BODIES:
+        start = merged.index(f'<body name="{body_name}"')
+        # The wheel body's own closing tag is the *next* ``</body>``; after the
+        # shrink above it still holds only inertial/joint/geom, so the first close
+        # tag after the open tag is the body's, not a child's.
+        close = merged.index('</body>', start)
+        rollers = _NL.join(_roller_body_xml(body_name, k)
+                           for k in range(_ROLLER_COUNT))
+        merged = merged[:close] + rollers + _NL + merged[close:]
+    return merged
+
+
 def _build_merged_mjcf(pkg: Path, world_bodies: str = '',
                        *, base_free_joint: bool = False) -> str:
     """Derive and return the merged MJCF text (URDF import + overlay splice).
@@ -442,5 +607,9 @@ def write_mjcf_model(path: str, *, base_free_joint: bool = True,
     )
     if base_free_joint:
         merged = _inject_integrator(merged)
+        # Issue #125: the drivable sim model carries real omniwheel rim rollers
+        # (see _add_rim_rollers).  The welded escape hatch (base_free_joint=False)
+        # never reaches here, so it stays the PR8b model verbatim (R5).
+        merged = _add_rim_rollers(merged)
     out.write_text(merged)
     return merged
