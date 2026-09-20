@@ -200,3 +200,43 @@ so this is a config-only re-enable, not a code change.
 
 Apply the config change, then re-red-team (scoped to the fix diff), then the
 full test-runner, then open the squash-merge PR.
+
+## ESCALATION (2nd) — park-vy is INSUFFICIENT; rotation is also broken in the cylinder-wheel sim
+
+Re-red-team (round 2, commit `0777fb3`) verified the park-vy fix landed and the
+stack comes up clean, but the acceptance **still fails** — and the new evidence
+shows option 2 alone cannot fix it.
+
+### New VERIFIED finding
+The cylinder-wheel sim cannot do **rotation** correctly either, not just lateral:
+
+| open-loop `/cmd_vel` command | observed base motion |
+| --- | --- |
+| pure `vx=+0.30` (3–4 s) | dx=+0.33…+0.36 m (works; ~⅓ commanded speed) |
+| pure `wz=+0.60` (8 s) | yaw −0.01 → **−1.76 rad** — **inverted sign**, ~0.22 rad/s (~⅓ commanded) |
+| `vx=0.3` + `wz=0.6` | **jam** — dx≈0, dyaw≈0 (base stops) |
+
+Wheel commands reach the joints faithfully (IK output verified), so the defect
+is the **plant/command mapping**, not the bridge. Root cause: the plain-cylinder
+wheels **scrub** the floor when the base turns (a cylinder's contact line cannot
+rotate about a vertical axis without sliding). A true omniwheel's rim rollers
+eliminate that scrub; without them the base under-delivers *and inverts* yaw and
+locks up when vx+wz are combined. MPPI closes the yaw loop on the inverted,
+jamming response → `wz` saturates at 0.6 and the base circles/orbits forever.
+
+### Conclusion
+Parking `vy` (option 2) is **necessary but not sufficient**. The NavigateToPose
+acceptance ("drive to goal, position + heading converge") requires rotation,
+which the cylinder-wheel sim cannot do. The rim-roller model (issue **#125**) is
+a **hard prerequisite** for this acceptance, not a follow-up.
+
+### Recommendation (escalate to Jaime)
+1. **Promote #125 (rim-roller omniwheel model) to a prerequisite** and land it
+   before PR2's NavigateToPose acceptance; or
+2. **Re-scope PR2's acceptance** to the (VERIFIED) open-loop claim — the free
+   base + floor + omni IK make the base *move under wheel commands* — and move
+   the closed-loop "NavigateToPose converges" acceptance to post-#125.
+
+The rest of PR2 (free base, live odom, MPPI+NavFn, omni IK, library-path +
+docking_server fixes) is complete and green; only the closed-loop navigation
+acceptance is blocked by the wheel-contact fidelity.
