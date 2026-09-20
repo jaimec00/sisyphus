@@ -91,11 +91,12 @@ def test_nav_launch_declares_the_pr2_planning_stack():
 
     Two additions over PR1: the ``omni_base_controller`` node (the
     ``/cmd_vel`` -> wheels bridge, RULING 5) and an ``IncludeLaunchDescription``
-    of nav2_bringup's ``navigation.launch.py`` (the costmaps / NavFn / MPPI
-    planner-controller stack, RULING 4).  The launch must NOT include
-    nav2_bringup's localization/bringup files (those assume map_server + AMCL;
-    our localization is ground-truth, PR1) -- it includes ``navigation.launch.py``
-    only.
+    of nav2_bringup's navigation stack launch (the costmaps / NavFn / MPPI
+    planner-controller stack, RULING 4).  In the installed Nav2 1.3.12 that
+    file is ``navigation_launch.py`` (the ruling calls it
+    ``navigation.launch.py``); the launch must NOT include nav2_bringup's
+    localization/bringup files (those assume map_server + AMCL; ours is
+    ground-truth, PR1) -- it includes the navigation stack file only.
     """
     import importlib.util
     from launch.actions import IncludeLaunchDescription
@@ -126,7 +127,7 @@ def test_nav_launch_declares_the_pr2_planning_stack():
             includes.append(str(resolved))
 
     assert ('robot_nav', 'omni_base_controller') in nodes, nodes
-    assert any(r.endswith(os.path.join('launch', 'navigation.launch.py'))
+    assert any(r.endswith(os.path.join('launch', 'navigation_launch.py'))
                for r in includes), includes
     # Localization must not be re-included (map_server + AMCL assume a scan).
     assert not any(r.endswith('localization.launch.py') for r in includes), includes
