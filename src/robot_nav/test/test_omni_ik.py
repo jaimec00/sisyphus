@@ -9,9 +9,12 @@
 ``robot_nav.omni_base_controller.body_to_wheel`` is a pure function (no graph),
 tested here against the LeRobot ``lekiwi.py`` ``_body_to_wheel_raw`` matrix
 (mount angles 60/180/300 deg, ``base_radius=0.125``, ``wheel_radius=0.05``) and
-against the calibrated sign constant.  The sign is a *sim-calibrated fact*
+against the calibrated sign constants.  The sign is a *sim-calibrated fact*
 (``base.xacro``: the URDF/MJCF joint-axis convention is opposite the driver's),
-so these tests pin the matrix and the convention, not a re-derivation.
+so these tests pin the matrix and the convention, not a re-derivation.  The
+sign is **split by column** -- translational (vx/vy) at ``WHEEL_SIGN=-1.0``,
+rotational (wz) at ``WZ_SIGN=+1.0`` -- because the sim's yaw response came out
+inverted under a single global sign; both constants are pinned here.
 
 The pure-function half needs no ROS; the matrix it uses is also cross-checked
 here against an independent NumPy computation of ``K`` so a typo in the
@@ -27,6 +30,7 @@ from robot_nav.omni_base_controller import (
     body_to_wheel,
     WHEEL_RADIUS,
     WHEEL_SIGN,
+    WZ_SIGN,
 )
 
 
@@ -90,18 +94,65 @@ def test_matrix_matches_an_independent_reconstruction():
         np.testing.assert_allclose(got, expected, atol=1e-9)
 
 
-def test_calibrated_sign_is_the_mjcf_joint_convention():
-    """The default result is the negated (MJCF joint-axis) convention.
+def test_calibrated_sign_is_split_translational_rotational():
+    """The shipped sign is SPLIT: vx/vy negated (-1.0), wz as-is (+1.0).
 
     ``base.xacro`` states the URDF/MJCF joint-axis convention is opposite the
-    LeRobot driver's: a positive joint velocity moves the body along -d.  So the
-    shipped ``WHEEL_SIGN`` is -1.0 and the default output is the negated matrix
-    result.  (The value was confirmed empirically in sim; a change here means
-    re-running that calibration.)
+    LeRobot driver's, so the **translational** columns are negated
+    (``WHEEL_SIGN = -1.0``).  The **rotational** column is NOT: a global -1.0
+    made pure ``+wz`` rotate the base ``-yaw`` in sim, so ``WZ_SIGN = +1.0``
+    leaves the wz column as the raw matrix gives it.  Both are sim-calibrated
+    facts; a change here means re-running that calibration.
     """
-    assert WHEEL_SIGN == -1.0
-    raw = np.array(body_to_wheel(0.3, -0.1, 0.2, wheel_sign=1.0))
-    default = np.array(body_to_wheel(0.3, -0.1, 0.2))
+    assert WHEEL_SIGN == -1.0, 'translational columns are negated'
+    assert WZ_SIGN == +1.0, 'rotational column is not negated'
+    # The split, applied precisely: default == wheel_sign on the translational
+    # part, +1.0 on the wz part.  A mixed twist exercises both.
+    vx, vy, wz = 0.3, -0.1, 0.2
+    expected = np.array([
+        (WHEEL_SIGN * (row[0] * vx + row[1] * vy) + WZ_SIGN * row[2] * wz)
+        / WHEEL_RADIUS
+        for row in _lekiwi_matrix()
+    ])
+    default = np.array(body_to_wheel(vx, vy, wz))
+    np.testing.assert_allclose(default, expected, atol=1e-12)
+    # ...and it is NOT the "negate everything" invariant of a single global sign.
+    raw = np.array(body_to_wheel(vx, vy, wz, wheel_sign=1.0))
+    assert not np.allclose(default, -raw, atol=1e-9), (
+        'the sign split must not reduce to a global negation')
+    # Translational part agrees with wheel_sign=-1.0, wz part with +1.0.
+    neg_translation = np.array(body_to_wheel(vx, vy, 0.0))
+    assert np.allclose(neg_translation,
+                       -np.array(body_to_wheel(vx, vy, 0.0, wheel_sign=1.0)),
+                       atol=1e-12)
+    pos_rotation = np.array(body_to_wheel(0.0, 0.0, wz))
+    assert np.allclose(pos_rotation,
+                       np.array(body_to_wheel(0.0, 0.0, wz, wheel_sign=1.0)),
+                       atol=1e-12)
+
+
+def test_default_pure_wz_rotates_positive_not_negated():
+    """Under the DEFAULT sign, pure +wz yields POSITIVE wheel speeds.
+
+    This is the sign-split fix pinned: with a global -1.0 the wz column came out
+    negated (the base rotated -yaw for +wz in sim); ``WZ_SIGN = +1.0`` leaves it
+    positive, so every wheel is driven +base_radius*wz/wheel_radius.
+    """
+    expected = BASE_RADIUS * 0.6 / WHEEL_RADIUS
+    for value in body_to_wheel(0.0, 0.0, 0.6):
+        assert value > 0.0, value
+        assert abs(value - expected) < 1e-12, (value, expected)
+
+
+def test_default_pure_vx_still_negates_the_translation():
+    """Under the DEFAULT sign, pure +vx is still the NEGATED translational result.
+
+    The split only changes the wz column; the vx/vy calibration (``WHEEL_SIGN
+    = -1.0``) is unchanged, so the default stays the negated raw matrix for a
+    purely translational twist.
+    """
+    raw = np.array(body_to_wheel(0.3, 0.0, 0.0, wheel_sign=1.0))
+    default = np.array(body_to_wheel(0.3, 0.0, 0.0))
     np.testing.assert_allclose(default, -raw, atol=1e-12)
 
 

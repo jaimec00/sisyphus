@@ -240,3 +240,64 @@ a **hard prerequisite** for this acceptance, not a follow-up.
 The rest of PR2 (free base, live odom, MPPI+NavFn, omni IK, library-path +
 docking_server fixes) is complete and green; only the closed-loop navigation
 acceptance is blocked by the wheel-contact fidelity.
+
+## ESCALATION (3rd) — RESOLVED: Jaime chose "option 3 first" (2026-09-20)
+
+Jaime's instruction (verbatim): "3 first, if it needs the fix, then do 2 then 1.
+Make decisions yourself."
+
+Plan (option 3 — cheap per-term ``WHEEL_SIGN`` experiment): the global
+``WHEEL_SIGN=-1.0`` was calibrated only on vx/vy (translation), never on the wz
+(rotation) column. Hypothesis to test: the wz column's sign is simply OPPOSITE
+the translational columns (a sign bug), vs physical scrub (a plain-cylinder
+wheel's contact line cannot rotate about a vertical axis without sliding).
+
+Probe: split the sign — keep vx/vy at ``-1.0``, set the wz column to ``+1.0``
+("negate only the translational columns"). Rebuild robot_nav, then open-loop in
+sim via ``GetBodyState('base_link')``:
+- (a) pure ``wz=+0.6`` for ~8 s → record yaw direction + magnitude;
+- (b) ``vx=0.3 + wz=0.6`` → record dx and dyaw.
+
+Decision criteria (Jaime: "make decisions yourself"):
+- If the sign flip gives correct-direction rotation at ~full speed AND vx+wz
+  drives without jamming → it was a sign bug. Fix it properly (an independent
+  wz sign, documented), keep the FULL closed-loop NavigateToPose acceptance,
+  finish the loop normally.
+- If rotation is still inverted / ~⅓ speed / jammed (physical scrub — expected)
+  → re-scope: OPTION 2 (re-scope PR2 acceptance to the VERIFIED open-loop claim
+  "base drivable under wheel commands"; defer closed-loop NavigateToPose
+  convergence to post-#125) THEN OPTION 1 (promote #125 rim-roller omniwheel
+  model to the prerequisite PR: update the #125 issue body to mark it the
+  prerequisite for closed-loop nav, and note it in the PR body +
+  implementation.md/status.md).
+
+## RESOLUTION (3rd escalation) — option-3 probe results + re-scope (2026-09-20)
+
+Option-3 ``WZ_SIGN`` probe (split the sign: vx/vy at ``-1.0``, wz at ``+1.0``),
+run twice on isolated domains, reproducible:
+
+| open-loop ``/cmd_vel`` | result |
+| --- | --- |
+| pure ``wz=+0.6`` (8 s) | ``dyaw = +1.72…+1.75 rad`` — POSITIVE, correct direction (was ``−1.76`` with the global ``−1.0``) |
+| pure ``wz=+0.6`` speed | ``≈0.216 rad/s`` ≈ 0.36× commanded (still ~⅓ — physical scrub) |
+| ``vx=0.3 + wz=0.6`` (8 s) | ``dx ≈ −0.37…−0.38 m``, ``dyaw ≈ +1.50…+1.60 rad`` — no longer jams, but translation ~0.16× commanded and misdirected (net heading ≈ −166°) |
+
+Decision (Jaime: "make decisions yourself"): the wz column sign was genuinely
+**inverted** (a sign bug — the split fixes rotation direction and unjams the
+combined command), BUT the ~⅓ speed attenuation and the combined-command
+translation degradation are **physical scrub** (a plain-cylinder wheel cannot
+roll-and-turn without sliding), NOT the sign. The "sign bug only" branch
+required correct-direction rotation at ~FULL speed AND clean ``vx+wz`` driving
+— neither holds. So this is the physical-scrub branch:
+
+- **KEEP the split-sign fix** (``WZ_SIGN = +1.0``): a real, empirically
+  calibrated direction correction (``+wz`` now rotates ``+yaw``) that unjams
+  ``vx+wz``. It does not fix the speed/scrub, but it is correct and removes a
+  latent sign bug that would otherwise survive into the #125 rim-roller model.
+- **OPTION 2**: re-scope PR2 acceptance to the open-loop claim "base drivable
+  under wheel commands" — translate ``+x`` for ``+vx``, rotate ``+yaw`` for
+  ``+wz`` (correct directions). Defer closed-loop NavigateToPose convergence to
+  post-#125.
+- **OPTION 1**: promote #125 (rim-roller omniwheel model) to the **prerequisite
+  PR** for closed-loop nav — update the #125 issue body, and note it in the PR
+  body + implementation.md.

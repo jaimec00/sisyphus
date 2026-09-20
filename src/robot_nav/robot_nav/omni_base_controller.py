@@ -37,19 +37,29 @@ Which is, explicitly::
     wb = ( 0.0*vx       - 1.0*vy + 0.125*wz) / 0.05
     wr = ( 0.8660254*vx + 0.5*vy + 0.125*wz) / 0.05
 
-Sign convention (``WHEEL_SIGN``) -- calibrated in sim, not derived
------------------------------------------------------------------
+Sign convention (``WHEEL_SIGN`` / ``WZ_SIGN``) -- calibrated in sim, not derived
+--------------------------------------------------------------------------------
 The LeRobot driver convention is *positive wheel speed spins the wheel so the
 body moves along* ``d``.  The URDF/MJCF joint-axis convention is the
 **opposite**: a positive joint velocity moves the body along ``-d``
 (``base.xacro`` states this verbatim on the mount-angle macros, see also D29).
-So the LeRobot matrix result is expected to be **negated** for the MJCF joints.
-That is a *fact about the assembled sim*, not something to re-derive, so the
-sign lives behind a single :data:`WHEEL_SIGN` constant and was **calibrated
-empirically** in the sim (publish pure ``+vx``, read ``GetBodyState('base_link')``,
-confirm the base moves ``+x``, flip the constant if it moves ``-x``).  See
-``docs/features/pr2-nav2-base-drive/implementation.md`` for the observed
-evidence and the final value.
+That is a *fact about the assembled sim*, not something to re-derive, so each
+sign lives behind its own constant and was **calibrated empirically** in the sim
+(publish a pure body twist, read ``GetBodyState('base_link')``, confirm the sign,
+flip the constant if it comes out backwards).
+
+The sign is **split by column**, because the sim does not agree with a single
+global sign:
+
+* the **translational** columns (vx/vy) carry :data:`WHEEL_SIGN = -1.0` --
+  the LeRobot matrix result is negated for the MJCF joints, and pure ``+vx``
+  must drive the base ``+x`` (probe-verified);
+* the **rotational** column (wz) carries its own :data:`WZ_SIGN = +1.0` -- a
+  global ``-1.0`` gave *inverted* yaw (pure ``+wz`` rotated the base ``-yaw``),
+  so the wz column is **not** negated.
+
+See ``docs/features/pr2-nav2-base-drive/implementation.md`` for the observed
+evidence and the final values.
 
 Timeout guard
 -------------
@@ -71,19 +81,28 @@ from rclpy.node import Node
 from std_msgs.msg import Float64MultiArray
 
 __all__ = ['COMMAND_TOPIC', 'OmniBaseController', 'WHEEL_SIGN',
-           'body_to_wheel']
+           'WZ_SIGN', 'body_to_wheel']
 
 #: The velocity group controller's command topic (PR8b ``controllers.yaml``).
 COMMAND_TOPIC = '/base_velocity_controller/commands'
 #: The Twist topic Nav2's controller server publishes on.
 CMD_VEL_TOPIC = 'cmd_vel'
 
-#: Signed wheel-speed convention: ``+1.0`` uses the LeRobot matrix as-is,
-#: ``-1.0`` negates it (the URDF/MJCF joint-axis convention is opposite to the
-#: driver's -- see the module docstring).  **Calibrated in sim**, not assumed;
-#: the value below is the one the sim probe confirmed (``+vx`` drives the base
-#: ``+x``).
+#: Signed **translational** convention for the vx/vy columns: ``+1.0`` uses the
+#: LeRobot matrix as-is, ``-1.0`` negates it (the URDF/MJCF joint-axis
+#: convention is opposite to the driver's -- see the module docstring).
+#: **Calibrated in sim**, not assumed; the value below is the one the sim probe
+#: confirmed (``+vx`` drives the base ``+x``).  The **rotational** (wz) column
+#: is split out and carries its own sign, :data:`WZ_SIGN` -- a single global
+#: sign does **not** fit both (see the module docstring).
 WHEEL_SIGN = -1.0
+
+#: Signed **rotational** convention for the ``wz`` column, applied on top of
+#: :data:`WHEEL_SIGN`'s translational sign.  **Calibrated in sim**: a global
+#: ``-1.0`` gave inverted yaw (pure ``+wz`` rotated the base ``-yaw``), so the
+#: wz column is not negated -- ``+1.0`` makes pure ``+wz`` rotate the base
+#: ``+yaw``.
+WZ_SIGN = +1.0
 
 #: Wheel radius, m (``base.xacro`` sources ``wheel_radius = 0.05`` from LeRobot).
 WHEEL_RADIUS = 0.05
@@ -103,12 +122,16 @@ def body_to_wheel(vx: float, vy: float, wz: float,
                   wheel_sign: float = WHEEL_SIGN) -> tuple[float, float, float]:
     """Convert a body Twist to the 3 wheel angular velocities (rad/s).
 
-    Pure function (unit-testable without a graph).  ``wheel_sign`` is the
-    empirically calibrated sign (see :data:`WHEEL_SIGN`); pass ``+1.0`` for the
-    raw LeRobot convention, ``-1.0`` for the MJCF joint convention.
+    Pure function (unit-testable without a graph).  The sign is **split by
+    column**: ``wheel_sign`` is the empirically calibrated sign for the
+    **translational** (vx/vy) terms (see :data:`WHEEL_SIGN`); pass ``+1.0`` for
+    the raw LeRobot convention, ``-1.0`` for the MJCF joint convention.  The
+    **rotational** (wz) term carries its own calibrated sign,
+    :data:`WZ_SIGN` (see there), which a global ``-1.0`` would get wrong.
     """
     return tuple(
-        wheel_sign * (row[0] * vx + row[1] * vy + row[2] * wz) / WHEEL_RADIUS
+        (wheel_sign * (row[0] * vx + row[1] * vy) + WZ_SIGN * row[2] * wz)
+        / WHEEL_RADIUS
         for row in _IK_MATRIX
     )
 

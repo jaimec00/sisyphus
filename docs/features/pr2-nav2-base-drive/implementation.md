@@ -16,13 +16,13 @@ planning/control stack drives the base from a `NavigateToPose` goal through a
 | `src/robot_description/robot_description/mjcf_model.py` | `write_mjcf_model` now defaults to the **drivable** model: free-jointed `base_link` + a static floor + the implicit integrator. New `FLOOR_BODIES`, `_inject_integrator`, `base_free_joint=`/`floor=` kwargs. `load_mjcf_model` / `load_mjcf_model_with_scene` / `_wrap_base_freejoint` untouched. |
 | `src/robot_description/test/test_mjcf_drive.py` | New: pins the write path's free joint (nq=25, nv=24), the floor body/height (z = −wheel_radius), the wheels-rest-on-floor geometry, and the welded escape hatch. |
 | `src/robot_nav/robot_nav/ground_truth_odom.py` | PR1's constant-identity `base_pose()` seam is now **live**: reads the sim's `GetBodyState('base_link')` (non-blocking pending-request pattern), broadcasts `odom → base_link` TF and publishes `nav_msgs/Odometry` on `/odom` from the same response. |
-| `src/robot_nav/robot_nav/omni_base_controller.py` | New node: `/cmd_vel` (Twist) → `/base_velocity_controller/commands` (`Float64MultiArray`, 3, joint order `[left, back, right]`) via the LeRobot omni IK; `WHEEL_SIGN=-1.0`; 50 Hz keep-alive; zero-on-timeout (0.5 s). |
+| `src/robot_nav/robot_nav/omni_base_controller.py` | New node: `/cmd_vel` (Twist) → `/base_velocity_controller/commands` (`Float64MultiArray`, 3, joint order `[left, back, right]`) via the LeRobot omni IK; **split sign** (`WHEEL_SIGN=-1.0` translational, `WZ_SIGN=+1.0` rotational); 50 Hz keep-alive; zero-on-timeout (0.5 s). |
 | `src/robot_nav/launch/nav.launch.py` | Adds `omni_base_controller` and includes nav2_bringup's navigation stack launch (`navigation_launch.py`) with `params/nav2.yaml`; the demo `map_server` + localization manager stay from PR1. |
 | `src/robot_nav/params/nav2.yaml` | New: costmaps (static+inflation), NavFn global planner, MPPI-Omni local controller, frames (map/odom/base_link), velocity limits; inert configs for route_server / collision_monitor / docking_server. |
 | `src/robot_nav/test/test_nav_launch.py` | New structural test for the planning stack + params file. (Fix round: expect `navigation_launch.py`, the installed filename.) |
 | `src/robot_nav/test/test_omni_ik.py`, `src/robot_nav/test/test_odom_seam.py` | New: pure IK unit tests (incl. the sign constant) and the live-odom seam. |
 | `src/robot_bringup/launch/mujoco.launch.py` | **Fix round (RULING 7):** `_conda_lib_env()` action, first in the LaunchDescription, puts the conda env lib on `LD_LIBRARY_PATH` for the launched processes. |
-| `src/robot_bringup/test/test_pr2_navigate.py` | New acceptance: `NavigateToPose` goal drives the base to (2.0, 0.0), position + heading, non-teleport. |
+| `src/robot_bringup/test/test_pr2_navigate.py` | New acceptance (re-scoped): `test_base_drives_under_wheel_commands` — full stack composes (ACTIVE) and the base **drives** under direct `/cmd_vel` Twists (`+vx`→`+x`, `+wz`→`+yaw`, direction only). Closed-loop `NavigateToPose` convergence deferred to #125. |
 | `colcon_defaults.yaml`, `pixi.toml` | `MUJOCO_BUILD_EXAMPLES=OFF` (MuJoCo 3.9.0 otherwise builds glfw samples that fail on the missing `GL/gl.h`). |
 
 ## Probe evidence
@@ -57,14 +57,20 @@ wheel_angular = WHEEL_SIGN * K @ [vx, vy, wz] / wheel_radius
 ```
 
 The URDF/MJCF joint-axis convention is **opposite** the LeRobot driver
-convention, so the final value is **`WHEEL_SIGN = -1.0`**. Calibrated in sim, not
-derived — measured with the full bringup by publishing a pure body twist and
-reading `GetBodyState('base_link')`:
+convention, so the final **translational** sign is **`WHEEL_SIGN = -1.0`**. The
+sign is **split by column**: the **rotational** (wz) column carries its own
+**`WZ_SIGN = +1.0`** (see the option-3 probe below — a global `-1.0` left the yaw
+response inverted). Calibrated in sim, not derived — measured with the full
+bringup by publishing a pure body twist and reading `GetBodyState('base_link')`:
 
-| command | observed motion (WHEEL_SIGN = +1.0) | with WHEEL_SIGN = −1.0 |
+| command | observed motion (`WHEEL_SIGN = +1.0`) | with `WHEEL_SIGN = −1.0` |
 | --- | --- | --- |
 | `+vx` | dx = −0.0534 (base drives **−x**) | dx = **+0.0458** (base drives **+x**) ✓ |
 | `+vy` | — | dy = **+0.0901** ✓ |
+| `+wz` | — | **inverted** under a global −1.0 → `−1.76 rad`; the split (`WZ_SIGN = +1.0`) gives **`+1.72…+1.75 rad`** ✓ |
+
+The two columns are independent constants (`WHEEL_SIGN` for vx/vy, `WZ_SIGN` for
+wz) because the sim does not agree with a single global sign on both.
 
 Red-team independently VERIFIED these numbers (round 1). Also confirmed in this
 fix round with direct wheel commands: publishing the IK output for `+vx=0.2`
@@ -159,9 +165,14 @@ expectation was corrected.
 
 ## Open / not resolved in this round
 
-### BLOCK 3 — `test_navigate_to_pose_drives_the_base` does not pass yet (UNRESOLVED)
-With the sim loading and the full stack ACTIVE, the acceptance test still fails:
-the base **drives but does not converge** to (2.0, 0.0) within the 120 s budget.
+### BLOCK 3 — closed-loop `NavigateToPose` convergence: DEFERRED to #125 (not an open failure)
+Historical detail (kept for the record): with the sim loading and the full stack
+ACTIVE, the original closed-loop acceptance (send a `NavigateToPose` goal to
+(2.0, 0.0), assert position + heading converge) never passed — the base **drives
+but does not converge** within the 120 s budget. This is now understood and
+**re-scoped**: the missing piece is the rim-roller omniwheel model (**#125**), so
+the closed-loop check is **deferred**, not failed. The cause analysis below is
+retained as the evidence trail for #125.
 Observed across runs (the behaviour is **nondeterministic** — sim random, real
 time):
 
@@ -210,13 +221,17 @@ here, to avoid shipping unverified tuning):
   Not addressed in this round.
 - Kill stray `mujoco_ros2_control` processes before re-running.
 
-## Test status (full `pixi run test`, fix round)
+## Test status
 
-`960 tests, 0 errors, 2 failures` — both failures are the items above as they
-stood before the launch-test fix was applied in this round: the NavigateToPose
-acceptance (BLOCK 3, unresolved) and the launch-test filename expectation (now
-fixed). Everything else is green, including `test_joint_command_moves_sim_state`
-(robot_bringup) and D30's `test_no_ros_runtime` (robot_brain).
+After the option-3 fix round, the acceptance is green on its **re-scoped
+open-loop** claim (`test_base_drives_under_wheel_commands`: `+vx` → `dx ≈ +0.33 m`,
+`+wz` → `dyaw ≈ +1.72 rad`, direction-only), and the closed-loop
+`NavigateToPose` convergence is **explicitly deferred to post-#125** (not an open
+failure). The earlier fix-round run was `960 tests, 0 errors, 2 failures` — the
+old NavigateToPose acceptance (BLOCK 3) and the launch-test filename expectation
+(the latter fixed in that round). Everything else is green, including
+`test_joint_command_moves_sim_state` (robot_bringup) and D30's
+`test_no_ros_runtime` (robot_brain).
 
 ### BLOCK 3 resolution — park vy (Jaime, option 2, 2026-09-19)
 The lateral input channel is parked for this PR: `nav2.yaml` sets
@@ -227,3 +242,55 @@ because the cylinder-wheel sim (no rim rollers) converts `vy` into rotation
 lateral holonomy in sim is follow-up **issue #125** (rim-roller model); when it
 lands, `vy` is re-enabled by restoring the three values (config-only — the omni IK
 already maps the full Twist).
+
+### BLOCK 3 resolution — option-3 wz-sign probe + acceptance re-scope (2026-09-20)
+Park-vy (option 2) was **necessary but not sufficient**: the 2nd re-red-team found
+the cylinder-wheel sim also mishandles **rotation** (pure `wz=+0.6` for 8 s gave
+`dyaw = −1.76 rad`, i.e. **inverted**; `vx+wz` jammed). The global `WHEEL_SIGN=-1.0`
+had been calibrated only on the **translational** columns (vx/vy), never on the
+**rotational** (wz) column. Jaime resolved the 3rd escalation with a cheap
+per-term probe ("option 3 first; make decisions yourself").
+
+**Probe (option 3 — split the sign: vx/vy at `-1.0`, wz at `+1.0`)**, run twice on
+isolated domains, reproducible:
+
+| open-loop `/cmd_vel` | result |
+| --- | --- |
+| pure `wz=+0.6` (8 s) | `dyaw = +1.72…+1.75 rad` — **POSITIVE, correct direction** (was `−1.76` under the global `−1.0`) |
+| pure `wz=+0.6` speed | `≈0.216 rad/s` ≈ 0.36× commanded (still ~⅓ — physical scrub) |
+| `vx=0.3 + wz=0.6` (8 s) | `dx ≈ −0.37…−0.38 m`, `dyaw ≈ +1.50…+1.60 rad` — **no longer jams**, but translation ~0.16× commanded and misdirected |
+
+**Decision.** The wz column sign was genuinely **inverted** — the split fixes the
+rotation direction and unjams the combined `vx+wz` command — but the **~⅓ speed
+attenuation** and the combined-command translation degradation are **physical
+scrub** (a plain-cylinder wheel cannot roll-and-turn without sliding), **not** the
+sign. The "sign bug only" branch required correct-direction rotation at ~full
+speed *and* clean `vx+wz` driving; neither holds. So:
+
+- **KEEP the split-sign fix** (`WZ_SIGN = +1.0`): a real, empirically calibrated
+  direction correction (pure `+wz` now rotates `+yaw`, was `−yaw`) that removes a
+  latent sign bug which would otherwise survive into the #125 rim-roller model.
+  It does **not** fix the speed/scrub.
+- **Re-scope PR2's acceptance** to the VERIFIED **open-loop** claim — "the base is
+  drivable under wheel commands": pure `+vx` translates `+x`, pure `+wz` rotates
+  `+yaw` (correct directions). No speed assertion (speed is attenuated by the
+  scrub).
+- **Promote #125** (rim-roller omniwheel model) to the **prerequisite** for the
+  closed-loop `NavigateToPose` acceptance; that convergence check is **deferred to
+  post-#125** rather than failed.
+
+The acceptance test was renamed `test_base_drives_under_wheel_commands`: it keeps
+the full bringup + readiness wait (proving the stack composes), drops the
+`NavigateToPose` goal, and publishes `/cmd_vel` Twists directly, asserting
+direction only. The controller/smoother stay quiet with no goal active, so the
+direct publication is uncontested.
+
+**Two sim sessions, one per direction (VERIFIED necessary).** The direction
+checks cannot share one sim session: the plain-cylinder wheel/floor contact
+grips cleanly from rest but **slips once the base has been driven**, so a second
+command in the same session is unreliable. Measured: in a single session with
+`wz` then `vx`, the `vx` phase came out `dx = −0.12 m` (backwards); with `vx`
+then `wz`, the `wz` phase gave `dyaw = 0` (stuck). Each direction from a **fresh**
+session is reproducible (`+vx` → `dx = +0.31…+0.49 m`; `+wz` → `dyaw = +1.77 rad`),
+so `_drive_probe` launches the stack once per direction. The rotation check runs
+first; both pass on two consecutive runs.
