@@ -217,3 +217,13 @@ stood before the launch-test fix was applied in this round: the NavigateToPose
 acceptance (BLOCK 3, unresolved) and the launch-test filename expectation (now
 fixed). Everything else is green, including `test_joint_command_moves_sim_state`
 (robot_bringup) and D30's `test_no_ros_runtime` (robot_brain).
+
+### BLOCK 3 resolution — park vy (Jaime, option 2, 2026-09-19)
+The lateral input channel is parked for this PR: `nav2.yaml` sets
+`vy_std = vy_max = vy_min = 0` (MPPI-Omni commands only vx + wz). The holonomic
+architecture + omni IK are intact; only the unusable lateral channel is disabled,
+because the cylinder-wheel sim (no rim rollers) converts `vy` into rotation
+(measured `dyaw ~= 2.25 rad` for `vy=0.2`) instead of translation. Restoring true
+lateral holonomy in sim is follow-up **issue #125** (rim-roller model); when it
+lands, `vy` is re-enabled by restoring the three values (config-only — the omni IK
+already maps the full Twist).

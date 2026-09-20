@@ -183,3 +183,20 @@ option 2 for PR2 (honest, low-risk, makes the straight-line acceptance pass) wit
 the roller model (option 1) filed as a follow-up sim-fidelity PR — but the
 "NOT differential" wording in the brief makes this a Jaime-level call, not a
 manager ruling I should make unilaterally.
+
+## RESOLUTION — Jaime chose option 2 (2026-09-19)
+
+Jaime's decision on the design fork: **option 2** — keep the holonomic
+architecture + omni IK intact, but **park the lateral input channel** for this
+PR: set `vy_std = vy_max = vy_min = 0` in `nav2.yaml` (MPPI-Omni commands only
+vx + wz, which the cylinder-wheel sim executes faithfully). The sim-fidelity gap
+(omniwheels modeled as plain cylinders, no rim rollers, so lateral `vy` rotates
+instead of translating) is documented in `implementation.md` + the PR body.
+
+The rim-roller fix is filed as **follow-up issue #125** (referenced in the PR
+body). Once #125 lands, `vy` is un-parked (restore `vy_std/vy_max/vy_min`) and
+the lateral channel is re-enabled — the omni IK already handles the full Twist,
+so this is a config-only re-enable, not a code change.
+
+Apply the config change, then re-red-team (scoped to the fix diff), then the
+full test-runner, then open the squash-merge PR.

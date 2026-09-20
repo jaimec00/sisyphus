@@ -60,19 +60,23 @@ controller_server:
       yaw_goal_tolerance: 0.15
 
     # MPPI (RULING 4): the Omni motion model yields a full (vx, vy, wz) Twist,
-    # which is exactly what a 3-omniwheel base needs.
+    # which is exactly what a 3-omniwheel base needs.  Lateral (vy) is parked
+    # at 0 for this PR: the sim models the omniwheels as plain cylinders with
+    # no rim rollers, so a vy command rotates the base instead of translating
+    # it (sim-fidelity gap, issue #125).  The holonomic architecture + omni IK
+    # are intact; only the unusable lateral input channel is disabled.
     FollowPath:
       plugin: "nav2_mppi_controller::MPPIController"
       time_steps: 56
       model_dt: 0.05
       batch_size: 2000
       vx_std: 0.2
-      vy_std: 0.2
+      vy_std: 0.0
       wz_std: 0.4
       vx_max: 0.30
       vx_min: -0.30
-      vy_max: 0.30
-      vy_min: -0.30
+      vy_max: 0.0
+      vy_min: 0.0
       wz_max: 0.60
       iteration_count: 1
       prune_distance: 1.7
