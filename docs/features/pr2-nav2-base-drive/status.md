@@ -129,3 +129,57 @@ NOTEs from red-team (do not need to block, but fix the cheap ones where trivial)
   a small improvement, not a blocker).
 - Orphaned `mujoco_ros2_control` processes from failed runs can linger on `olivia`;
   kill strays before re-running.
+
+## ESCALATION (design fork) — NavigateToPose acceptance blocked on sim omniwheel fidelity
+
+After the RULING 7 fix round, the PR is green on **everything except the one
+acceptance test** (`test_navigate_to_pose_drives_the_base`). The library-path
+BLOCK is fixed (sim loads, stack healthy), `test_joint_command_moves_sim_state`
+and D30's `test_no_ros_runtime` are green, and a second lifecycle BLOCK
+(`docking_server` refuses to configure without a dock plugin) was also fixed.
+The remaining failure is a **physics/control design fork**, not a code bug.
+
+### What is proven (VERIFIED)
+- Sim loads; Nav2 stack (bt_navigator/controller_server/planner_server) all ACTIVE;
+  `base_velocity_controller` active; MPPI-Omni runs.
+- TF tree correct (`map→odom` identity, `odom→base_link` yaw≈0); TF and `/odom`
+  agree <1 mm in motion.
+- The derived `/map` is free along the whole y=0 corridor to the goal; NavFn plans
+  a correct straight +x path.
+- IK + `WHEEL_SIGN=-1.0` drive the base cleanly **+x** (dx≈+0.62 m for +vx=0.2).
+
+### The fork (VERIFIED evidence)
+The sim models the omniwheels as **plain cylinders** (URDF collision is a
+cylinder; no rim rollers). A cylinder rolls in its tangential direction but
+**resists sliding along its own axle** — so the "holonomic" base cannot execute
+lateral motion in sim. Measured under the full stack: pure `/cmd_vel vy=0.2` for
+4 s produces **dyaw ≈ 2.25 rad** (rotation), not lateral translation. MPPI
+(Omni) samples `vy`, the sim converts it to yaw, and the loop oscillates
+(`vx` hovers ≈ −0.15, `wz` swings to ±0.6). Result: the base drives but does not
+converge (0.55 m / 1.77 m travelled in two nondeterministic runs; one ABORT).
+
+### Options (none applied — awaiting a decision)
+1. **Model the omniwheel rim rollers** in the sim path (per-wheel roller
+   bodies/geoms with a free tangential spin). The *correct* fix — restores true
+   lateral holonomy — but substantial: it changes the wheel body/joint/DOF
+   counts and ripples through D29's geometry gates + `test_mjcf_model.py`.
+   Best done as its own scoped PR, not smuggled into this already-large one.
+2. **Constrain the controller to the sim's actual response** for this PR: keep
+   the holonomic architecture (omni IK + MPPI-Omni motion model) but set
+   `vy_min=vy_max=0` (or near-zero) so it commands only vx+wz, which the sim
+   executes faithfully; document the lateral channel as a sim-fidelity gap
+   closed by the roller model later. Deviates from the brief's strict
+   "NOT differential" wording (the *architecture* stays holonomic; only the
+   sim's unusable lateral channel is parked).
+3. **Sim-side friction approximation**: give the wheel collision a low-lateral
+   (near-frictionless-axially) contact in the overlay so `vy` translates instead
+   of rotating. MuJoCo's single-geom `friction` is isotropic, so this needs a
+   sphere-collision or two-geom approximation — unverified, may trade away
+   driving grip.
+
+### Recommendation
+**Escalate to Jaime** (touches the D36 "holonomic" binding decision). My lean is
+option 2 for PR2 (honest, low-risk, makes the straight-line acceptance pass) with
+the roller model (option 1) filed as a follow-up sim-fidelity PR — but the
+"NOT differential" wording in the brief makes this a Jaime-level call, not a
+manager ruling I should make unilaterally.
