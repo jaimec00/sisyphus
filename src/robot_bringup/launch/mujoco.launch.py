@@ -44,7 +44,8 @@ import os
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
 from launch.actions import (DeclareLaunchArgument, IncludeLaunchDescription,
-                            LogInfo, RegisterEventHandler, Shutdown)
+                            LogInfo, RegisterEventHandler,
+                            SetEnvironmentVariable, Shutdown)
 from launch.event_handlers import OnProcessStart
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import (Command, LaunchConfiguration,
@@ -60,6 +61,39 @@ DEFAULT_MJCF = os.path.join(os.path.expanduser('~'), '.ros',
 #: it) read; matches world.launch.py's default so the bringup's pieces agree.
 DEFAULT_WORLD_STATE = os.path.join(os.path.expanduser('~'), '.ros',
                                    'sisyphus_world.json')
+
+
+def _conda_lib_env():
+    """Return a launch action putting the conda env lib on ``LD_LIBRARY_PATH``.
+
+    The source-built ``mujoco_ros2_control`` executable links conda-native
+    shared libraries (``libcontroller_manager.so`` and ~30 others) that live
+    only in the pixi environment's ``lib`` directory.  Its installed RUNPATH
+    carries the *build* directory (``CMAKE_INSTALL_RPATH_USE_LINK_PATH=TRUE``
+    does not capture the conda ``lib``), and ament's ``setup.bash`` rebuilds
+    ``LD_LIBRARY_PATH`` from ament prefixes -- dropping the conda ``lib`` that
+    pixi's ``[activation.env]`` had set.  The loader therefore cannot resolve
+    ``libcontroller_manager.so``; the sim dies at startup (exit 127) and, via
+    its ``on_exit=Shutdown()``, tears the whole bringup down before any
+    controller activates (RULING 7).
+
+    Prepend ``<CONDA_PREFIX>/lib`` to ``LD_LIBRARY_PATH`` so every process the
+    launch spawns (the simulator and, after it, the controller spawners) can
+    resolve those libraries.  When ``CONDA_PREFIX`` is unset -- e.g. the
+    structural launch test imports this module and builds the description
+    outside the pixi env, or a user runs the launch against a system ROS -- the
+    action is a no-op and the description still builds.
+    """
+    conda_prefix = os.environ.get('CONDA_PREFIX')
+    if not conda_prefix:
+        return LogInfo(msg=(
+            'CONDA_PREFIX is unset; leaving LD_LIBRARY_PATH untouched '
+            '(the source-built mujoco_ros2_control may not find the conda '
+            'libs). Run the bringup through `pixi run` to set it.'))
+    lib_dir = os.path.join(conda_prefix, 'lib')
+    existing = os.environ.get('LD_LIBRARY_PATH', '')
+    library_path = lib_dir + (os.pathsep + existing if existing else '')
+    return SetEnvironmentVariable(name='LD_LIBRARY_PATH', value=library_path)
 
 
 def _robot_description_xacro():
@@ -146,6 +180,9 @@ def generate_launch_description():
     )
 
     return LaunchDescription([
+        # FIRST: make the conda env libs loadable for every process this launch
+        # spawns (the sim binary needs them; see _conda_lib_env / RULING 7).
+        _conda_lib_env(),
         DeclareLaunchArgument(
             'use_sim_time', default_value='true',
             description='Run the sim and controllers against /clock.'),
