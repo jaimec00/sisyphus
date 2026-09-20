@@ -4,51 +4,55 @@
 # license that can be found in the LICENSE file or at
 # https://opensource.org/licenses/MIT.
 
-"""Launch the Nav2 localization layer headless (PR1 / issue #121).
+"""Launch the Nav2 localization + planning layer headless (PR1/PR2).
 
-Three concerns come up here, and nothing else -- the planner, controller,
-costmaps, BT navigator and AMCL are PR2+ (RULING 5):
+Five concerns come up here (PR2 extends PR1's three):
 
-* ``ground_truth_odom`` -- publishes ``odom -> base_link`` (RULING 1/2, D29);
+Localization (PR1 / issue #121):
+* ``ground_truth_odom`` -- publishes ``odom -> base_link`` TF + ``/odom``
+  (RULING 3/D29); since PR2 the pose is live from the sim's ``GetBodyState``.
 * ``map_node`` -- the lifecycle node that queries ``/world_query/get_world``,
-  derives the grid, and publishes ``/map`` + the identity ``map -> odom``
-  (RULING 3);
+  derives the grid, and publishes ``/map`` + the identity ``map -> odom``.
 * a **real Nav2 lifecycle node**, ``nav2_map_server``, brought ACTIVE by
-  ``nav2_lifecycle_manager`` -- the PR1 proof that the Nav2 lifecycle
-  machinery configures and activates headless (RULING 5).
+  ``nav2_lifecycle_manager`` -- the PR1 proof that the Nav2 lifecycle machinery
+  configures and activates headless.
 
-``map_node`` is a lifecycle node but is *not* driven by the manager: it carries
-its own transitions here (``configure`` then ``activate``) via ``EmitEvent``
-handlers, so its startup is explicit and observable.  ``nav2_map_server`` is
-managed the Nav2 way, by a ``nav2_lifecycle_manager`` naming it, because that
-is the machinery PR1 exists to prove.
+Planning/control (PR2 / issue #124, RULING 4):
+* ``nav2_bringup``'s ``navigation.launch.py`` included with our ``nav2.yaml``:
+  controller_server (MPPI, ``motion_model: Omni``), smoother_server,
+  planner_server (NavFn), behavior_server, bt_navigator, waypoint_follower,
+  velocity_smoother, and the navigation lifecycle manager -- the Nav2-way
+  composition.  We deliberately do **not** include ``nav2_bringup``'s
+  ``localization.launch.py`` / ``bringup_launch.py``: those assume map_server +
+  AMCL, and our localization is ground-truth (PR1) with no scan (D36).
+* ``omni_base_controller`` -- the ``/cmd_vel`` (Twist) -> 3 wheel velocities
+  bridge into PR8b's ``base_velocity_controller`` (RULING 5).
 
-The ``nav2_map_server`` needs a PGM on disk, and our operational map is
-*derived* (RULING 3).  So the launch renders the derived grid to a throwaway
-PGM+YAML under ``~/.ros`` from the *resolved* ``world_state_path`` (deferred
-through an ``OpaqueFunction`` so the render sees the argument the bringup and
-the tests pass, not the default) and points ``map_server`` at it.  That PGM is
-a *rendering* of the world, never a second home for map data -- the source of
-truth stays ``robot_world``, and the operational map stays the ``/map`` topic
-from ``map_node``.
+``map_node`` is a lifecycle node but is *not* driven by the localization
+manager: it carries its own transitions here (``configure`` then ``activate``)
+via ``EmitEvent`` handlers, so its startup is explicit and observable.
+``nav2_map_server`` is managed the Nav2 way, by a ``nav2_lifecycle_manager``.
 
 ``mujoco.launch.py`` includes this file, exactly as it already includes
-``world.launch.py``, so the full sim bringup stands localization up alongside
-the sim/control stack.
+``world.launch.py``, so the full sim bringup stands the whole Nav2 layer up
+alongside the sim/control stack.
 """
 import os
 
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
-from launch.actions import (DeclareLaunchArgument, EmitEvent, OpaqueFunction,
+from launch.actions import (DeclareLaunchArgument, EmitEvent,
+                            IncludeLaunchDescription, OpaqueFunction,
                             RegisterEventHandler)
 from launch.event_handlers import OnProcessStart
 from launch.events import matches_action
-from launch.substitutions import LaunchConfiguration
+from launch.launch_description_sources import PythonLaunchDescriptionSource
+from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
 from launch_ros.actions import LifecycleNode as RosLifecycleNode
 from launch_ros.actions import Node
 from launch_ros.event_handlers import OnStateTransition
 from launch_ros.events.lifecycle import ChangeState
+from launch_ros.substitutions import FindPackageShare
 from lifecycle_msgs.msg import Transition
 
 #: Runtime directory for artifacts this launch writes (the repo's convention,
@@ -90,14 +94,24 @@ def _materialize_demo_pgm(world_state_path: str) -> str:
 
 
 def _nav_params_path() -> str:
-    """Return the installed ``params/nav.yaml`` path.
+    """Return the installed ``params/nav.yaml`` path (PR1 localization params).
 
-    This is the single home for the two nodes' tunable parameters; the inline
+    The single home for the localization nodes' tunable parameters; the inline
     parameter dicts below carry only the launch-specific overrides the YAML
     cannot (``world_service``, ``use_sim_time``).
     """
     return os.path.join(
         get_package_share_directory('robot_nav'), 'params', 'nav.yaml')
+
+
+def _nav2_params_path() -> str:
+    """Return the installed ``params/nav2.yaml`` path (PR2 planning params).
+
+    RULING 4: this is the ``params_file`` handed to nav2_bringup's
+    ``navigation.launch.py`` (costmaps, NavFn, MPPI-Omni, velocity limits).
+    """
+    return os.path.join(
+        get_package_share_directory('robot_nav'), 'params', 'nav2.yaml')
 
 
 def _demo_map_server(context, *args, **kwargs):
@@ -137,7 +151,7 @@ def _emit_transition(node, transition_id):
 
 
 def generate_launch_description():
-    """Build the LaunchDescription for the Nav2 localization layer."""
+    """Build the LaunchDescription for the Nav2 localization + planning layer."""
     use_sim_time = LaunchConfiguration('use_sim_time')
     world_service = LaunchConfiguration('world_service')
     nav_params = _nav_params_path()
@@ -162,6 +176,17 @@ def generate_launch_description():
         }],
     )
 
+    # The /cmd_vel -> wheel-velocity bridge (RULING 5).  It publishes to the
+    # PR8b base_velocity_controller; the controller is spawned by the sim
+    # launch's spawners, so this node simply waits for the topic.
+    omni_base_controller = Node(
+        package='robot_nav',
+        executable='omni_base_controller',
+        name='omni_base_controller',
+        output='screen',
+        parameters=[nav_params, {'use_sim_time': use_sim_time}],
+    )
+
     # The real Nav2 lifecycle node: a stock ``nav2_map_server`` serving the
     # rendered map, brought up the Nav2 way by a lifecycle manager.  It is
     # built inside an OpaqueFunction so its ``yaml_filename`` is the PGM pair
@@ -180,6 +205,25 @@ def generate_launch_description():
         }],
     )
 
+    # The Nav2 planning/control stack (RULING 4): nav2_bringup's
+    # navigation.launch.py with our params file.  It brings up
+    # controller_server / smoother_server / planner_server / behavior_server /
+    # bt_navigator / waypoint_follower / velocity_smoother and a
+    # lifecycle_manager naming them (autostart), all driven the Nav2 way.
+    # map_subscribe_transient_local=true so the costmaps latch our derived
+    # /map.  Localization is NOT included here (it is the three nodes above).
+    navigation = IncludeLaunchDescription(
+        PythonLaunchDescriptionSource(PathJoinSubstitution([
+            FindPackageShare('nav2_bringup'), 'launch',
+            'navigation_launch.py'])),
+        launch_arguments={
+            'use_sim_time': use_sim_time,
+            'params_file': _nav2_params_path(),
+            'autostart': 'true',
+            'use_composition': 'False',
+        }.items(),
+    )
+
     return LaunchDescription([
         DeclareLaunchArgument(
             'use_sim_time', default_value='false',
@@ -192,8 +236,10 @@ def generate_launch_description():
             description='Live world-state file the demo PGM is rendered from.'),
         odom_node,
         map_node,
+        omni_base_controller,
         nav2_map_server,
         nav2_manager,
+        navigation,
         # map_node is a lifecycle node; drive it configure -> activate as soon
         # as it is up, so a bare launch leaves localization ACTIVE.  The
         # configure is emitted on process start; the activate is emitted when

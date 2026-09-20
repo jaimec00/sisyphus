@@ -56,7 +56,8 @@ from typing import Dict
 import mujoco
 import xacro
 
-__all__ = ['load_mjcf_model', 'load_mjcf_model_with_scene', 'write_mjcf_model']
+__all__ = ['FLOOR_BODIES', 'load_mjcf_model', 'load_mjcf_model_with_scene',
+           'write_mjcf_model']
 
 #: Top-level entry point the derivation expands (same as robot_model.py).
 _TOP_LEVEL = 'robot.urdf.xacro'
@@ -92,6 +93,46 @@ _BASE_FREEJOINT_NAME = 'base_free'
 #: stand-in diaginertia below is the ruling's suggested stable value.
 _BASE_MASS = 6.0
 _BASE_DIAGINERTIA = '0.1 0.1 0.1'
+
+#: The wheel radius (``base.xacro``: ``wheel_radius = 0.05``), sourced rather
+#: than hard-coded here: the floor's top surface must sit exactly one wheel
+#: radius below ``base_link``'s origin for the wheels to rest on it.  The
+#: URDF stays the single source of truth for geometry; this is the one number
+#: the floor derivation needs from it (kept in sync by
+#: ``test_write_mjcf_model_floor_top_is_one_wheel_radius_below_the_base``).
+_WHEEL_RADIUS = 0.05
+
+#: Newline used to assemble the multi-line :data:`FLOOR_BODIES` fragment
+#: (``_insert_world_bodies`` re-indents it line by line).
+_NL = '\n'
+
+#: The static floor :func:`write_mjcf_model` splices in so the now-movable
+#: base has something to drive on (issue #124, RULING 2).
+#:
+#: The wheels are velocity actuators, and a velocity-commanded wheel only
+#: *moves the base* if it contacts ground with friction.  So the ROS-sim path
+#: needs a floor.  It is spliced through :func:`_build_merged_mjcf`'s
+#: ``world_bodies`` seam -- the same seam the in-process backend uses for scene
+#: objects -- and because that seam runs *after* the free-joint wrap, the floor
+#: stays welded to the world (a sibling of the wrapped ``base_link``), never
+#: riding on the base.
+#:
+#: Geometry: after the wrap the free joint starts at ``pos="0 0 0"`` (i.e.
+#: ``base_link`` at the world origin, axle height), and the wheels sit at
+#: ``base_link`` z = 0 with ``wheel_radius = 0.05``, so the wheel bottoms are at
+#: world z = -0.05.  The floor's top surface is therefore at world z = -0.05
+#: (a plane's surface *is* its z), leaving the chassis underside
+#: (z = 0.085 - 0.06/2 = 0.055) well clear: only the 3 wheels touch.  A plane
+#: is preferred over a finite box (infinite support, no fall-off edge, inherits
+#: the overlay's ``<default>`` friction the wheels need).  It is a *static*
+#: world body: no joint, no inertial, so it never moves and never falls.
+FLOOR_BODIES = (
+    '<body name="floor">' + _NL
+    + '  <geom name="floor_geom" type="plane" '
+    + f'pos="0 0 {-_WHEEL_RADIUS:g}" size="0 0 1" condim="3" '
+    + 'friction="1.0 0.4 0.02" solref="0.02 1.0" priority="1"/>' + _NL
+    + '</body>'
+)
 
 
 def _package_dir() -> Path:
@@ -342,7 +383,32 @@ def load_mjcf_model_with_scene(world_bodies: str) -> mujoco.MjModel:
     return spec.compile()
 
 
-def write_mjcf_model(path: str) -> str:
+#: Integrator the drivable model is compiled with.  MuJoCo's default Euler
+#: integrator is numerically unstable for the stiff wheel/floor contacts the
+#: free base introduces (probed: "Nan, Inf or huge value in QACC at DOF 6"
+#: within 0.06 s, and the wheel joints *lock* against the contact -- a wheel
+#: commanded 5.2 rad/s does not turn).  The implicit integrator resolves the
+#: stiff contact and the commanded wheel speeds are followed exactly.  Set only
+#: on the free-jointed sim path, so the welded :func:`load_mjcf_model` model
+#: (and the in-process backend) are unchanged.
+_DRIVE_INTEGRATOR_OPTION = '<option integrator="implicit"/>'
+
+
+def _inject_integrator(merged: str) -> str:
+    """Insert the drivable-model ``<option integrator="implicit"/>`` first.
+
+    MuJoCo allows exactly one ``<option>``; the overlay does not author one, so
+    the element is spliced as the first child of ``<mujoco>``.  Only
+    :func:`write_mjcf_model` calls this.
+    """
+    open_idx = merged.index('<mujoco')
+    close_idx = merged.index('>', open_idx) + 1
+    return (merged[:close_idx] + '\n  ' + _DRIVE_INTEGRATOR_OPTION
+            + merged[close_idx:])
+
+
+def write_mjcf_model(path: str, *, base_free_joint: bool = True,
+                     floor: bool = True) -> str:
     """Materialize the derived MJCF to ``path`` for the sim to load.
 
     The ``mujoco_ros2_control`` system interface loads the sim model from a
@@ -351,9 +417,30 @@ def write_mjcf_model(path: str) -> str:
     runtime by calling this, then passes ``path`` to the xacro's
     ``mujoco_model_path`` arg. Returns the MJCF text that was written, for
     callers that want to inspect it. The output path is made absolute.
+
+    Since PR2 (issue #124, RULING 1) the **default** is the *drivable* model:
+    the base is closed in a free joint (``base_free_joint=True``, via
+    :func:`_wrap_base_freejoint`) and a static floor is spliced in
+    (``floor=True``, :data:`FLOOR_BODIES`) so the velocity-commanded wheels have
+    ground to push against. Before PR2 this path emitted the *welded* model --
+    ``fusestatic`` folds the static trunk into the world body, so there was no
+    ``base_link`` body and no free joint, and the base could not move.
+
+    The keyword arguments keep the bare welded model reachable for callers and
+    tests that need it (``base_free_joint=False, floor=False``); the launch (and
+    so the sim) uses the default.  The in-process backend
+    (:func:`load_mjcf_model_with_scene`) is unaffected: it passes its own
+    ``base_free_joint``/``world_bodies`` explicitly and never routes through
+    here.
     """
     out = Path(path).expanduser().resolve()
     out.parent.mkdir(parents=True, exist_ok=True)
-    merged = _build_merged_mjcf(_package_dir())
+    merged = _build_merged_mjcf(
+        _package_dir(),
+        world_bodies=FLOOR_BODIES if floor else '',
+        base_free_joint=base_free_joint,
+    )
+    if base_free_joint:
+        merged = _inject_integrator(merged)
     out.write_text(merged)
     return merged

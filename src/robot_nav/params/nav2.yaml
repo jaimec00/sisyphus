@@ -1,0 +1,367 @@
+# Nav2 planning stack parameters for the robot's holonomic base (PR2 / issue #124).
+#
+# This file is consumed by ``nav.launch.py``, which includes nav2_bringup's
+# ``navigation.launch.py`` with ``params_file`` pointing here (RULING 4).  The
+# localization half (map, ground-truth odom) is PR1 and lives in ``nav.yaml``;
+# this file is the planning/control half only.
+#
+# Design choices (RULING 4):
+#   - global planner: NavFn (the GridBased default; simple, reliable, right-sized
+#     for the small derived grid).
+#   - local controller: MPPI with ``motion_model: Omni`` -- the base is
+#     holonomic (3-omniwheel, D26/D29), so the controller must command an
+#     independent (vx, vy, wz); MPPI's Omni model natively emits a full 3-DOF
+#     Twist and re-plans against a forward-simulated model each cycle.
+#   - costmaps: static_layer (the world-derived ``/map``) + inflation_layer, no
+#     obstacle/voxel layer -- nothing publishes a scan (D36).
+#   - frames: map / odom / base_link (D29-inverted tree; odom_topic /odom).
+#   - velocity limits: modest maxima in metres/second and radians/second; the
+#     safety layer (D17) is out of scope and unmodified.
+#
+# NB: every node is under a ``ros__parameters`` mapping keyed by the node's node
+# *name* (empty namespace), matching nav2_bringup's navigation.launch.py.
+
+amcl:
+  ros__parameters:
+    use_sim_time: true
+
+bt_navigator:
+  ros__parameters:
+    use_sim_time: true
+    global_frame: map
+    robot_base_frame: base_link
+    odom_topic: /odom
+    # The default Navigator BT: plan, follow, recover.  No scan/AMCL plugins.
+    default_bt_xml_filename: ""
+
+controller_server:
+  ros__parameters:
+    use_sim_time: true
+    controller_frequency: 20.0
+    min_x_velocity_threshold: 0.001
+    min_y_velocity_threshold: 0.5
+    min_theta_velocity_threshold: 0.001
+    failure_tolerance: 0.3
+    progress_checker_plugin: "progress_checker"
+    goal_checker_plugins: ["general_goal_checker"]
+    controller_plugins: ["FollowPath"]
+
+    # The base is holonomic: the progress checker can move in any direction, so
+    # "moved at least" is a plain translation check.
+    progress_checker:
+      plugin: "nav2_controller::SimpleProgressChecker"
+      required_movement_radius: 0.3
+      movement_time_allowance: 15.0
+
+    general_goal_checker:
+      stateful: True
+      plugin: "nav2_controller::SimpleGoalChecker"
+      xy_goal_tolerance: 0.10
+      yaw_goal_tolerance: 0.15
+
+    # MPPI (RULING 4): the Omni motion model yields a full (vx, vy, wz) Twist,
+    # which is exactly what a 3-omniwheel base needs.  Lateral (vy) is parked
+    # at 0 for this PR: the sim models the omniwheels as plain cylinders with
+    # no rim rollers, so a vy command rotates the base instead of translating
+    # it (sim-fidelity gap, issue #125).  The holonomic architecture + omni IK
+    # are intact; only the unusable lateral input channel is disabled.
+    FollowPath:
+      plugin: "nav2_mppi_controller::MPPIController"
+      time_steps: 56
+      model_dt: 0.05
+      batch_size: 2000
+      vx_std: 0.2
+      vy_std: 0.0
+      wz_std: 0.4
+      vx_max: 0.30
+      vx_min: -0.30
+      vy_max: 0.0
+      vy_min: 0.0
+      wz_max: 0.60
+      iteration_count: 1
+      prune_distance: 1.7
+      transform_tolerance: 0.1
+      temperature: 0.3
+      gamma: 0.015
+      motion_model: "Omni"
+      visualize: false
+      # The derived grid has no costmap in the forward-simulated model beyond
+      # the inflation layer; a moderate cost weight keeps MPPI on the plan.
+      critics: ["ConstraintCritic", "ObstaclesCritic", "GoalCritic",
+                "GoalAngleCritic", "PathAlignCritic", "PathFollowCritic",
+                "PathAngleCritic", "PreferForwardCritic"]
+      # -- critics
+      GoalCritic:
+        enabled: true
+        cost_power: 1
+        cost_weight: 5.0
+        threshold_to_consider: 1.4
+      GoalAngleCritic:
+        enabled: true
+        cost_power: 1
+        cost_weight: 3.0
+        threshold_to_consider: 0.5
+      PreferForwardCritic:
+        enabled: false
+        cost_power: 1
+        cost_weight: 5.0
+        threshold_to_consider: 0.5
+      ObstaclesCritic:
+        enabled: true
+        cost_power: 1
+        repulsion_weight: 1.5
+        critical_weight: 20.0
+        consider_footprint: false
+        collision_cost: 10000.0
+        collision_margin_distance: 0.05
+        near_goal_distance: 0.5
+        inflation_radius: 0.2
+        cost_scaling_factor: 10.0
+      ConstraintCritic:
+        enabled: true
+        cost_power: 1
+        cost_weight: 4.0
+      PathAlignCritic:
+        enabled: true
+        cost_power: 1
+        cost_weight: 14.0
+        max_path_occupancy_ratio: 0.05
+        trajectory_point_step: 4
+        threshold_to_consider: 0.5
+        offset_from_furthest: 20
+        use_path_orientations: false
+      PathFollowCritic:
+        enabled: true
+        cost_power: 1
+        cost_weight: 5.0
+        offset_from_furthest: 5
+        threshold_to_consider: 1.4
+      PathAngleCritic:
+        enabled: true
+        cost_power: 1
+        cost_weight: 2.0
+        offset_from_furthest: 4
+        threshold_to_consider: 0.5
+        max_angle_to_furthest: 1.0
+        mode: 0
+
+local_costmap:
+  local_costmap:
+    ros__parameters:
+      update_frequency: 5.0
+      publish_frequency: 2.0
+      global_frame: odom
+      robot_base_frame: base_link
+      use_sim_time: true
+      rolling_window: true
+      width: 3
+      height: 3
+      resolution: 0.05
+      robot_radius: 0.20
+      # static + inflation only (RULING 4); no obstacle/voxel layer (no scan).
+      plugins: ["static_layer", "inflation_layer"]
+      static_layer:
+        plugin: "nav2_costmap_2d::StaticLayer"
+        map_subscribe_transient_local: True
+      inflation_layer:
+        plugin: "nav2_costmap_2d::InflationLayer"
+        cost_scaling_factor: 3.0
+        inflation_radius: 0.30
+      always_reset_initial_pose: true
+      transform_tolerance: 0.5
+
+global_costmap:
+  global_costmap:
+    ros__parameters:
+      update_frequency: 1.0
+      publish_frequency: 1.0
+      global_frame: map
+      robot_base_frame: base_link
+      use_sim_time: true
+      robot_radius: 0.20
+      resolution: 0.05
+      track_unknown_space: true
+      plugins: ["static_layer", "inflation_layer"]
+      static_layer:
+        plugin: "nav2_costmap_2d::StaticLayer"
+        map_subscribe_transient_local: True
+      inflation_layer:
+        plugin: "nav2_costmap_2d::InflationLayer"
+        cost_scaling_factor: 3.0
+        inflation_radius: 0.30
+      transform_tolerance: 0.5
+
+map_server:
+  ros__parameters:
+    use_sim_time: true
+    # The operational map is robot_nav's derived /map (PR1); this node is the
+    # PR1 lifecycle proof and serves the demo rendering.  nav2_bringup's
+    # included navigation.launch.py does not start map_server, so this block is
+    # inert here but harmless if a manager ever names the node.
+    topic_name: "map"
+
+planner_server:
+  ros__parameters:
+    use_sim_time: true
+    expected_planner_frequency: 1.0
+    planner_plugins: ["GridBased"]
+    GridBased:
+      plugin: "nav2_navfn_planner::NavfnPlanner"
+      tolerance: 0.5
+      use_astar: false
+      allow_unknown: true
+
+smoother_server:
+  ros__parameters:
+    use_sim_time: true
+    smoother_plugins: ["simple_smoother"]
+    simple_smoother:
+      plugin: "nav2_smoother::SimpleSmoother"
+      tolerance: 1.0e-10
+      max_its: 1000
+      do_refinement: true
+
+behavior_server:
+  ros__parameters:
+    use_sim_time: true
+    local_costmap_topic: local_costmap/costmap_raw
+    global_costmap_topic: global_costmap/costmap_raw
+    local_footprint_topic: local_costmap/published_footprint
+    global_footprint_topic: global_costmap/published_footprint
+    cycle_frequency: 10.0
+    behavior_plugins: ["spin", "backup", "drive_on_heading", "wait"]
+    spin:
+      plugin: "nav2_behaviors::Spin"
+    backup:
+      plugin: "nav2_behaviors::BackUp"
+    drive_on_heading:
+      plugin: "nav2_behaviors::DriveOnHeading"
+    wait:
+      plugin: "nav2_behaviors::Wait"
+    local_frame: odom
+    global_frame: map
+    robot_base_frame: base_link
+    transform_tolerance: 0.1
+    simulate_ahead_time: 2.0
+    max_rotational_vel: 0.6
+    min_rotational_vel: 0.1
+    rotational_acc_lim: 1.0
+
+waypoint_follower:
+  ros__parameters:
+    use_sim_time: true
+    loop_rate: 20
+    stop_on_failure: false
+    waypoint_task_executor_plugin: "wait_at_waypoint"
+    wait_at_waypoint:
+      plugin: "nav2_waypoint_follower::WaitAtWaypoint"
+      enabled: true
+      waypoint_pause_duration: 200
+
+velocity_smoother:
+  ros__parameters:
+    use_sim_time: true
+    smoothing_frequency: 20.0
+    scale_velocities: false
+    feedback: "OPEN_LOOP"
+    max_velocity: [0.30, 0.30, 0.60]
+    min_velocity: [-0.30, -0.30, -0.60]
+    max_accel: [1.0, 1.0, 1.0]
+    max_decel: [-1.0, -1.0, -1.0]
+    odom_topic: "odom"
+    odom_duration: 0.1
+    deadband_velocity: [0.0, 0.0, 0.0]
+    velocity_timeout: 1.0
+
+# Nav2 1.3.12's navigation.launch.py also brings up route_server,
+# collision_monitor and docking_server (they are in its lifecycle_nodes list),
+# so this params file must give each a valid configuration or the navigation
+# lifecycle manager aborts the whole bringup.  None of the three is in PR2's
+# scope (RULING 4: costmaps + NavFn + MPPI); they are configured *inert*:
+#   - route_server: default; no route graph is loaded.
+#   - collision_monitor: no observation source is enabled (nothing produces a
+#     scan, D36), so it is a pass-through -- but it still needs the parameter
+#     key present to configure.
+#   - docking_server: never sent a dock goal; harmless defaults.
+route_server:
+  ros__parameters:
+    use_sim_time: true
+
+collision_monitor:
+  ros__parameters:
+    use_sim_time: true
+    base_frame_id: "base_link"
+    odom_frame_id: "odom"
+    cmd_vel_in_topic: "cmd_vel_smoothed"
+    cmd_vel_out_topic: "cmd_vel"
+    state_topic: "collision_monitor_state"
+    transform_tolerance: 0.2
+    source_timeout: 1.0
+    base_shift_correction: True
+    stop_pub_timeout: 2.0
+    # No scan in this stack (D36): one disabled source, no active polygons.
+    observation_sources: ["scan"]
+    scan:
+      type: "scan"
+      topic: "scan"
+      min_height: 0.15
+      max_height: 2.0
+      enabled: False
+    polygons: ["FootprintApproach"]
+    FootprintApproach:
+      type: "polygon"
+      action_type: "approach"
+      footprint_topic: "/local_costmap/published_footprint"
+      time_before_collision: 2.0
+      simulation_time_step: 0.1
+      min_points: 6
+      visualize: False
+      enabled: True
+
+docking_server:
+  ros__parameters:
+    use_sim_time: true
+    controller_frequency: 50.0
+    initial_perception_timeout: 5.0
+    wait_charge_timeout: 5.0
+    dock_approach_timeout: 30.0
+    undock_linear_tolerance: 0.05
+    undock_angular_tolerance: 0.1
+    max_retries: 3
+    base_frame: "base_link"
+    fixed_frame: "odom"
+    dock_backwards: false
+    dock_prestaging_tolerance: 0.5
+    # Nav2 1.3.12's docking_server refuses to configure without a charging-dock
+    # plugin ("Charging dock plugins not given!"); the absence aborts the whole
+    # navigation lifecycle bringup, so bt_navigator never activates. Declare the
+    # stock plugin so configure succeeds. NO dock instances are declared
+    # (`docks:` stays empty), and nothing in this stack ever sends a dock goal,
+    # so the server stays inert -- it just has to configure cleanly (RULING 7).
+    dock_plugins: ["simple_charging_dock"]
+    simple_charging_dock:
+      plugin: "opennav_docking::SimpleChargingDock"
+      docking_threshold: 0.05
+      staging_x_offset: -0.7
+      use_external_detection_pose: false
+      use_battery_status: false
+      use_stall_detection: false
+      external_detection_timeout: 1.0
+      external_detection_translation_x: -0.18
+      external_detection_translation_y: 0.0
+      external_detection_rotation_roll: -1.57
+      external_detection_rotation_pitch: -1.57
+      external_detection_rotation_yaw: 0.0
+      filter_coef: 0.1
+    controller:
+      k_phi: 3.0
+      k_delta: 2.0
+      v_linear_min: 0.15
+      v_linear_max: 0.15
+      use_collision_detection: false
+      costmap_topic: "local_costmap/costmap_raw"
+      footprint_topic: "local_costmap/published_footprint"
+      transform_tolerance: 0.1
+      projection_time: 5.0
+      simulation_step: 0.1
+      dock_collision_threshold: 0.3

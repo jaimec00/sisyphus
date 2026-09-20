@@ -44,7 +44,8 @@ import os
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
 from launch.actions import (DeclareLaunchArgument, IncludeLaunchDescription,
-                            LogInfo, RegisterEventHandler, Shutdown)
+                            LogInfo, RegisterEventHandler,
+                            SetEnvironmentVariable, Shutdown)
 from launch.event_handlers import OnProcessStart
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import (Command, LaunchConfiguration,
@@ -56,6 +57,43 @@ from launch_ros.substitutions import FindPackageShare
 #: Runtime file the sim plugin loads (never checked in; derived at launch).
 DEFAULT_MJCF = os.path.join(os.path.expanduser('~'), '.ros',
                             'sisyphus_derived_scene.xml')
+#: The live world-state file the world service (and the Nav2 map derived from
+#: it) read; matches world.launch.py's default so the bringup's pieces agree.
+DEFAULT_WORLD_STATE = os.path.join(os.path.expanduser('~'), '.ros',
+                                   'sisyphus_world.json')
+
+
+def _conda_lib_env():
+    """Return a launch action putting the conda env lib on ``LD_LIBRARY_PATH``.
+
+    The source-built ``mujoco_ros2_control`` executable links conda-native
+    shared libraries (``libcontroller_manager.so`` and ~30 others) that live
+    only in the pixi environment's ``lib`` directory.  Its installed RUNPATH
+    carries the *build* directory (``CMAKE_INSTALL_RPATH_USE_LINK_PATH=TRUE``
+    does not capture the conda ``lib``), and ament's ``setup.bash`` rebuilds
+    ``LD_LIBRARY_PATH`` from ament prefixes -- dropping the conda ``lib`` that
+    pixi's ``[activation.env]`` had set.  The loader therefore cannot resolve
+    ``libcontroller_manager.so``; the sim dies at startup (exit 127) and, via
+    its ``on_exit=Shutdown()``, tears the whole bringup down before any
+    controller activates (RULING 7).
+
+    Prepend ``<CONDA_PREFIX>/lib`` to ``LD_LIBRARY_PATH`` so every process the
+    launch spawns (the simulator and, after it, the controller spawners) can
+    resolve those libraries.  When ``CONDA_PREFIX`` is unset -- e.g. the
+    structural launch test imports this module and builds the description
+    outside the pixi env, or a user runs the launch against a system ROS -- the
+    action is a no-op and the description still builds.
+    """
+    conda_prefix = os.environ.get('CONDA_PREFIX')
+    if not conda_prefix:
+        return LogInfo(msg=(
+            'CONDA_PREFIX is unset; leaving LD_LIBRARY_PATH untouched '
+            '(the source-built mujoco_ros2_control may not find the conda '
+            'libs). Run the bringup through `pixi run` to set it.'))
+    lib_dir = os.path.join(conda_prefix, 'lib')
+    existing = os.environ.get('LD_LIBRARY_PATH', '')
+    library_path = lib_dir + (os.pathsep + existing if existing else '')
+    return SetEnvironmentVariable(name='LD_LIBRARY_PATH', value=library_path)
 
 
 def _robot_description_xacro():
@@ -142,12 +180,19 @@ def generate_launch_description():
     )
 
     return LaunchDescription([
+        # FIRST: make the conda env libs loadable for every process this launch
+        # spawns (the sim binary needs them; see _conda_lib_env / RULING 7).
+        _conda_lib_env(),
         DeclareLaunchArgument(
             'use_sim_time', default_value='true',
             description='Run the sim and controllers against /clock.'),
         DeclareLaunchArgument(
             'mjcf_path', default_value=DEFAULT_MJCF,
             description='Runtime path for the derived MJCF the sim loads.'),
+        DeclareLaunchArgument(
+            'world_state_path', default_value=DEFAULT_WORLD_STATE,
+            description=('Live world-state file the world service and the Nav2'
+                         ' map derive from.')),
         Node(
             package='robot_state_publisher',
             executable='robot_state_publisher',
@@ -166,7 +211,10 @@ def generate_launch_description():
         IncludeLaunchDescription(
             PythonLaunchDescriptionSource(PathJoinSubstitution(
                 [FindPackageShare('robot_bringup'), 'launch',
-                 'world.launch.py']))),
+                 'world.launch.py'])),
+            launch_arguments={
+                'world_state_path': LaunchConfiguration('world_state_path'),
+            }.items()),
         # The Nav2 localization layer (PR1/issue #121) -- ground-truth
         # odom -> base_link, the world-derived static map, and the Nav2
         # lifecycle nodes -- comes up the same way: its definition lives
@@ -177,7 +225,15 @@ def generate_launch_description():
         IncludeLaunchDescription(
             PythonLaunchDescriptionSource(PathJoinSubstitution(
                 [FindPackageShare('robot_nav'), 'launch',
-                 'nav.launch.py']))),
+                 'nav.launch.py'])),
+            # Forward the world-state path so the Nav2 layer's map (and the
+            # demo PGM it renders) derive from the same world file the rest of
+            # the bringup was pointed at -- otherwise the include falls back to
+            # nav.launch.py's own default and can disagree with world.launch.py.
+            launch_arguments={
+                'world_state_path': LaunchConfiguration('world_state_path'),
+                'use_sim_time': use_sim_time,
+            }.items()),
         simulator,
         # Controllers only come up once the sim node is running (dfki-ric
         # embeds the controller_manager; it must be up for the spawners).

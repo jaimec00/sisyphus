@@ -21,9 +21,18 @@ build:
     - -DBUILD_TESTING=OFF
     - -DCMAKE_INSTALL_RPATH_USE_LINK_PATH=TRUE
     - -DCMAKE_BUILD_TYPE=Release
+#
+# MUJOCO_BUILD_EXAMPLES=OFF (PR2, issue #124): MuJoCo 3.9.0 builds its
+# sample programs (basic/compile/record/...) when MUJOCO_BUILD_EXAMPLES is
+# ON (its default); those samples include glfw3.h -> <GL/gl.h>, which is
+# not on the compiler include path in this env, so the build fails after
+# the library and plugins are already built.  The samples are not used by
+# the sim; turn them off.  (dfki-ric only sets BUILD_EXAMPLES, not
+# MUJOCO_BUILD_EXAMPLES, so the upstream default leaked through.)
 mujoco_ros2_control:
   build:
     cmake-args:
+      - -DMUJOCO_BUILD_EXAMPLES=OFF
       - -DBUILD_TESTING=OFF
       - -DCMAKE_INSTALL_RPATH_USE_LINK_PATH=TRUE
       - -DCMAKE_BUILD_TYPE=Release
