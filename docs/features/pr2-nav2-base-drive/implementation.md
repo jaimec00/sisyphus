@@ -53,7 +53,10 @@ cosφ)`):
 K = [[-0.8660254,  0.5, 0.125],
      [ 0.0,       -1.0, 0.125],
      [ 0.8660254,  0.5, 0.125]]
-wheel_angular = WHEEL_SIGN * K @ [vx, vy, wz] / wheel_radius
+wheel_angular = (WHEEL_SIGN * K_t @ [vx, vy] + WZ_SIGN * K_w * wz) / wheel_radius
+  where  K_t = translational columns (vx, vy) of K
+         K_w = rotational column (wz) of K
+  i.e.  sign is split **by column**: vx/vy x WHEEL_SIGN, wz x WZ_SIGN
 ```
 
 The URDF/MJCF joint-axis convention is **opposite** the LeRobot driver
@@ -294,3 +297,81 @@ then `wz`, the `wz` phase gave `dyaw = 0` (stuck). Each direction from a **fresh
 session is reproducible (`+vx` → `dx = +0.31…+0.49 m`; `+wz` → `dyaw = +1.77 rad`),
 so `_drive_probe` launches the stack once per direction. The rotation check runs
 first; both pass on two consecutive runs.
+
+## Fix round (red-team round 2, commit after `5500e58`) — DDS /dev/shm flakiness
+
+Red-team round 2 found the acceptance test flaky: each `_drive_probe` session
+leaks FastDDS shared-memory segments in `/dev/shm`, and once they accumulate a
+later launch dies with `RTPS_TRANSPORT_SHM Error: Failed init_port
+fastrtps_port7004: open_and_lock_file failed` -> the Nav2 stack never reaches
+ACTIVE -> a bare `<no output>` false negative. Reproduced on `olivia` (144
+orphan `fastrtps_*`/`sem.fastrtps_*` files after one run; the second session
+failed at the 120 s readiness timeout).
+
+Root causes found (all three, not one):
+
+1. **`/dev/shm` never cleaned.** Each session leaves ~110-140 `fastrtps_*`
+   segments. The FastDDS **meta-traffic port block (`fastrtps_port70xx`) is
+   host-global, not `ROS_DOMAIN_ID`-scoped**, so stale locks there break the
+   *next* launch regardless of domain. Measured mapping: domain 124 ->
+   `fastrtps_port38411..`, domain 137 -> `fastrtps_port41661..` (`7400 + 250 x
+   domain + k`), while `7000..70xx` is shared.
+2. **Escaped launch children.** `ros2 launch` children are re-parented to the
+   user systemd session and survive the test's `killpg`, lingering in the ROS
+   domain (a duplicate `map_node`) and holding SHM. The Nav2 lifecycle manager
+   then aborts bringup (`bt_navigator/get_state ... async_send_request failed`)
+   -> `bt_navigator` never ACTIVE.
+3. **Two rclpy sessions in one process.** FastDDS' SHM transport is a
+   process-global singleton; a second context after `try_shutdown()` cannot
+   publish -> the sim aborts with `failed to send response: cannot publish
+   data`.
+
+Fix (all scoped; **no unguarded global `rm /dev/shm/fastrtps_*`** -- `olivia` is
+shared with other agents):
+
+- **Distinct `ROS_DOMAIN_ID` per session** (`124` for the `+wz` probe, `125`
+  for `+vx`), and each **bringup retry uses a fresh domain**.
+- **Per-probe subprocess** (`multiprocessing` spawn): each probe gets a pristine
+  FastDDS singleton, so sessions cannot contaminate each other.
+- **Scoped, liveness-guarded SHM cleanup** around every launch:
+  - `_sweep_stale_shm()` *before* launch removes unheld FastDDS files (clears
+    orphans from earlier crashed runs, incl. the host-global 70xx block);
+  - `_cleanup_shm(before)` *after* teardown removes only files newer than the
+    pre-launch snapshot.
+  - Both skip any file still held by a live process (`fuser`), so a concurrent
+    ROS user's segments are never touched.
+- **Per-worktree orphan reaping**: `_reap_orphans()` SIGKILLs processes whose
+  cmdline names **this worktree's** own paths (`<root>/install/` or
+  `<root>/.pixi/envs/default/lib/`) -- the two launch spaces. A node from
+  another checkout, another ROS user, the pytest driver, or the `pixi run`
+  wrapper never matches. Run before the launch and after teardown; waits
+  (bounded) for the strays to exit so the sweep can reclaim their files.
+- **Bringup retry** (`_BRINGUP_ATTEMPTS = 3`, fresh domain each): rides out the
+  Nav2 lifecycle DDS-discovery race, which the manager does not retry. It
+  retries only on the readiness/transient signatures
+  (`_is_transient_bringup_failure`); a genuine drive/sign failure is not
+  retried. Readiness loops also **bail early** when the launch log shows
+  `Aborting bringup` / `process has died`, so a doomed attempt retries in
+  seconds rather than stalling the full 120 s.
+- The launch output is now **streamed to `launch.log`** and `_logs()` returns
+  the tail, so a failed bringup surfaces real diagnostics instead of
+  `<no output>` (red-team NOTE).
+
+**Verification (on `olivia`)**
+
+- Pre-fix reproduction: 144 orphans after one run; reuse failed at the 120 s
+  timeout with the `fastrtps_port7004: open_and_lock_file failed` signature.
+- Post-fix: **21 consecutive passes** across three runs of a 10/8/3-run loop
+  (3-run canonical: 30.6 s / 47.6 s / 28.7 s, all pass), each ending with
+  **0 orphans and 0 strays**.
+- **Seeded-stale-state test**: seeded 120 bogus `fastrtps_port*`/`sem.*` files
+  plus a live stray `map_node` from this worktree -> test still passes and ends
+  at 0 orphans / 0 strays (the stray is reaped).
+- **Safety test**: a real ROS node from a *different* worktree
+  (`i121-pr1-nav2-localization`'s `map_server`, same domain 124) survives
+  untouched while the test passes -- the guarded cleanup/reap does not touch a
+  concurrent ROS user's process.
+
+NOTEs also fixed: the stale single-sign IK formula in
+:ref:`implementation.md` (now shows the column split) and the startup log now
+prints `WZ_SIGN` alongside `WHEEL_SIGN`.

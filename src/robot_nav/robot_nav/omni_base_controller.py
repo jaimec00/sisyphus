@@ -183,7 +183,8 @@ class OmniBaseController(Node):
         self._timer = self.create_timer(1.0 / rate, self._publish_wheels)
         self.get_logger().info(
             f'omni_base_controller up: {cmd_topic} -> {command_topic} '
-            f'(WHEEL_SIGN={WHEEL_SIGN:+.1f}, timeout={self._timeout:.2f}s)')
+            f'(WHEEL_SIGN={WHEEL_SIGN:+.1f}, WZ_SIGN={WZ_SIGN:+.1f}, '
+            f'timeout={self._timeout:.2f}s)')
 
     def _on_cmd_vel(self, msg: Twist) -> None:
         """Convert an incoming Twist to wheel speeds and remember the time."""

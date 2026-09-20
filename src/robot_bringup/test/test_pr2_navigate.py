@@ -43,6 +43,7 @@ skips with the build command rather than failing on an uninstalled dependency.
 """
 import math
 import os
+import re
 import signal
 import subprocess
 import tempfile
@@ -51,10 +52,19 @@ import time
 
 import pytest
 
-#: A ROS domain of this suite's own (121 is PR1's nav test in this package).
-NAV2_DOMAIN_ID = '124'
+#: A base ROS domain of this suite's own (121 is PR1's nav test in this
+#: package, 122 the mujoco launch test, 123 the tf tree test).  Each drive
+#: session gets its **own** domain (base + its index) so the two launches in
+#: this process never share a FastDDS shared-memory port namespace -- see
+#: ``_drive_probe`` and the shm-cleanup note below.
+NAV2_DOMAIN_ID = 124
 #: How long the whole sim + Nav2 stack gets to come up and answer.
 LAUNCH_READY_TIMEOUT_S = 120.0
+#: Bringup attempts per probe.  The Nav2 lifecycle manager can hit a transient
+#: DDS-discovery race on a loaded host ("bt_navigator/get_state ...
+#: async_send_request failed" -> "Aborting bringup"); it does not retry, so the
+#: probe relaunches on a fresh domain.  A real defect still fails every attempt.
+_BRINGUP_ATTEMPTS = 3
 #: Pure +vx drive check: commanded 0.3 m/s, held for this long.
 VX_DRIVE_S = 5.0
 VX_COMMAND = 0.3
@@ -100,8 +110,195 @@ def _have_package(pkg):
     return True
 
 
+#: FastDDS leaves its POSIX shared-memory segments in ``/dev/shm`` named
+#: ``fastrtps_<...>`` (the SHM transport's port segments and per-participant
+#: files) plus a ``sem.fastrtps_<...>_mutex`` lock per port.  It does not
+#: always unlink them on teardown (observed: the domain-derived
+#: ``fastrtps_port<...>`` files survive an ungraceful exit), and when they
+#: accumulate a *later* launch dies at startup with
+#: ``RTPS_TRANSPORT_SHM Error: Failed init_port fastrtps_port7003:
+#: open_and_lock_file failed`` -- ``bt_navigator`` never activates and the
+#: test reports a misleading ``<no output>`` (a false negative unrelated to
+#: the code under test).
+_SHm_NAME_RE = re.compile(r'^(?:fastrtps_|sem\.fastrtps_)')
+
+
+def _shm_inventory():
+    """Return the set of names currently in ``/dev/shm`` (missing dir -> empty)."""
+    try:
+        return set(os.listdir('/dev/shm'))
+    except OSError:
+        return set()
+
+
+def _held_by_a_live_process(path):
+    """Return True iff some live process still holds ``path`` open or mapped.
+
+    ``fuser`` exits 0 when at least one process holds the file.  Used to make
+    the cleanup safe on a **shared** host: a concurrent, unrelated ROS process'
+    segments are held, so we never remove them.  If ``fuser`` is unavailable we
+    fail safe (report "held") and leave the file alone.
+    """
+    try:
+        result = subprocess.run(
+            ['fuser', path], stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL, timeout=10)
+    except (OSError, subprocess.SubprocessError):
+        return True
+    return result.returncode == 0
+
+
+def _worktree_marker():
+    """Return the root path identifying THIS worktree."""
+    prefix = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    return prefix.rsplit('/src/', 1)[0]
+
+
+def _node_path_markers():
+    """Path markers that appear only in THIS worktree's launched nodes.
+
+    Two launch spaces: our ament ``install/`` packages and the pixi/conda env's
+    ``lib/`` executables (upstream Nav2).  Neither appears in the pytest driver
+    (relative ``src/``) nor the ``pixi run`` wrapper (``pixi.toml``/``bin/``).
+    """
+    root = _worktree_marker()
+    return (os.path.join(root, 'install'),
+            os.path.join(root, '.pixi', 'envs', 'default', 'lib'))
+
+
+def _is_our_process(pid):
+    """Return True iff ``pid`` is one of THIS worktree's ROS processes.
+
+    Scoped to this worktree's own paths (see :func:`_node_path_markers`), which
+    appear in the cmdline of every node this checkout launches; a stray node
+    from another checkout, an unrelated ROS user's process, the pytest driver
+    (relative ``src/`` cmdline) and the ``pixi run`` wrapper never match.
+    Returns False for our own process and any PID we cannot read.
+    """
+    if pid == os.getpid():
+        return False
+    try:
+        with open('/proc/%d/cmdline' % pid, 'rb') as handle:
+            cmdline = handle.read().decode('utf-8', 'replace')
+    except OSError:
+        return False
+    return any(marker in cmdline for marker in _node_path_markers())
+
+
+def _stray_our_processes():
+    """Return the PIDs of every live process of THIS worktree (minus us)."""
+    strays = set()
+    for entry in os.listdir('/proc'):
+        if not entry.isdigit():
+            continue
+        pid = int(entry)
+        if _is_our_process(pid):
+            strays.add(pid)
+    return strays
+
+
+def _reap_orphans():
+    """Kill this worktree's launch children that escaped the process group.
+
+    Some ``ros2 launch`` children are re-parented to the user systemd session
+    and survive the group kill.  They then linger in the ROS domain (a stale
+    node corrupts the next bringup -- e.g. a duplicate ``map_node``) and hold
+    FastDDS SHM segments, breaking the next launch with
+    ``open_and_lock_file failed``.  They may be from THIS session or a much
+    earlier crashed run, so we scan every process, not just this session's.
+
+    Safe on a node shared with other ROS users: a PID is reaped only if its
+    cmdline names THIS worktree's own paths (see :func:`_is_our_process`) --
+    i.e. it is one of *our* escaped children, never another user's node.
+    Waits (bounded) for them to exit, so their SHM segments are freed for the
+    sweep that follows.  Returns the count reaped.
+    """
+    culprits = _stray_our_processes()
+    for pid in culprits:
+        try:
+            os.kill(pid, signal.SIGKILL)
+        except (ProcessLookupError, PermissionError):
+            pass
+    if culprits:
+        # Wait for them to actually exit (they hold their SHM segments until
+        # then, and the sweep below skips held files).
+        deadline = time.monotonic() + 15.0
+        while time.monotonic() < deadline and _stray_our_processes():
+            time.sleep(0.2)
+    return len(culprits)
+
+
+def _sweep_stale_shm():
+    """Remove *all* unheld FastDDS SHM artifacts before a launch.
+
+    Unlike :func:`_cleanup_shm` this is not time-scoped -- it also clears
+    orphans left by an earlier crashed run, because the FastDDS SHM
+    meta-traffic ports are host-global (not domain-scoped) and a stale lock
+    there breaks the next launch.  Safe on a shared node: any file held by a
+    live process is skipped (``fuser``), so a concurrent ROS user's segments
+    are never touched.  Returns the number removed.
+    """
+    removed = 0
+    for name in sorted(_shm_inventory()):
+        if not _SHm_NAME_RE.match(name):
+            continue
+        path = os.path.join('/dev/shm', name)
+        if _held_by_a_live_process(path):
+            continue
+        try:
+            os.unlink(path)
+            removed += 1
+        except OSError:
+            pass
+    return removed
+
+
+def _cleanup_shm(before):
+    """Remove only the fastrtps SHM artifacts *this* session created.
+
+    Scoped and guarded, so it is safe on a node shared with other ROS users:
+
+    * **Scoped by time** -- only names that appeared since the pre-launch
+      ``before`` inventory are candidates, so a file present before this
+      session (someone else's, or a live process') is never touched.
+    * **Guarded by liveness** -- a candidate still held open by a live process
+      is skipped (``fuser``); we never yank a segment out from under a running
+      peer.
+
+    Returns the number of files removed (for the caller to log).
+    """
+    removed = 0
+    # A few passes: a child that died just after the liveness probe releases
+    # its segment late, so one sweep can miss files a later sweep reclaims.
+    for _ in range(10):
+        pending = 0
+        for name in _shm_inventory() - before:
+            if not _SHm_NAME_RE.match(name):
+                continue
+            path = os.path.join('/dev/shm', name)
+            if _held_by_a_live_process(path):
+                pending += 1
+                continue
+            try:
+                os.unlink(path)
+                removed += 1
+            except OSError:
+                pass
+        if pending == 0:
+            break
+        time.sleep(0.5)
+    return removed
+
+
 def _spawn_launch(env, world_state_path):
-    """Start ``mujoco.launch.py`` headless as its own process group."""
+    """Start ``mujoco.launch.py`` headless as its own process group.
+
+    Output is streamed (line by line) into a log file *and* an in-memory list,
+    so a launch that hangs or dies still leaves a readable trace: the earlier
+    ``''.join([process.stdout.read()])`` only produced text at EOF, which is why
+    a non-activating stack surfaced as a bare ``<no output>``.
+    """
+    log_path = os.path.join(os.path.dirname(world_state_path), 'launch.log')
     process = subprocess.Popen(
         [_require_tool('ros2'), 'launch', 'robot_bringup', 'mujoco.launch.py',
          'use_sim_time:=true', 'world_state_path:=%s' % world_state_path],
@@ -109,10 +306,28 @@ def _spawn_launch(env, world_state_path):
         env=env, start_new_session=True)
     group = os.getpgid(process.pid)
     output = []
-    reader = threading.Thread(
-        target=lambda: output.append(process.stdout.read()), daemon=True)
+
+    def _pump():
+        with open(log_path, 'w') as handle:
+            for line in process.stdout:
+                output.append(line)
+                handle.write(line)
+                handle.flush()
+
+    reader = threading.Thread(target=_pump, daemon=True)
     reader.start()
     return process, group, output, reader
+
+
+def _group_alive(group):
+    """Return True iff any process is still in process group ``group``."""
+    try:
+        os.killpg(group, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
 
 
 def _terminate_group(process, group):
@@ -131,6 +346,12 @@ def _terminate_group(process, group):
             process.wait(timeout=10)
         except subprocess.TimeoutExpired:
             pass
+    # Wait for the whole group (sim + Nav2 children) to actually exit: they
+    # hold their FastDDS SHM segments until they die, and the cleanup below is
+    # liveness-guarded, so it can only reclaim them once they are gone.
+    deadline = time.monotonic() + 15.0
+    while time.monotonic() < deadline and _group_alive(group):
+        time.sleep(0.2)
 
 
 def _write_world_file(path):
@@ -145,7 +366,98 @@ def _yaw_from_quaternion(quat):
     return math.atan2(siny, cosy)
 
 
-def _drive_probe(vx, wz, duration):
+def _run_probe_in_subprocess(queue, vx, wz, duration, domain_id):
+    """Child-process entry point: run one probe and put its result on ``queue``.
+
+    Runs in a freshly spawned interpreter (FastDDS' process-global SHM
+    transport starts from a clean slate).  On any exception, the traceback (and
+    the sim log the worker already embedded) is sent back for the parent to
+    re-raise.
+    """
+    import traceback
+
+    try:
+        result = _drive_probe_worker(vx, wz, duration, domain_id)
+        queue.put(('ok', result))
+    except BaseException:  # noqa: BLE001 - relay everything to the parent
+        queue.put(('error', traceback.format_exc()))
+
+
+def _drive_probe(vx, wz, duration, domain_id):
+    """Run one drive probe in its **own process** and return its result.
+
+    Each probe needs a clean DDS process: FastDDS' shared-memory transport is a
+    process-global singleton, so two rclpy sessions in one interpreter leave the
+    second launch unable to publish (the sim aborts with "cannot publish data").
+    A spawned child per probe isolates both hazards (own process *and* own
+    ROS_DOMAIN_ID).
+
+    The bringup is retried on a **fresh domain** (up to ``_BRINGUP_ATTEMPTS``)
+    to ride out the Nav2 lifecycle DDS-discovery race (see ``_BRINGUP_ATTEMPTS``
+    and ``_is_transient_bringup_failure``).  The last failure is re-raised.
+    """
+    import multiprocessing
+
+    last_error = None
+    for attempt in range(_BRINGUP_ATTEMPTS):
+        context = multiprocessing.get_context('spawn')
+        queue = context.Queue()
+        child = context.Process(
+            target=_run_probe_in_subprocess,
+            args=(queue, vx, wz, duration, domain_id + attempt))
+        child.start()
+        try:
+            kind, payload = queue.get(
+                timeout=duration + LAUNCH_READY_TIMEOUT_S + 60)
+        finally:
+            child.join(timeout=30)
+            if child.is_alive():
+                child.terminate()
+                child.join(timeout=10)
+        if kind == 'ok':
+            return payload
+        last_error = payload
+        if not _is_transient_bringup_failure(payload):
+            break
+        if attempt + 1 < _BRINGUP_ATTEMPTS:
+            print('[pr2-nav] bringup attempt %d/%d failed transiently; '
+                  'relaunching on a fresh domain' % (attempt + 1,
+                                                     _BRINGUP_ATTEMPTS))
+    raise AssertionError(last_error)
+
+
+def _is_transient_bringup_failure(text):
+    """Return True iff ``text`` shows the Nav2 lifecycle DDS-discovery abort.
+
+    These are the (VERIFIED) transient signatures the manager emits when a
+    ``get_state`` call races DDS discovery on a loaded host; they say nothing
+    about the code under test, so they are worth a relaunch.  Anything else
+    (a real drive/sign/assert failure) is not retried.
+    """
+    if text is None:
+        return False
+    markers = (
+        # Nav2 lifecycle DDS-discovery abort (the manager gives up, not us).
+        'bt_navigator/get_state service client: async_send_request failed',
+        'Failed to bring up all requested nodes. Aborting bringup',
+        # FastDDS SHM port contention (host-global meta-traffic ports).
+        'Failed init_port fastrtps_port',
+        'open_and_lock_file failed',
+        # Readiness timeouts: the stack did not reach ACTIVE in time.  These
+        # are the retryable assertions -- a genuine drive/sign failure is
+        # reported by the *other* asserts ('rotated', 'drove', 'not a drive',
+        # 'spun rather than'), which are deliberately NOT matched here.
+        'bt_navigator never became ACTIVE',
+        'controller_server never became ACTIVE',
+        'base_velocity_controller never became active',
+        '/mujoco_get_body_state not available',
+        'GetBodyState(base_link) failed',
+        '<no output>',
+    )
+    return any(marker in text for marker in markers)
+
+
+def _drive_probe_worker(vx, wz, duration, domain_id):
     """Launch the full bringup once and return the base's motion for one Twist.
 
     Spawns the *shipped* ``mujoco.launch.py`` (sim + controllers + world + the
@@ -173,9 +485,21 @@ def _drive_probe(vx, wz, duration):
     world_path = os.path.join(directory, 'world.json')
     _write_world_file(world_path)
 
-    env = dict(os.environ, ROS_DOMAIN_ID=NAV2_DOMAIN_ID)
+    # Each session gets its own domain so the two launches never
+    # share a FastDDS shared-memory port namespace (see module doc).
+    domain = str(domain_id)
+    env = dict(os.environ, ROS_DOMAIN_ID=domain)
+    # Clear stale FastDDS SHM first: the meta-traffic ports are host-global
+    # (not domain-scoped), so leftover locks from an earlier session/run make
+    # this launch fail with 'open_and_lock_file failed'.  Guarded by liveness,
+    # so a live peer's segments are untouched.
+    _reap_orphans()
+    _sweep_stale_shm()
+    # Snapshot /dev/shm so the teardown can remove exactly the
+    # FastDDS segments *this* session adds (scoped cleanup).
+    shm_before = _shm_inventory()
     process, group, output, reader = _spawn_launch(env, world_path)
-    os.environ['ROS_DOMAIN_ID'] = NAV2_DOMAIN_ID
+    os.environ['ROS_DOMAIN_ID'] = domain
     context = rclpy.Context()
     rclpy.init(context=context)
     node = Node('pr2_drive_e2e_probe', context=context)
@@ -185,7 +509,24 @@ def _drive_probe(vx, wz, duration):
         executor.add_node(node)
 
         def _logs():
-            return ''.join(output) or '<no output>'
+            text = ''.join(output)
+            if not text:
+                return '<no output>'
+            # Keep the tail: the launch is verbose and pytest truncates long
+            # assertion messages; the failing lines are at the end.
+            return text[-8000:]
+
+        #: Signatures that mean the bringup is already doomed -- waiting the
+        #: full timeout cannot help, so the readiness loops bail immediately
+        #: (and the probe retries on a fresh domain without a 2-minute stall).
+        _ABORT_MARKERS = (
+            'Failed to bring up all requested nodes. Aborting bringup',
+            'process has died',
+        )
+
+        def _bringup_aborted():
+            text = ''.join(output)
+            return any(marker in text for marker in _ABORT_MARKERS)
 
         # -- the nav stack is up: bt_navigator + controller_server ACTIVE.
         def _lifecycle_active(node_name):
@@ -193,6 +534,8 @@ def _drive_probe(vx, wz, duration):
             deadline = time.monotonic() + LAUNCH_READY_TIMEOUT_S
             while time.monotonic() < deadline:
                 executor.spin_once(timeout_sec=0.1)
+                if _bringup_aborted():
+                    return False
                 if not client.service_is_ready():
                     continue
                 future = client.call_async(GetState.Request())
@@ -215,6 +558,8 @@ def _drive_probe(vx, wz, duration):
         base_active = False
         while time.monotonic() < deadline:
             executor.spin_once(timeout_sec=0.1)
+            if _bringup_aborted():
+                break
             if not cm_client.service_is_ready():
                 continue
             future = cm_client.call_async(ListControllers.Request())
@@ -285,6 +630,14 @@ def _drive_probe(vx, wz, duration):
         node.destroy_node()
         context.try_shutdown()
         _terminate_group(process, group)
+        # Remove this session's FastDDS SHM segments (the sim leaves them
+        # behind; a later launch then dies on open_and_lock_file).  Scoped to
+        # files this session created and skipped if a live process holds them,
+        # so it is safe on a node shared with other ROS users.
+        _reap_orphans()
+        removed = _cleanup_shm(shm_before)
+        if removed:
+            print('[pr2-shm] reclaimed %d FastDDS /dev/shm segment(s)' % removed)
 
 
 def test_base_drives_under_wheel_commands():
@@ -318,7 +671,8 @@ def test_base_drives_under_wheel_commands():
             'Build it with: `vcs import src < robot.repos && pixi run build`.')
 
     # -- 2a. pure +wz: the base rotates +yaw (the sign-split fix).
-    _, _, dyaw_wz, _ = _drive_probe(0.0, WZ_COMMAND, WZ_DRIVE_S)
+    _, _, dyaw_wz, _ = _drive_probe(
+        0.0, WZ_COMMAND, WZ_DRIVE_S, NAV2_DOMAIN_ID)
     assert dyaw_wz >= MIN_WZ_DYAWM, (
         'pure +wz=%.2f rotated dyaw=%.3f rad (expected >= %.2f) -- the base did '
         'not rotate +yaw (the wz sign split is the fix for this)'
@@ -326,7 +680,7 @@ def test_base_drives_under_wheel_commands():
 
     # -- 2b. pure +vx: the base translates +x, not a spin or a teleport.
     dx_vx, _, dyaw_vx, max_travel = _drive_probe(
-        VX_COMMAND, 0.0, VX_DRIVE_S)
+        VX_COMMAND, 0.0, VX_DRIVE_S, NAV2_DOMAIN_ID + 1)
     assert dx_vx >= MIN_VX_DX, (
         'pure +vx=%.2f drove dx=%.3f m (expected >= %.2f) -- base did not '
         'translate +x' % (VX_COMMAND, dx_vx, MIN_VX_DX))
