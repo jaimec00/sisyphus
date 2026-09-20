@@ -74,3 +74,58 @@ Semantic `navigate_to` bridge (PR3), MoveIt arm planning, the safety layer, AMCL
 - Exact floor height/z and any `kv`/friction tuning needed to make the base actually drive (evidence: sim logs + observed base motion).
 - `WHEEL_SIGN` final value after empirical calibration.
 - Whether MPPI-Omni works as ruled or DWB had to be substituted (with evidence).
+
+## RULING 7 — Fix the sim library-path BLOCK (red-team round 1; in-scope for PR2)
+Red-team (round 1) verdict: the PR's code is sound — IK matrix, WHEEL_SIGN=-1.0
+(verified: +vx → dx=+0.0458, +vy → dy=+0.0901), free-base MJCF (nq=25, nv=24,
+nbody=21, floor at z=-0.05), implicit integrator, odom seam, D30 guard, and the
+Nav2 localization test are all green; and the full sim+Nav2 stack comes up
+healthy when the loader path is correct. **Two BLOCKs remain, both the same root
+cause:**
+
+- The source-built `mujoco_ros2_control` sim binary cannot load conda-native
+  shared libs at runtime (`libcontroller_manager.so: cannot open shared object
+  file`). The sim dies (exit 127) → `on_exit=Shutdown()` tears down the bringup
+  → `bt_navigator`/`controller_server`/`base_velocity_controller` never activate.
+  This breaks **both** the PR2 acceptance (`test_navigate_to_pose_drives_the_base`)
+  and the must-stay-green `test_joint_command_moves_sim_state`.
+
+Root cause (VERIFIED): the installed binary's RUNPATH carries only the build
+dir, and `CMAKE_INSTALL_RPATH_USE_LINK_PATH=TRUE` (the documented PR8b RPATH fix
+in `colcon_defaults.yaml`) is not producing a conda-lib RPATH; meanwhile ament's
+`setup.bash` recomputes LD_LIBRARY_PATH from ament prefixes and DROPS the conda
+env lib that pixi's `[activation.env]` sets. Pre-existing: `main` has never
+actually RUN the sim tests (`mujoco_ros2_control` is absent from main's worktree,
+so they always skipped) — PR2 is the first PR whose acceptance depends on the
+sim binary loading, so PR2 must fix it.
+
+Fix (implementer probes the exact mechanism, then applies the minimal robust fix):
+- **PRIMARY — launch-level loader path**: in `src/robot_bringup/launch/mujoco.launch.py`,
+  guarantee the conda env lib is on `LD_LIBRARY_PATH` for the launched processes.
+  Compute `<CONDA_PREFIX>/lib` (from `os.environ.get('CONDA_PREFIX')`) and prepend
+  it to the existing `LD_LIBRARY_PATH` via a `launch.actions.SetEnvironmentVariable`
+  placed first in the returned LaunchDescription (or `additional_env={...}` on the
+  simulator `Node`). Must be graceful when `CONDA_PREFIX` is unset (the structural
+  launch test imports the module without the pixi env).
+- **Alternative (only if the launch-level fix is insufficient)**: make the binary
+  self-contained by getting the conda lib into the installed RPATH —
+  `CMAKE_INSTALL_RPATH` set explicitly (e.g. `$ENV{CONDA_PREFIX}/lib`) instead of /
+  in addition to the non-working `CMAKE_INSTALL_RPATH_USE_LINK_PATH=TRUE`. Keep
+  `colcon_defaults.yaml` and the pixi `build` task consistent.
+
+Also required in this fix round (the first implementer run was cut off mid-way):
+- **Write `docs/features/pr2-nav2-base-drive/implementation.md`** (currently missing):
+  what changed, the probe evidence (free-base sim spawns, base drives), the
+  WHEEL_SIGN=-1.0 calibration numbers above, the implicit-integrator rationale,
+  and the MPPI-Omni outcome.
+- **Re-verify BOTH heavy tests pass** after the fix: `test_joint_command_moves_sim_state`
+  AND `test_navigate_to_pose_drives_the_base` (the latter must show the base
+  actually DRIVES to (2.0, 0.0) with position AND heading converging, taking real
+  time — not a teleport). Keep all unit tests + `test_no_ros_runtime` green.
+
+NOTEs from red-team (do not need to block, but fix the cheap ones where trivial):
+- `test_pr2_navigate`/`test_joint_command` surface `<no output>` on sim failure;
+  surfacing the sim's exit/stderr would have made the diagnosis immediate (consider
+  a small improvement, not a blocker).
+- Orphaned `mujoco_ros2_control` processes from failed runs can linger on `olivia`;
+  kill strays before re-running.
