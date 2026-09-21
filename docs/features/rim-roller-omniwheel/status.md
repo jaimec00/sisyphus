@@ -172,6 +172,32 @@ Open-loop in sim via `GetBodyState('base_link')`, same `_drive_probe` mechanism:
 Record the before/after numbers and the exact thresholds chosen in
 `implementation.md`.
 
+### R10 — Flip `WZ_SIGN` to `-1.0` (plant calibration, authorized).
+R6 forbade touching the signs without VERIFIED evidence; that evidence now
+exists (isolated pure-sim `+wz` -> `+yaw` at 0.99x with `WZ_SIGN=-1.0`, and the
+ROS raw-quaternion inversion under the shipped `+1.0` -- both in
+`implementation.md`). The roller plant's contact kinematics invert the rotation
+channel relative to the cylinder plant PR2 calibrated `WZ_SIGN=+1.0` on; that
+`+1.0` was only correct for the broken cylinder plant. Flip to `WZ_SIGN=-1.0`,
+which now matches `WHEEL_SIGN=-1.0` (a cleaner, unified global sign). Apply in
+`omni_base_controller.py` (constant + its docstring + the module docstring's
+sign-convention paragraph), `test_omni_ik.py` (the sign-constant unit tests +
+their docstrings), and record in `implementation.md`.
+
+**[APPLIED]** WZ_SIGN flipped +1.0 -> -1.0 (unified global -1.0) with the
+sign-constant unit tests rewritten to pin it, plus the stale pre-#125
+docstrings in `test_pr2_navigate.py` fixed — landed in this commit.
+
+### R11 — Closed-loop convergence is the #125 acceptance; investigate, don't assume.
+After R10: (a) CLEAN rebuild + reinstall of `robot_nav` (`pixi run build`), then
+(b) re-run `test_base_converges_on_a_lateral_navigate_to_pose_goal` in
+`test_pr2_navigate.py`. Verify the node actually logs `WZ_SIGN=-1.0` before
+drawing any conclusion. If it converges -> proceed. If it STILL fails, diagnose
+by running (not reasoning): (1) is `/odom` twist reporting wz with the correct
+sign (cross-check vs `GetBodyState` raw quaternion)? (2) is MPPI commanding a
+non-zero wz toward the goal heading? (3) does an open-loop `+wz` now rotate the
+base `+yaw` in the ROS path (not just isolated sim)?
+
 ## Open questions / risk
 - **Roller contact smoothness** (does N=8 give clean rolling, or is it bumpy /
   does the wheel catch roller edges?) — the implementer probes; this is the

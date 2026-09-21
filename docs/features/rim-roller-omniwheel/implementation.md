@@ -177,3 +177,31 @@ experiment was reverted. **This is an escalation, not an applied change.**
 * The wz magnitude in ROS sessions varied (a session that showed ~0.72× and
   another ~0.29×) before the raw-quaternion cross-check settled the sign
   question; red-team should re-run and re-measure the magnitude.
+
+## R10 applied — `WZ_SIGN` flipped to -1.0
+
+The red-team verdict: the roller **model is sound**; the only BLOCK was the wz
+channel inversion.  Residual phenomena are NOTE-level only (a small +vy yaw and
+the roller-passing ripple).  R10 applied in this commit:
+
+* `src/robot_nav/robot_nav/omni_base_controller.py` — `WZ_SIGN` flipped
+  `+1.0 -> -1.0`, so the bridge now applies a single unified global `-1.0` to
+  every column (matching `WHEEL_SIGN = -1.0`).  The wz column comes out negated:
+  the #125 rim-roller plant inverts the rotational channel, whereas the
+  `+1.0` was calibrated against the PR2 plain-cylinder plant (which gave
+  inverted yaw under a global -1.0).  Constant docstrings, the module
+  "Sign convention" paragraph, and the `body_to_wheel` docstring updated to
+  state the unified -1.0 (no more "split by column").
+* `src/robot_nav/test/test_omni_ik.py` — the sign tests now pin the unified
+  -1.0: `test_calibrated_sign_is_unified_negative_one` (both constants `-1.0`;
+  the default output IS the global negation of the LeRobot raw; the wz part is
+  negated), `test_default_pure_wz_rotates_negative` (pure `+wz` yields negative
+  wheel speeds), and the translation test's stale docstring fixed.  All 10
+  pure-function tests pass.
+* `src/robot_bringup/test/test_pr2_navigate.py` — stale pre-#125 docstrings
+  fixed (they still described the plain-cylinder scrubbing plant and said
+  closed-loop was "deferred to post-#125"): module docstring, the
+  `MIN_VX_DX`/`MAX_VX_YAWR` threshold comment block, `_drive_probe_worker`, and
+  the open-loop test's docstring.  Threshold VALUES are unchanged (direction-only
+  claims kept); the closed-loop test docstring's historical contrast is
+  untouched.  No test logic or thresholds changed.

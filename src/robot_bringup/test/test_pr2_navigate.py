@@ -22,13 +22,13 @@ of its own, and then:
    (and holds ``|yaw|`` small), pure ``+wz`` rotates the base ``+yaw`` (the
    sign-split fix).
 
-The claim is **open-loop direction only** — NOT speed, and NOT closed-loop
-``NavigateToPose`` convergence.  The sim models the omniwheels as plain
-cylinders (no rim rollers), so the wheel/floor contact **scrubs**: the base
-under-delivers speed (~⅓ of commanded) and combined ``vx+wz`` degrades.  The
-closed-loop ``NavigateToPose`` acceptance is therefore **deferred to post-#125**
-(the rim-roller omniwheel model, promoted to the prerequisite for closed-loop
-nav).  Nav2 is still brought fully up here — no goal is sent, so the controller
+The claim here is **open-loop direction only** — NOT speed.  Since #125 the sim
+models the omniwheels with **rim rollers**, so the wheel/floor contact no longer
+scrubs and the base delivers the commanded speed (~1.0×, measured in
+``docs/features/rim-roller-omniwheel/implementation.md``); the direction claim
+stays deliberately minimal (direction, not speed), while the closed-loop
+``NavigateToPose`` acceptance is covered by the closed-loop test later in this
+file.  Nav2 is still brought fully up here — no goal is sent, so the controller
 / smoother stay quiet and the direct ``/cmd_vel`` publication is
 uncontested — because keeping it up proves the stack composes.
 
@@ -71,20 +71,19 @@ VX_COMMAND = 0.3
 #: Pure +wz rotation check: commanded 0.6 rad/s, held for this long.
 WZ_DRIVE_S = 8.0
 WZ_COMMAND = 0.6
-#: Open-loop DIRECTION thresholds (not speed).  The plain-cylinder wheel/floor
-#: contact scrubs, so the base under-delivers speed (~⅓ commanded), and the
-#: response is only reproducible from a **fresh** sim (a second command in the
-#: same session slips): measured per fresh session, +vx=0.3 -> dx≈+0.31…+0.49 m,
-#: +wz=0.6 -> dyaw≈+1.77 rad over 8 s.  Thresholds keep comfortable margin
-#: against speed, asserting direction only.  No teleport: require an
-#: intermediate pose en route.
+#: Open-loop DIRECTION thresholds (not speed).  These assert only that the base
+#: moves in the commanded direction, a deliberately minimal claim (no speed
+#: bound either way); the response is still only reproducible from a **fresh**
+#: sim (a second command in the same session slips), so each probe gets its own
+#: session.  Thresholds keep comfortable margin against the sign/direction and
+#: assert no teleport: require an intermediate pose en route.
 MIN_VX_DX = 0.15
 MIN_WZ_DYAWM = 0.5
-#: When driving +x the plain-cylinder contact yaws the base somewhat (scrub,
-#: measured up to ~0.9 rad and variable); assert only that it stays under a
+#: When driving +x the base may yaw somewhat (a residual lateral/roller-passing
+#: effect, a #125 NOTE-level residual); assert only that it stays under a
 #: quarter turn, i.e. the base is clearly translating rather than spinning in
-#: place.  This is a direction check, not a heading-hold check (the scrub is
-#: #125's to fix).
+#: place.  This is a direction check, not a heading-hold check (heading control
+#: is the closed-loop test's claim).
 MAX_VX_YAWR = 1.4
 MIN_INTERMEDIATE_DELTA = 0.10
 
@@ -485,10 +484,9 @@ def _drive_probe_worker(vx, wz, duration, domain_id):
     seconds and returns ``(dx, dy, dyaw, max_travel)`` of the ground-truth base
     pose over that window.
 
-    Each direction gets its **own sim session**: the plain-cylinder wheel/floor
-    contact (no rim rollers) slips once the base has been driven, so a second
-    command in the same session is unreliable.  A fresh start per direction is
-    the reproducible configuration (see ``implementation.md`` and #125).
+    Each direction gets its **own sim session**: a second command in the same
+    session is unreliable, so a fresh start per direction is the reproducible
+    configuration (see ``implementation.md`` and #125).
     """
     import rclpy
     from controller_manager_msgs.srv import ListControllers
@@ -898,12 +896,12 @@ def test_base_drives_under_wheel_commands():
     ``controller_server`` ACTIVE, ``base_velocity_controller`` active, and
     ``GetBodyState`` live before driving.
 
-    **Direction only, NOT speed** -- the plain-cylinder sim wheels scrub, so the
-    base under-delivers speed (~⅓ commanded).  The closed-loop ``NavigateToPose``
-    convergence acceptance is therefore **deferred to post-#125** (rim-roller
-    omniwheel model, the prerequisite for closed-loop nav).  No ``NavigateToPose``
-    goal is sent: the controller/smoother stay quiet, so the direct ``/cmd_vel``
-    publication is uncontested.
+    **Direction only, NOT speed** -- a deliberately minimal claim.  Since #125
+    the rim-roller plant delivers the commanded speed (~1.0×), but this test
+    still asserts only direction; the closed-loop ``NavigateToPose`` convergence
+    acceptance is covered by the closed-loop test later in this file.  No
+    ``NavigateToPose`` goal is sent here: the controller/smoother stay quiet, so
+    the direct ``/cmd_vel`` publication is uncontested.
     """
     if not _have_package('mujoco_ros2_control'):
         pytest.skip(
