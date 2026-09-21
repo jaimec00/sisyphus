@@ -48,18 +48,33 @@ sign lives behind its own constant and was **calibrated empirically** in the sim
 (publish a pure body twist, read ``GetBodyState('base_link')``, confirm the sign,
 flip the constant if it comes out backwards).
 
-The sign is **split by column**, because the sim does not agree with a single
-global sign:
+The sign is **split by column** -- the two columns are calibrated separately,
+and after #125 they *happen* to agree at ``-1.0`` (so the net effect is a single
+global negation, but the two constants stay separate and are applied
+independently):
 
 * the **translational** columns (vx/vy) carry :data:`WHEEL_SIGN = -1.0` --
   the LeRobot matrix result is negated for the MJCF joints, and pure ``+vx``
   must drive the base ``+x`` (probe-verified);
-* the **rotational** column (wz) carries its own :data:`WZ_SIGN = +1.0` -- a
-  global ``-1.0`` gave *inverted* yaw (pure ``+wz`` rotated the base ``-yaw``),
-  so the wz column is **not** negated.
+* the **rotational** column (wz) carries :data:`WZ_SIGN = -1.0` -- the same
+  joint-axis convention that negates the translational columns also negates the
+  rotational one, so pure ``+wz`` must rotate the base ``+yaw`` (probe-verified
+  in isolated sim and through the ROS path).  Note this is a *clean* fact, not
+  an "inversion relative to PR2": the #125 red-team initially read the ROS path
+  as rotating ``-yaw`` because the probe wrapped ``end - start`` yaw once over
+  an 8 s window that turns more than pi (a measurement aliasing artifact, see
+  below), which is what briefly made ``WZ_SIGN`` look like the thing to flip.
 
-See ``docs/features/pr2-nav2-base-drive/implementation.md`` for the observed
-evidence and the final values.
+A **pitfall for anyone re-calibrating this**: measure yaw *incrementally*, not
+by wrapping ``end_yaw - start_yaw`` once.  A pure ``+wz`` drive of a few seconds
+turns more than half a turn, and a single ``atan2`` wrap then reports the wrong
+sign (``+279 deg`` aliases to ``-81 deg``).  The #125 probe did exactly that and
+produced the phantom "the ROS path inverts wz" symptom; the fix was in the
+*measurement*, not the plant.
+
+See ``docs/features/pr2-nav2-base-drive/implementation.md`` (the original
+PR2 calibration) and ``docs/features/rim-roller-omniwheel/implementation.md``
+(the #125 re-calibration) for the observed evidence and the final values.
 
 Timeout guard
 -------------
@@ -93,16 +108,19 @@ CMD_VEL_TOPIC = 'cmd_vel'
 #: convention is opposite to the driver's -- see the module docstring).
 #: **Calibrated in sim**, not assumed; the value below is the one the sim probe
 #: confirmed (``+vx`` drives the base ``+x``).  The **rotational** (wz) column
-#: is split out and carries its own sign, :data:`WZ_SIGN` -- a single global
-#: sign does **not** fit both (see the module docstring).
+#: is split out and carries its own sign, :data:`WZ_SIGN` (see there); after
+#: #125 both are ``-1.0``.
 WHEEL_SIGN = -1.0
 
 #: Signed **rotational** convention for the ``wz`` column, applied on top of
-#: :data:`WHEEL_SIGN`'s translational sign.  **Calibrated in sim**: a global
-#: ``-1.0`` gave inverted yaw (pure ``+wz`` rotated the base ``-yaw``), so the
-#: wz column is not negated -- ``+1.0`` makes pure ``+wz`` rotate the base
-#: ``+yaw``.
-WZ_SIGN = +1.0
+#: :data:`WHEEL_SIGN`'s translational sign.  **Calibrated in sim**: the same
+#: joint-axis convention that negates the translational columns negates the
+#: rotational one, so pure ``+wz`` rotates the base ``+yaw`` (probe-verified in
+#: isolated sim and through the ROS path).  (The #125 red-team first read the
+#: ROS path as ``-yaw`` only because the probe wrapped ``end - start`` once over
+#: a >pi rotation -- a measurement artifact, not a plant inversion; see the
+#: module docstring's re-calibration pitfall.)
+WZ_SIGN = -1.0
 
 #: Wheel radius, m (``base.xacro`` sources ``wheel_radius = 0.05`` from LeRobot).
 WHEEL_RADIUS = 0.05
@@ -124,10 +142,12 @@ def body_to_wheel(vx: float, vy: float, wz: float,
 
     Pure function (unit-testable without a graph).  The sign is **split by
     column**: ``wheel_sign`` is the empirically calibrated sign for the
-    **translational** (vx/vy) terms (see :data:`WHEEL_SIGN`); pass ``+1.0`` for
-    the raw LeRobot convention, ``-1.0`` for the MJCF joint convention.  The
-    **rotational** (wz) term carries its own calibrated sign,
-    :data:`WZ_SIGN` (see there), which a global ``-1.0`` would get wrong.
+    **translational** (vx/vy) terms (default :data:`WHEEL_SIGN`), and the
+    **rotational** (wz) term carries its own calibrated sign :data:`WZ_SIGN`.
+    After #125 both are ``-1.0``, so the net effect is a single global ``-1.0``,
+    but the two constants stay separate so the two sim calibrations remain
+    independently adjustable.  Pass ``+1.0`` for ``wheel_sign`` to get the raw
+    LeRobot translation (the wz column still uses :data:`WZ_SIGN`).
     """
     return tuple(
         (wheel_sign * (row[0] * vx + row[1] * vy) + WZ_SIGN * row[2] * wz)
