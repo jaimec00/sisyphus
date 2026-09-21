@@ -622,7 +622,14 @@ def _drive_probe_worker(vx, wz, duration, domain_id):
         assert start is not None, (
             'GetBodyState(base_link) failed; is the base free?\n%s' % _logs())
         start_xy = (start.position.x, start.position.y)
-        start_yaw = _wrap(_yaw_from_quaternion(start.orientation))
+        # Accumulate the yaw **incrementally** (each per-sample delta is far
+        # smaller than pi, so it is unambiguous) instead of wrapping the total
+        # ``end - start`` once.  A pure +wz=0.6 rad/s drive over WZ_DRIVE_S
+        # turns more than pi, so a single wrap aliases +279 deg to -81 deg and
+        # the sign flips -- the #125 "wz inverted in the ROS path" symptom.
+        # The plant was rotating +yaw all along; only the measurement wrapped.
+        yaw = _yaw_from_quaternion(start.orientation)
+        dyaw = 0.0
         deadline = time.monotonic() + duration
         final = start
         max_travel = 0.0
@@ -632,14 +639,16 @@ def _drive_probe_worker(vx, wz, duration, domain_id):
             pose = _base_state()
             if pose is not None:
                 final = pose
+                next_yaw = _yaw_from_quaternion(pose.orientation)
+                dyaw += _wrap(next_yaw - yaw)
+                yaw = next_yaw
                 max_travel = max(max_travel, math.hypot(
                     pose.position.x - start_xy[0],
                     pose.position.y - start_xy[1]))
             time.sleep(0.02)
-        end_yaw = _wrap(_yaw_from_quaternion(final.orientation))
         return (final.position.x - start.position.x,
                 final.position.y - start.position.y,
-                _wrap(end_yaw - start_yaw), max_travel)
+                dyaw, max_travel)
     finally:
         if executor is not None:
             executor.shutdown()

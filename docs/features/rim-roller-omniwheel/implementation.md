@@ -222,3 +222,61 @@ the new prerequisite for closed-loop navigation convergence.
 `test_base_converges_on_a_lateral_navigate_to_pose_goal` is therefore now a
 `pytest.skip` pending #127 (its `_goal_probe`/`_goal_probe_worker` helpers and
 `GOAL_*`/`*_TOLERANCE` constants are left in place, ready for re-enablement).
+
+## Root cause of the "wz inverted in the ROS path" symptom — MEASUREMENT aliasing (H1), not a plant inversion
+
+The test-runner came back RED on `test_base_drives_under_wheel_commands`: pure
+`+wz=0.6` reported `dyaw ≈ -1.42 rad`, i.e. the ROS path looked like it rotated
+`-yaw` while the isolated sim rotated `+yaw`. Two hypotheses were discriminated
+by reading the **raw** `GetBodyState('base_link')` quaternion (not the derived
+yaw) in both paths.
+
+**VERIFIED — the plant rotates `+yaw` in BOTH paths; only the measurement
+wrapped.** Raw quaternion evidence, pure `+wz=0.6`, all three wheel joints at
+`-1.5 rad/s` in both paths (identical commands):
+
+| path | window | start `(x,y,z,w)` | end `(x,y,z,w)` | `wrap(end-start)` | TRUE (unwrapped) dyaw |
+|---|---|---|---|---|---|
+| isolated sim (direct hinge joints) | 4 s | `(-0.000106, 0.000378, -0.005346, 0.999986)` | `(-0.001024, 0.000569, 0.947816, 0.318815)` | **+2.503 rad** | +2.503 rad (+143°) |
+| isolated sim | 8 s | (same start) | `(z=+0.640, w=-0.768)` | **-1.372 rad** | **+4.911 rad (+281°)** |
+| ROS path (`mujoco.launch.py` + `/cmd_vel`) | 8 s | `(-0.000010, 0.000599, 0.009399, 0.999956)` | `(-0.001794, -0.000847, 0.640447, -0.768000)` | **-1.409 rad** | **+4.874 rad (+279°)** |
+
+The ROS controller chain is confirmed clean end to end: the bridge publishes
+`[-1.5, -1.5, -1.5]`, and `/joint_states` shows the three wheel joints tracking
+at `-1.500 .. -1.518 rad/s` — the same wheel speeds the isolated probe applies
+directly. A continuous yaw trace over the 8 s window rises monotonically
+(`+1° → +39° → +75° → +109° → +143° → +178° → +213°(wrapped) → +247°`), i.e.
+steadily **positive**.
+
+**The defect is in the probe's measurement.** `_drive_probe_worker` computed
+`dyaw = _wrap(end_yaw - start_yaw)` — a *single* wrap into `(-pi, pi]`. With
+`WZ_DRIVE_S = 8.0 s` at ~0.61 rad/s the base turns `≈ +4.9 rad (≈ +280°)`, which
+a single wrap aliases to **`-1.41 rad`** — exactly the reported symptom. The
+sign looked inverted; the plant was rotating the right way the whole time.
+
+**Fix:** `_drive_probe_worker` now accumulates the yaw **incrementally** (each
+per-sample delta over the 20 ms loop is far below `pi`, so it is unambiguous)
+and returns the summed `dyaw`, instead of wrapping the total once. Post-fix the
+open-loop probe returns `dyaw = +4.871 rad (+279°)` for `+wz=0.6` (threshold
+`>= 0.5`), and `+vx` is unchanged (`dx +1.0`-class, `|dyaw|` small).
+
+**`WZ_SIGN` stays `-1.0` — and is now independently justified.** With the
+measurement fixed and no aliasing, both paths agree: `WZ_SIGN = -1.0` gives
+`+wz → +yaw`; `WZ_SIGN = +1.0` gives `-yaw` (isolated sim, 4 s) -- so the `-1.0` is
+the *clean* calibration, consistent with the translational column's joint-axis
+convention. The earlier `+1.0 -> -1.0` flip (R10) reached the right constant but
+partly on the strength of the aliased ROS reading; this section replaces that
+inference with a correct one. Files touched in this fix:
+
+* `src/robot_bringup/test/test_pr2_navigate.py` — `_drive_probe_worker` measures
+  yaw incrementally; the `#125 "wz inverted"` symptom explained in a comment.
+* `src/robot_nav/robot_nav/omni_base_controller.py` — module + constant
+  docstrings: the wz `-1.0` is a clean joint-axis fact, with the wrap pitfall
+  called out for anyone re-calibrating.
+* `src/robot_nav/test/test_omni_ik.py` — `test_pure_wz_turns_every_wheel_equally`
+  docstring reformatted (D205/D209/D400); the sign test docstrings de-claim the
+  "plant inverts the wz channel" framing.
+
+**Pitfall for the future (recorded):** never calibrate the yaw sign by wrapping
+`end - start` over a window that turns more than `pi`. Measure incrementally or
+keep the window under half a turn.

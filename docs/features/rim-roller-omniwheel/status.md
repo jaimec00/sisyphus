@@ -267,3 +267,22 @@ counts grow) → squash-merge PR. Manager opens the PR; does not merge.
 **DESIGN FORK — escalation required (post-R10).** The coupled-channel
 (vx+wz / off-axis) command does not compose; root cause is the roller contact
 (slip, not grip), pre-existing and not fixed by #125. See "## Escalation" above.
+
+## Post-test-runner fix — wz sign was a MEASUREMENT artifact (H1), not a plant inversion
+
+The full test-runner came back RED on `test_base_drives_under_wheel_commands`
+(pure `+wz` reported `dyaw ≈ -1.42 rad`). Root-caused by reading the RAW
+`GetBodyState('base_link')` quaternion in both paths (per the escalation's H1/H2
+discrimination):
+
+* **H1 confirmed** (measurement), H2 rejected (plant). Both paths rotate `+yaw`
+  for `+wz`: isolated sim (8 s, unwrapped) `+4.911 rad`; ROS path (8 s,
+  unwrapped) `+4.874 rad`; wheel joints track `-1.5 rad/s` in both.
+* The probe's `dyaw = _wrap(end_yaw - start_yaw)` wrapped a `+280°` rotation once
+  into `(-pi, pi]`, aliasing it to `-81°` — the phantom sign flip.
+* **Fix:** `_drive_probe_worker` now sums per-sample yaw deltas (each ≪ pi).
+  Post-fix `+wz` probe = `+4.871 rad`; `+vx` unchanged; `WZ_SIGN` stays `-1.0`
+  (now clean-calibrated in both paths). Lint docstring (D205/D209/D400) fixed.
+
+**[RESULT: PASS]** `test_base_drives_under_wheel_commands` green;
+`test_omni_ik.py` 10/10; `ament_flake8` + `ament_pep257` clean.

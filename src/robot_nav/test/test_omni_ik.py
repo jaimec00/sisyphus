@@ -13,8 +13,8 @@ against the calibrated sign constants.  The sign is a *sim-calibrated fact*
 (``base.xacro``: the URDF/MJCF joint-axis convention is opposite the driver's),
 so these tests pin the matrix and the convention, not a re-derivation.  The
 sign is **split by column** -- translational (vx/vy) at ``WHEEL_SIGN=-1.0``,
-rotational (wz) at ``WZ_SIGN=-1.0`` (the #125 rim-roller plant inverted the wz
-channel, so both constants now agree at -1.0); both constants are pinned here.
+rotational (wz) at ``WZ_SIGN=-1.0`` (both columns are negated by the joint-axis
+convention, so both constants agree at -1.0); both constants are pinned here.
 
 The pure-function half needs no ROS; the matrix it uses is also cross-checked
 here against an independent NumPy computation of ``K`` so a typo in the
@@ -77,9 +77,11 @@ def test_pure_vy_drives_all_three_wheels():
 
 
 def test_pure_wz_turns_every_wheel_equally():
-    """Pure +wz adds the same ``WZ_SIGN * base_radius*wz / wheel_radius``
-    to every wheel (the wz column carries its own sign, ``wheel_sign`` is
-    irrelevant to it)."""
+    """Pure +wz adds the same wheel speed to every wheel.
+
+    Each wheel gets ``WZ_SIGN * base_radius*wz / wheel_radius`` -- the wz
+    column carries its own sign, so ``wheel_sign`` is irrelevant to it.
+    """
     left, back, right = body_to_wheel(0.0, 0.0, 0.6, wheel_sign=1.0)
     expected = WZ_SIGN * BASE_RADIUS * 0.6 / WHEEL_RADIUS
     for value in (left, back, right):
@@ -107,10 +109,11 @@ def test_calibrated_sign_is_unified_negative_one():
     The calibrated value happens to be a **unified -1.0** but the structure is
     still **split by column**: ``WHEEL_SIGN = -1.0`` negates the translational
     columns (``base.xacro``: the URDF/MJCF joint-axis convention is opposite
-    the LeRobot driver's), and ``WZ_SIGN = -1.0`` negates the wz column (the PR2
-    plain-cylinder plant gave inverted yaw under a global -1.0, hence ``+1.0``
-    there, but the #125 rim-roller plant inverts the wz channel).  Both are
-    sim-calibrated facts; a change here means re-running that calibration.
+    the LeRobot driver's), and ``WZ_SIGN = -1.0`` negates the wz column (the
+    same joint-axis convention).  Both are sim-calibrated facts -- probe-verified
+    in isolated sim and through the ROS path; a change here means re-running
+    that calibration (and measuring yaw incrementally, not by wrapping the total
+    ``end - start`` once: a >pi rotation aliases the sign, the #125 phantom).
     """
     assert WHEEL_SIGN == -1.0, 'translational columns are negated'
     assert WZ_SIGN == -1.0, 'rotational column is negated too'
@@ -130,9 +133,10 @@ def test_calibrated_sign_is_unified_negative_one():
 def test_default_pure_wz_rotates_negative():
     """Under the DEFAULT sign, pure +wz yields NEGATIVE wheel speeds.
 
-    The #125 rim-roller plant inverts the wz channel, so ``WZ_SIGN = -1.0``
-    negates the wz column: every wheel is driven
-    -base_radius*wz/wheel_radius.
+    ``WZ_SIGN = -1.0`` negates the wz column (the joint-axis convention is
+    opposite the driver's), so every wheel is driven
+    -base_radius*wz/wheel_radius -- which is what makes pure ``+wz`` rotate the
+    base ``+yaw`` in sim (probe-verified; see #125).
     """
     expected = BASE_RADIUS * 0.6 / WHEEL_RADIUS
     for value in body_to_wheel(0.0, 0.0, 0.6):
