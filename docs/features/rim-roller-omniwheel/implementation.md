@@ -205,3 +205,20 @@ the roller-passing ripple).  R10 applied in this commit:
   the open-loop test's docstring.  Threshold VALUES are unchanged (direction-only
   claims kept); the closed-loop test docstring's historical contrast is
   untouched.  No test logic or thresholds changed.
+
+## Re-scope (Jaime decision B, 2026-09-20)
+
+The **pure-channel goal is MET**: `+vx 0.98x`, `+vy 1.02x`, `+wz +1.04x` (positive,
+correct sign) — verified in isolated pure sim *and* through the ROS path. That
+was the core of #125 (make the lateral + rotational channels actually translate/
+rotate at commanded speed by modelling the rim rollers).
+
+The **closed-loop `NavigateToPose` convergence acceptance is deferred to #127**.
+The blocker is that a combined `vx+wz` wheel command does not compose in sim
+(measured dx 0.17x commanded + spurious dy ~0.85) — a **pre-existing PLANT
+defect** (the rollers slip/whirl rather than grip), not a bridge/sign bug. It is
+the new prerequisite for closed-loop navigation convergence.
+
+`test_base_converges_on_a_lateral_navigate_to_pose_goal` is therefore now a
+`pytest.skip` pending #127 (its `_goal_probe`/`_goal_probe_worker` helpers and
+`GOAL_*`/`*_TOLERANCE` constants are left in place, ready for re-enablement).

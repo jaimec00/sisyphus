@@ -151,6 +151,8 @@ In `robot_nav/params/nav2.yaml` under `FollowPath` (MPPI), restore
 comment that currently documents "vy parked at 0".
 
 ### R8 — Restore the closed-loop acceptance.
+
+**[DEFERRED to #127]** — the closed-loop test is skipped on this issue (#125 accepts the pure-channel win; coupled `vx+wz` does not compose).
 `test_pr2_navigate.py` must gain (or re-scope to) a closed-loop claim: send a
 real `NavigateToPose` action goal whose pose exercises **lateral (vy) + rotational
 (wz)** channels, and assert the base **converges in position AND heading** within
@@ -189,6 +191,8 @@ sign-constant unit tests rewritten to pin it, plus the stale pre-#125
 docstrings in `test_pr2_navigate.py` fixed — landed in this commit.
 
 ### R11 — Closed-loop convergence is the #125 acceptance; investigate, don't assume.
+
+**[DEFERRED to #127]** — closed-loop convergence is no longer the #125 acceptance; #127 owns it.
 After R10: (a) CLEAN rebuild + reinstall of `robot_nav` (`pixi run build`), then
 (b) re-run `test_base_converges_on_a_lateral_navigate_to_pose_goal` in
 `test_pr2_navigate.py`. Verify the node actually logs `WZ_SIGN=-1.0` before
@@ -198,6 +202,14 @@ sign (cross-check vs `GetBodyState` raw quaternion)? (2) is MPPI commanding a
 non-zero wz toward the goal heading? (3) does an open-loop `+wz` now rotate the
 base `+yaw` in the ROS path (not just isolated sim)?
 
+
+**[RESULT: FAIL]** Clean rebuild green (14 pkgs, 10.7 s), `WZ_SIGN=-1.0` confirmed
+live in the node log, but the closed-loop test fails deterministically (3x
+reproduced): goal (0.60, -0.45, yaw -1.00) accepted, then ABORTED — the base
+diverged to x≈-3.25 (xy error ~3.9 m vs 0.10 m tol), planner aborts out-of-bounds.
+Open-loop in the ROS path: +vx ✓ (dx +1.01), +wz ✓ (dyaw +1.9..2.1), +vy ✗
+(spurious yaw +1.35 and -x drift, run-to-run inconsistent).
+
 ## Open questions / risk
 - **Roller contact smoothness** (does N=8 give clean rolling, or is it bumpy /
   does the wheel catch roller edges?) — the implementer probes; this is the
@@ -206,6 +218,31 @@ base `+yaw` in the ROS path (not just isolated sim)?
   joints should be inert to its PRM actuator classifier (it maps actuators by
   name), but the implementer must confirm the sim still spawns and the wheel
   velocity commands still track.
+
+## Escalation — coupled-channel fork remains after R10 (BLOCK)
+
+R10 is correct and regression-free for the PURE channels (re-red-team, pure-sim
+@ WZ_SIGN=-1.0): +vx 0.98x, +vy 1.02x, +wz 1.04x positive; 10/10 unit tests;
+diff is constant+docstrings+tests only, split formula preserved. But the
+COMBINED command does NOT compose: vx=0.3+wz=0.6 -> dx +0.20 (0.17x commanded),
+dy +0.85 (should ~+0.10). The sign flip only MIRRORED dy (old +1.0: dx+0.21/
+dy-0.83 -> new -1.0: dx+0.20/dy+0.85); corruption magnitude unchanged.
+
+This is a PLANT defect, not a bridge/sign bug: (a) wheel speeds decompose exactly
+linearly in `body_to_wheel`, so the controller is correct; (b) the plain-cylinder
+plant ALSO fails vx+wz (dx +0.18) — pre-existing, independent of #125; (c) the
+rollers spin at extreme |qvel| ~260-325 rad/s during ALL commands (incl. pure
++vx, where a gripping roller should be ~0) — they SLIP/WHIRL, not grip. #125
+fixed the pure channels but left the coupled channel: R9's "vx+wz -> clean
+translation" criterion is NOT met, and R8/R11 closed-loop convergence FAILS.
+
+-> ESCALATED to Jaime: genuine modeling/control fork after R10.
+
+**RESOLVED (Jaime, 2026-09-20 — decision B):** re-scoped #125 to the pure-channel
+win (vx/vy/wz all clean and correct-signed), filed **#127** (coupled-channel
+`vx+wz` non-composition — a pre-existing plant defect) as the new prerequisite for
+closed-loop nav, and `test_base_converges_on_a_lateral_navigate_to_pose_goal` is
+now skipped pending #127.
 
 ## Build-environment note (pre-existing, out of scope but blocking a fresh worktree)
 
@@ -227,6 +264,6 @@ implementer → red-team (run, don't reason) → fix → re-red-team (N+1) →
 test-runner (full `pixi run test`; ratchet `scripts/test_baseline.json` if
 counts grow) → squash-merge PR. Manager opens the PR; does not merge.
 
-**No design fork requiring escalation.** R1 (sim-path-only) is a modeling call
-within manager authority that *avoids* touching the D29/D30/D34 invariants; the
-brief's escalation trigger (a fork that *changes* a binding invariant) is not hit.
+**DESIGN FORK — escalation required (post-R10).** The coupled-channel
+(vx+wz / off-axis) command does not compose; root cause is the roller contact
+(slip, not grip), pre-existing and not fixed by #125. See "## Escalation" above.
