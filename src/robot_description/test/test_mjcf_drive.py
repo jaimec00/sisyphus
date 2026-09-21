@@ -361,3 +361,270 @@ def test_floor_bodies_fragment_is_the_single_floor_source():
     """FLOOR_BODIES is exported and names the floor body (one source of truth)."""
     assert 'name="floor"' in FLOOR_BODIES
     assert 'type="plane"' in FLOOR_BODIES
+
+
+# -- Issue #127: roller-plant dynamics (isolated pure sim) --------------------
+#
+# These run the derived drivable MJCF (the same file the ROS sim loads) in
+# ``mujoco`` directly: settle the base, then drive the three wheel joints at
+# the body-to-wheel speeds for the command under test.  They pin the *coupled*
+# plant behaviour #127 is about.
+#
+# Two measurement facts the assertions depend on, both established by probing
+# on the laptop node (see docs/features/vx-wz-composition/implementation.md):
+#
+# 1. The signal is read in the **body frame**.  A holonomic base following a
+#    ``vx + wz`` arc translates along a curve; measuring ``dx`` in the world
+#    frame makes a correct plant look like it undershoots (the first ~1 s is a
+#    velocity ramp and the rest is curved).  Body-frame forward speed is the
+#    quantity the command names, so that is what is asserted.
+# 2. The roller hinge |qvel| is **not** a grip signal: a roller that is rolling
+#    spins fast on purpose.  Grip means the *contact patch* does not slide, so
+#    the assertion reads the tangential relative velocity at the roller-floor
+#    contact instead.
+
+#: The three wheel joints, in the controller's command order (left/back/right).
+_IK_MATRIX = (
+    (-0.8660254037844386, 0.5, 0.125),
+    (0.0, -1.0, 0.125),
+    (0.8660254037844386, 0.5, 0.125),
+)
+#: The calibrated bridge signs (``robot_nav.omni_base_controller``); pinned so
+#: this file fails loudly if the bridge convention and the plant drift apart.
+WHEEL_SIGN = -1.0
+WZ_SIGN = -1.0
+
+
+def _body_to_wheel(vx, vy, wz):
+    """Body twist -> the 3 wheel angular rates (the shipped bridge's IK)."""
+    return tuple(
+        (WHEEL_SIGN * (row[0] * vx + row[1] * vy) + WZ_SIGN * row[2] * wz) / WHEEL_RADIUS
+        for row in _IK_MATRIX)
+
+
+#: How long the command is held before measuring (the base reaches its steady
+#: speed in ~1 s; ``docs/features/vx-wz-composition/implementation.md`` measures
+#: the ramp's 90% point at ~1.0 s, so 1.5 s clears it with margin).
+_RAMP_S = 1.5
+#: Seed settle time before the command is applied (the base drops onto the
+#: floor and stops bouncing).
+_SETTLE_S = 1.0
+
+
+def _drive(model, vx, vy, wz, *, settle=_SETTLE_S, ramp=_RAMP_S, duration=1.0):
+    """Settle, ramp onto ``(vx, vy, wz)``, return the mean steady body twist.
+
+    Returns ``(lin_x, lin_y, ang_z)`` averaged over a 1 s window taken **after**
+    the ramp, in the **body frame** (``mj_objectVelocity`` with the local flag),
+    so a curved path is not mistaken for a velocity error.  Deterministic: fixed
+    model, fixed command, implicit integrator.
+    """
+    data = mujoco.MjData(model)
+    for _ in range(int(settle / model.opt.timestep)):
+        mujoco.mj_step(model, data)
+    actuators = [mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_ACTUATOR, name)
+                 for name in (b'base_left_wheel', b'base_back_wheel',
+                              b'base_right_wheel')]
+    for actuator, rate in zip(actuators, _body_to_wheel(vx, vy, wz)):
+        data.ctrl[actuator] = rate
+    for _ in range(int(ramp / model.opt.timestep)):
+        mujoco.mj_step(model, data)
+    base = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, b'base_link')
+    samples = []
+    for _ in range(int(duration / model.opt.timestep)):
+        mujoco.mj_step(model, data)
+        velocity = np.zeros(6)
+        mujoco.mj_objectVelocity(model, data, mujoco.mjtObj.mjOBJ_BODY, base,
+                                 velocity, 1)
+        samples.append(np.concatenate([velocity[3:6], velocity[:3]]))
+    return np.mean(samples, axis=0)
+
+
+def _roller_contact_slip(model, data):
+    """Return the max tangential slip speed at any roller-floor contact (m/s).
+
+    Slip is the velocity of the roller material **at the contact point**,
+    relative to the (static) floor, projected into the contact tangent plane
+    (``data.contact[i].frame`` is the contact basis: row 0 = normal, rows 1-2 =
+    tangents).  The contact point's velocity is
+    ``v_body + omega x (contact_pos - body_xpos)`` -- NOT the body-origin
+    velocity, which for a spinning roller is unrelated to the patch and would
+    report the roller's spin as "slip" (probed: the body-origin metric reads
+    ~0.27 m/s where the true patch slip is ~0.02 m/s).
+
+    A *gripping* roller has a small tangent component; a *scrubbing* one does
+    not.
+    """
+    floor = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_GEOM, b'floor_geom')
+    greatest = 0.0
+    for i in range(data.ncon):
+        contact = data.contact[i]
+        if floor not in (contact.geom1, contact.geom2):
+            continue
+        roller = contact.geom2 if contact.geom1 == floor else contact.geom1
+        name = mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_GEOM, roller) or ''
+        if '_roller_' not in name:
+            continue
+        body = model.geom_bodyid[roller]
+        velocity = np.zeros(6)
+        mujoco.mj_objectVelocity(model, data, mujoco.mjtObj.mjOBJ_BODY, body,
+                                 velocity, 0)
+        omega, linear = velocity[:3], velocity[3:6]
+        offset = np.asarray(contact.pos) - data.xpos[body]
+        patch_velocity = linear + np.cross(omega, offset)
+        frame = np.array(contact.frame).reshape(3, 3)
+        tangent = frame @ patch_velocity
+        greatest = max(greatest, float(np.hypot(tangent[1], tangent[2])))
+    return greatest
+
+
+def _settled_slip(model, vx, vy, wz, *, settle=_SETTLE_S, ramp=_RAMP_S,
+                  duration=1.0):
+    """Drive the command and return the max roller contact slip over the window.
+
+    Measured after the ramp, like :func:`_drive`: the contact is only the
+    steady rolling contact once the base has reached its commanded speed.
+    """
+    data = mujoco.MjData(model)
+    for _ in range(int(settle / model.opt.timestep)):
+        mujoco.mj_step(model, data)
+    actuators = [mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_ACTUATOR, name)
+                 for name in (b'base_left_wheel', b'base_back_wheel',
+                              b'base_right_wheel')]
+    for actuator, rate in zip(actuators, _body_to_wheel(vx, vy, wz)):
+        data.ctrl[actuator] = rate
+    for _ in range(int(ramp / model.opt.timestep)):
+        mujoco.mj_step(model, data)
+    greatest = 0.0
+    for _ in range(int(duration / model.opt.timestep)):
+        mujoco.mj_step(model, data)
+        greatest = max(greatest, _roller_contact_slip(model, data))
+    return greatest
+
+
+def test_write_mjcf_model_combined_vx_wz_composes_in_the_body_frame():
+    """A combined ``vx + wz`` command delivers both channels (~#127).
+
+    The #125-era note claimed a combined command "does not compose" (rollers
+    slip/whirl).  Re-measured in the body frame, the shipped plant composes:
+    the base holds the commanded forward speed AND the commanded yaw rate at
+    the same time, with no off-axis slide.  This pins that so a future contact
+    change cannot silently re-break the coupled channel.
+    """
+    path, _ = _write_to_tmp()
+    model = mujoco.MjModel.from_xml_path(str(path))
+    vx, wz = 0.3, 0.6
+    twist = _drive(model, vx, 0.0, wz)
+    lin_x, lin_y, ang_z = twist[0], twist[1], twist[5]
+    assert lin_x >= 0.7 * vx, (
+        'combined vx=%.2f wz=%.2f: body forward speed %.3f is below 0.7x '
+        'commanded (%.3f) -- the coupled command does not compose'
+        % (vx, wz, lin_x, 0.7 * vx))
+    assert ang_z >= 0.7 * wz, (
+        'combined vx=%.2f wz=%.2f: yaw rate %.3f is below 0.7x commanded '
+        '(%.3f) -- rotation is scrubbed' % (vx, wz, ang_z, 0.7 * wz))
+    assert abs(lin_y) <= 0.35 * vx, (
+        'combined vx=%.2f wz=%.2f: body lateral speed %.3f is excessive -- the '
+        'base is sliding sideways rather than following the arc'
+        % (vx, wz, lin_y))
+
+
+def test_write_mjcf_model_pure_channels_deliver_command():
+    """Each pure channel delivers its command in the body frame (regression).
+
+    ``vx`` -> forward, ``vy`` -> lateral, ``wz`` -> yaw, each at the commanded
+    magnitude to within a generous tolerance, and each leaves the other
+    channels near zero.
+    """
+    path, _ = _write_to_tmp()
+    model = mujoco.MjModel.from_xml_path(str(path))
+
+    for (vx, vy, wz), label in (
+            ((0.3, 0.0, 0.0), '+vx'), ((0.0, 0.2, 0.0), '+vy'),
+            ((0.0, 0.0, 0.6), '+wz')):
+        twist = _drive(model, vx, vy, wz)
+        lin_x, lin_y, ang_z = twist[0], twist[1], twist[5]
+        # The commanded channel must be delivered at >= 0.8x, and the two
+        # uncommanded channels must stay near zero.
+        if vx:
+            assert lin_x >= 0.8 * vx, ('pure %s: forward %.3f' % (label, lin_x))
+        else:
+            assert abs(lin_x) <= 0.15, ('pure %s: forward %.3f' % (label, lin_x))
+        if vy:
+            assert lin_y >= 0.8 * vy, ('pure %s: lateral %.3f' % (label, lin_y))
+        else:
+            assert abs(lin_y) <= 0.15, ('pure %s: lateral %.3f' % (label, lin_y))
+        if wz:
+            assert ang_z >= 0.8 * wz, ('pure %s: yaw %.3f' % (label, ang_z))
+        else:
+            assert abs(ang_z) <= 0.15, ('pure %s: yaw %.3f' % (label, ang_z))
+
+
+def test_write_mjcf_model_roller_hinges_roll_rather_than_stall():
+    """The rollers ROLL under a drive command (the #125 model is still live).
+
+    A freely hinged rim roller must spin while the wheel rolls; a roller that
+    stalls is a plain cylinder again and the plant would scrub.  (This is the
+    *opposite* of the #127 note's "grip means ~0", which conflated rolling with
+    slip: a rolling roller necessarily spins fast.  Grip is measured by the
+    base actually delivering its commanded speed, which the composition and
+    pure-channel tests assert.)
+    """
+    path, _ = _write_to_tmp()
+    model = mujoco.MjModel.from_xml_path(str(path))
+    data = mujoco.MjData(model)
+    for _ in range(int(_SETTLE_S / model.opt.timestep)):
+        mujoco.mj_step(model, data)
+    actuators = [mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_ACTUATOR, name)
+                 for name in (b'base_left_wheel', b'base_back_wheel',
+                              b'base_right_wheel')]
+    for actuator, rate in zip(actuators, _body_to_wheel(0.3, 0.0, 0.0)):
+        data.ctrl[actuator] = rate
+    for _ in range(int(_RAMP_S / model.opt.timestep)):
+        mujoco.mj_step(model, data)
+    roller_dofs = [
+        model.jnt_dofadr[joint] for joint in range(model.njnt)
+        if '_roller_' in (mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_JOINT,
+                                            joint) or '')]
+    assert roller_dofs, 'the drivable model has no roller hinges'
+    peak = 0.0
+    for _ in range(200):
+        mujoco.mj_step(model, data)
+        peak = max(peak, max(abs(data.qvel[dof]) for dof in roller_dofs))
+    assert peak >= 1.0, (
+        'roller hinges barely moved (peak |qvel| %.3f rad/s) while driving '
+        '+vx: they are not rolling, so the rim-roller model is not engaged'
+        % peak)
+
+
+def test_write_mjcf_model_contact_slip_stays_below_the_command():
+    """The roller-floor contact slip never exceeds the commanded speed (#127).
+
+    The instantaneous contact patch slides during roller-passing (the wheel
+    hands off from one roller to the next), so the slip is not zero; what must
+    hold is that it stays a fraction of the commanded speed -- a contact that
+    slipped *at or beyond* the command would mean the base is being driven by
+    friction alone, not by rolling.
+    """
+    path, _ = _write_to_tmp()
+    model = mujoco.MjModel.from_xml_path(str(path))
+    slip = _settled_slip(model, 0.3, 0.0, 0.0)
+    assert slip <= 0.15, (
+        'pure +vx=0.3: roller contact slip %.3f m/s is >= 0.15 (half the '
+        'commanded speed) -- the rollers are scrubbing, not gripping' % slip)
+
+
+def test_write_mjcf_model_rollers_are_passive_and_unactuated_on_every_path():
+    """The welded escape hatch carries no rollers and stays the PR8b model.
+
+    (#125 R5 restated for #127: the roller work never leaks into the welded
+    path, so the plant-only change cannot alter the escape hatch.)
+    """
+    model_path, _ = _write_to_tmp(base_free_joint=False, floor=False)
+    model = mujoco.MjModel.from_xml_path(str(model_path))
+    assert model.nq == ACTUATED_DOF, model.nq
+    assert model.nv == ACTUATED_DOF, model.nv
+    assert model.nbody == WELDED_NBODY, model.nbody
+    for joint in range(model.njnt):
+        name = mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_JOINT, joint) or ''
+        assert '_roller_' not in name
