@@ -79,32 +79,41 @@ tracked marked package is exempt; near-miss marker names are not; the marker
 works outside a git work tree; and the report still names the exempted
 package.
 
-### 4. Closed-loop acceptance test re-enabled (T1)
+### 4. Closed-loop test re-enabled, RE-SCOPED to the DIRECTION claim (T1 + R2)
 
 `src/robot_bringup/test/test_pr2_navigate.py`,
-`test_base_converges_on_a_lateral_navigate_to_pose_goal`: the terminal
-`pytest.skip(...)` is replaced with real assertions. The test now:
+`test_navigate_to_pose_drives_forward` (renamed from
+`test_base_converges_on_a_lateral_navigate_to_pose_goal` — the old name claimed
+convergence, which is not what this PR reliably delivers). The terminal
+`pytest.skip(...)` is replaced with a real assertion on the **direction** claim.
+The test now:
 
 - guards on `_have_package('mujoco_ros2_control')` (same as the open-loop
   test) instead of skipping unconditionally;
-- runs `_goal_probe(NAV2_DOMAIN_ID + 2)` — a distinct domain from the
-  open-loop probes (base and +1);
-- asserts `succeeded` (Nav2 `STATUS_SUCCEEDED`, which already encodes
-  xy < 0.10 m AND |yaw| < 0.15 rad via the goal checker);
-- asserts ground-truth xy convergence:
-  `hypot(dx - GOAL_X, dy - GOAL_Y) < GOAL_XY_TOLERANCE` (0.10 m);
-- asserts ground-truth yaw convergence:
-  `|wrap(dyaw - GOAL_YAW)| < GOAL_YAW_TOLERANCE` (0.15 rad), using an inline
-  `atan2(sin, cos)` wrap because the module-level `_wrap` helper does not exist
-  (it is nested inside the two probe workers).
+- runs `_goal_probe(NAV2_DOMAIN_ID + 2, (STRAIGHT_GOAL_X, STRAIGHT_GOAL_Y,
+  STRAIGHT_GOAL_YAW))` — a distinct domain from the open-loop probes (base and
+  +1), and the **straight +x** #127 repro goal `(1.0, 0.0, yaw 0.0)`;
+- asserts **only** the direction: `dx > MIN_FORWARD_DX` (0.30 m). It does *not*
+  assert `succeeded`, xy-convergence, or yaw-convergence.
 
-The `_goal_probe_worker` per-sample incremental-yaw fix from #129 is confirmed
-present (the `_accumulate` closure), so `dyaw` is a correctly accumulated turn
-rather than an aliased `end − start`.
+`_goal_probe` / `_goal_probe_worker` / `_run_goal_probe_in_subprocess` grew an
+optional `goal=(x, y, yaw)` parameter defaulting to the lateral acceptance pose
+`(GOAL_X, GOAL_Y, GOAL_YAW)`; the lateral constants are kept for the deferred
+full-convergence follow-up. The `_goal_probe_worker` per-sample incremental-yaw
+fix from #129 is confirmed present (the `_accumulate` closure), so `dyaw` is a
+correctly accumulated turn rather than an aliased `end − start`.
 
-The docstring is rewritten to describe the real assertion and to note that
-this closes the #127 controller-side blocker; the obsolete "still skipped"
-text and the "plant does not compose" framing (already refuted in
+**Why direction only (R2).** Red-team measured that full closed-loop
+convergence (`succeeded` AND gt-xy < 0.10 AND gt-|yaw| < 0.15) is **not
+reliable**: 1/12 standalone acceptance probes and 0/3 real pytest invocations.
+The DIRECTION bug, however, **is** fixed and reliable (straight +x goal drives
+forward 5/5, `vx` never negative). R2 therefore re-scoped this test to the
+claim the PR actually delivers, with the docstring stating honestly that full
+convergence is deferred to two follow-ups: (1) MPPI convergence tuning (the
+`wz` oscillation/stall that trips the progress checker/timeout — the dominant
+failure mode), and (2) the vx rim-roller plant slip (open-loop `vx` delivers
+only ~0.2x). Never merge a flaky test; the obsolete "still skipped" text and the
+"plant does not compose" framing (already refuted in
 `docs/features/vx-wz-composition/`) are gone.
 
 ## Verification performed
@@ -122,11 +131,18 @@ text and the "plant does not compose" framing (already refuted in
   out with a marker file" test.
 - Closed-loop probe (an adapted `/tmp/i127_probe.py` that also reports
   accumulated yaw), run against the newly built tree. Results below.
+- Re-scoped direction test (`test_navigate_to_pose_drives_forward`) run
+  **4x** end to end under `pixi run bash -c "source install/setup.bash && python
+  -m pytest ..."`: **4/4 PASS** (runs of 138 s / 36 s / 138 s / 136 s), measured
+  ground-truth dx = **+0.916 / +0.981 / +0.919** (and +0.62..+1.11 in the
+  earlier standalone probes) — every run comfortably above the 0.30 m forward
+  threshold, vs the pre-fix dx ≈ −3.3 m.
 
 ### Probe results
 
-**(a) Straight +x goal — DIRECTION FIXED (the #127 bug).** Three runs, all
-with `cmd_vel vx ∈ [0, +0.30]` (never reverse) and positive ground-truth `dx`:
+**(a) Straight +x goal — DIRECTION FIXED (the #127 bug).** Every run, with
+`cmd_vel vx ∈ [0, +0.30]` (never reverse) and positive ground-truth `dx`
+(the 4 re-scoped-test runs above plus the standalone probes):
 
 | run | goal | dx | dy | dyaw | succeeded |
 |---|---|---|---|---|---|
@@ -138,12 +154,13 @@ Before the fix the same probe measured dx = −2.1 … −3.3 (drive **backwards
 throwaway's `fix1`–`fix5`/`baseline` results). The base now drives forward —
 #127's actual defect is fixed.
 
-**(b) Acceptance goal (0.60, −0.45, yaw −1.00) — xy converges, yaw
-does not, intermittently.**
+**(b) Acceptance goal (0.60, −0.45, yaw −1.00) — xy sometimes converges, yaw
+does not (HISTORICAL: the pre-R2 strict test; it is no longer asserted).**
 
-A real single-test invocation (`pytest ...::test_base_converges_on_a_lateral_
-navigate_to_pose_goal`, install sourced, domain 124) ran the re-enabled test
-**end to end** in 143 s and failed on the **last** assertion only:
+A real single-test invocation of the then-strict test (`pytest ...::test_
+base_converges_on_a_lateral_navigate_to_pose_goal`, install sourced, domain
+124) ran **end to end** in 143 s and failed on the **last** assertion only
+(this strict form has since been re-scoped away per R2 — see §4):
 
 - `assert succeeded` — **PASSED** (Nav2 reported `STATUS_SUCCEEDED`)
 - `assert xy_error < 0.10` — **PASSED** (ground-truth xy converged)
@@ -156,14 +173,18 @@ Standalone probes on the new tree (my adapted probe) gave dx=+0.888/dy=−0.099
 on this fixed controller (`accept2`: xy err 0.089; `final`: xy err 0.068 — the
 ruling's two "reference pass" numbers), while yaw was the flaky half.
 
-This is ruling **R1** exactly: the env fix is correct (direction fixed, xy
-converges, `STATUS_SUCCEEDED` reached), and the residual is an **intermittent
-yaw** gap — a genuine MPPI tuning matter, not env numerics. Per T1 the strict
-assertions (succeeded + xy + yaw) are landed as written; the single sampled run
-above is **red on yaw**, so the >=5-run batch and the keep-vs-tune decision are
-**red-team's** (R1). If yaw stays intermittent, R1's sanctioned fallback is to
-assert `succeeded` + xy and document the yaw gap honestly — never merge a flaky
-test.
+This is the residual that ruling **R2** resolved (red-team, 2026-09-25): the
+env fix is correct (direction fixed, `STATUS_SUCCEEDED` reached in some runs),
+but **full convergence is not reliable** — red-team measured 1/12 standalone
+probes and 0/3 pytest invocations converging. The residual has two VERIFIED
+root causes, neither env numerics: (1) an **MPPI convergence-tuning gap** (the
+`wz` oscillates ±0.6 and stalls until the progress checker/timeout aborts — the
+dominant failure mode), and (2) the **vx rim-roller plant slip** (an open-loop
+`vx` delivers only ~0.2x; the "separate plant finding" below). R2's ruling: do
+**not** assert full convergence (never merge a flaky test) — re-scope the test
+to the DIRECTION claim, which is reliable, and defer convergence to the two
+follow-ups. The test as landed does exactly that (see section 4 and the
+verification runs above).
 
 **A separate plant finding (NOT #127, pre-existing).** A diagnostic that holds
 a *direct* `/cmd_vel` at a constant `vx = 0.2 m/s` for 25 s shows the wheel
@@ -189,18 +210,19 @@ fetched 3.9.0 headers, build, then restore the conda headers. Done here by hand
 workaround, not a repo change; `MUJOCO_BUILD_EXAMPLES=OFF` from
 `colcon_defaults.yaml` already handles the examples half.
 
-## Open question (R1) — deferred to red-team
+## Resolution of R1 → R2 (red-team, 2026-09-25)
 
-The throwaway (scalar rebuild + config) still showed **~50 % intermittent yaw
-failure** on the acceptance goal (final yaws +1.54 / +2.94 / −3.06 vs goal
-−1.00). Since the scalar rebuild is numerically correct, the residual is most
-likely a genuine MPPI **yaw-tuning** gap, not env numerics. The >= 5-run clean
-batch that decides this is **red-team's** job (the ruling defers it); this
-implementer only ran the quick probes. If yaw proves reliable in the batch,
-the assertions as written hold; if it stays intermittent, the ruling's options
-(tune MPPI yaw critics further, or keep xy + `succeeded` and document the yaw
-gap honestly) apply. Never merge a flaky test.
+Red-team ran the clean batch R1 asked for and measured full closed-loop
+convergence at **1/12 standalone probes / 0/3 pytest invocations** — i.e. not
+reliable. The **direction** bug is fixed and reliable (straight +x goal drives
+forward 5/5, `vx` never negative). R2 therefore ruled the PR ships the
+**direction fix only**, and this test is re-scoped accordingly (§4). The two
+residual convergence root causes are filed as follow-ups: (1) MPPI closed-loop
+convergence tuning, (2) the vx rim-roller plant slip.
 
 ## Deviations from the rulings
 
-None.
+- **T1 → R2 re-scope** (manager-sanctioned): T1 said "re-enable the test with
+  real assertions" implying the full-convergence assertions; R2 supersedes that
+  with "assert the DIRECTION claim only" after the batch showed convergence is
+  not reliable. This implementer implements R2. No other deviation.

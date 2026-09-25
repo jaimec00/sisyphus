@@ -105,6 +105,27 @@ SETTLE_PERIOD_S = 1.0
 #: How long the whole NavigateToPose goal gets to converge.
 GOAL_TIMEOUT_S = 120.0
 
+#: The **direction** regression check for #127 (the re-scoped closed-loop claim).
+#: The bug drove the base *backwards*: under a trivially straight-ahead, un-yawed
+#: +x goal MPPI pinned ``vx`` at its reverse limit and the base ended at
+#: x ~= -3.3 m.  The fix (the vendored XSIMD-off ``nav2_mppi_controller`` plus the
+#: two ``nav2.yaml`` values) makes the base drive **forward** instead.  A straight
+#: +x goal measured dx = +0.62 .. +1.11 across 5 runs, while the bug measured
+#: dx ~= -3.3, so this threshold cleanly separates forward from backwards.
+#:
+#: This asserts DIRECTION only -- deliberately NOT ``succeeded`` / xy-convergence
+#: / yaw-convergence.  Full closed-loop convergence is NOT reliable yet (~8 %: 1/12
+#: standalone probes, 0/3 pytest invocations; red-team ruling R2) and is deferred
+#: to the follow-ups (MPPI convergence tuning; the vx rim-roller plant slip).
+MIN_FORWARD_DX = 0.30
+#: The straight +x goal the direction regression uses (goal yaw 0.0 = no turn):
+#: it is the #127 repro -- trivially reachable by a pure ``vx`` plan, so a
+#: *backwards* drive is unambiguously the bug.  The lateral goal constants above
+#: stay for the (deferred) full-convergence follow-up.
+STRAIGHT_GOAL_X = 1.0
+STRAIGHT_GOAL_Y = 0.0
+STRAIGHT_GOAL_YAW = 0.0
+
 
 def _require_tool(name):
     """Return the path to an executable on PATH, failing loudly if absent."""
@@ -665,20 +686,22 @@ def _drive_probe_worker(vx, wz, duration, domain_id):
             print('[pr2-shm] reclaimed %d FastDDS /dev/shm segment(s)' % removed)
 
 
-def _run_goal_probe_in_subprocess(queue, domain_id):
+def _run_goal_probe_in_subprocess(queue, domain_id, goal=(GOAL_X, GOAL_Y, GOAL_YAW)):
     """Child-process entry point: run one NavigateToPose probe onto ``queue``."""
     import traceback
 
     try:
-        result = _goal_probe_worker(domain_id)
+        result = _goal_probe_worker(domain_id, goal)
         queue.put(('ok', result))
     except BaseException:  # noqa: BLE001 - relay everything to the parent
         queue.put(('error', traceback.format_exc()))
 
 
-def _goal_probe(domain_id):
+def _goal_probe(domain_id, goal=(GOAL_X, GOAL_Y, GOAL_YAW)):
     """Run the closed-loop goal probe in its **own process** and return it.
 
+    ``goal`` is ``(x, y, yaw)`` in the map frame (default: the lateral + yawed
+    acceptance pose); the direction regression passes the straight +x goal.
     Same isolation contract as :func:`_drive_probe` (own process + own
     ``ROS_DOMAIN_ID``, bounded bringup retry on a fresh domain).
     """
@@ -690,7 +713,7 @@ def _goal_probe(domain_id):
         queue = context.Queue()
         child = context.Process(
             target=_run_goal_probe_in_subprocess,
-            args=(queue, domain_id + attempt))
+            args=(queue, domain_id + attempt, goal))
         child.start()
         try:
             kind, payload = queue.get(
@@ -712,17 +735,16 @@ def _goal_probe(domain_id):
     raise AssertionError(last_error)
 
 
-def _goal_probe_worker(domain_id):
+def _goal_probe_worker(domain_id, goal=(GOAL_X, GOAL_Y, GOAL_YAW)):
     """Launch the bringup, send a ``NavigateToPose`` goal, return the base pose.
 
     Spawns the *shipped* ``mujoco.launch.py`` headless on an isolated domain
     (the same DDS / ``/dev/shm`` hardening and readiness gates as
     :func:`_drive_probe_worker`), then sends a real ``nav2_msgs/action/
-    NavigateToPose`` goal on ``/navigate_to_pose`` chosen to exercise the
-    lateral + rotational channels, and waits for the action to succeed (or the
-    timeout).  Returns ``(dx, dy, dyaw, succeeded)`` of the ground-truth base
-    pose relative to the start -- the test asserts convergence within the goal
-    tolerances (RULING 8).
+    NavigateToPose`` goal on ``/navigate_to_pose`` (``goal`` = ``(x, y, yaw)``
+    in the map frame) and waits for the action to succeed (or the timeout).
+    Returns ``(dx, dy, dyaw, succeeded)`` of the ground-truth base pose relative
+    to the start.
     """
     import rclpy
     import geometry_msgs.msg
@@ -817,14 +839,15 @@ def _goal_probe_worker(domain_id):
         assert action_client.wait_for_server(timeout_sec=60.0), (
             '/navigate_to_pose action server not available\n%s' % _logs())
 
+        goal_x, goal_y, goal_yaw = goal
         goal = NavigateToPose.Goal()
         goal.pose.header.frame_id = 'map'
         goal.pose.header.stamp = node.get_clock().now().to_msg()
-        goal.pose.pose.position.x = GOAL_X
-        goal.pose.pose.position.y = GOAL_Y
+        goal.pose.pose.position.x = goal_x
+        goal.pose.pose.position.y = goal_y
         goal.pose.pose.orientation = (
             geometry_msgs.msg.Quaternion(
-                w=math.cos(GOAL_YAW / 2.0), z=math.sin(GOAL_YAW / 2.0)))
+                w=math.cos(goal_yaw / 2.0), z=math.sin(goal_yaw / 2.0)))
 
         send_future = action_client.send_goal_async(goal)
         executor.spin_until_future_complete(send_future, timeout_sec=30.0)
@@ -959,62 +982,54 @@ def test_base_drives_under_wheel_commands():
         % (VX_COMMAND, max_travel))
 
 
-def test_base_converges_on_a_lateral_navigate_to_pose_goal():
-    """The base CONVERGES on a lateral ``NavigateToPose`` goal (closed loop).
+def test_navigate_to_pose_drives_forward():
+    """#127 DIRECTION regression: a straight-ahead goal drives the base FORWARD.
 
-    The closed-loop acceptance for the mobile base: send a real
-    ``nav2_msgs/action/NavigateToPose`` goal for the off-axis, yawed pose
-    ``(GOAL_X, GOAL_Y, GOAL_YAW)`` on ``/navigate_to_pose`` and assert the
-    ground-truth ``GetBodyState('base_link')`` pose converges within the Nav2
-    goal-checker tolerances (``xy_goal_tolerance`` = 0.10 m,
-    ``yaw_goal_tolerance`` = 0.15 rad) -- the same tolerance ``nav2.yaml``
-    gives ``general_goal_checker``, so the test's claim and the stack's own
-    success criterion are one and the same.
+    The #127 defect: under a ``NavigateToPose`` goal the base drove **exactly
+    backwards** -- even a trivially straight-ahead, un-yawed +x goal pinned MPPI
+    ``vx`` at its reverse limit and drove the base to x ~= -3.3 m.  This test
+    sends that straight +x goal ``(STRAIGHT_GOAL_X, STRAIGHT_GOAL_Y,
+    STRAIGHT_GOAL_YAW)`` on ``/navigate_to_pose`` and asserts only that the
+    ground-truth ``GetBodyState('base_link')`` pose moved **forward**:
+    ``dx > MIN_FORWARD_DX`` (0.30 m).  Measured forward dx is +0.62 .. +1.11
+    across 5 runs, while the bug measured dx ~= -3.3, so the threshold cleanly
+    separates forward from backwards.
 
-    Three claims, in the order the failure would be diagnosed:
-
-    * the action's own ``STATUS_SUCCEEDED`` (the goal checker already folded
-      xy < 0.10 and yaw < 0.15 into it);
-    * ground-truth xy convergence -- ``hypot(dx - GOAL_X, dy - GOAL_Y)`` under
-      ``GOAL_XY_TOLERANCE``;
-    * ground-truth yaw convergence -- ``|wrap(dyaw - GOAL_YAW)|`` under
-      ``GOAL_YAW_TOLERANCE``.
-
-    This closes the #127 controller-side blocker: the conda
-    ``nav2_mppi_controller`` 1.3.12 binary was built against a mismatched
-    xtensor/xsimd pair and drove the base exactly opposite the goal; the
-    in-tree XSIMD-off rebuild (``src/nav2_mppi_controller``) plus the two
+    This is the claim the #127 fix actually delivers, and it is **VERIFIED**:
+    the vendored XSIMD-off ``nav2_mppi_controller`` 1.3.12
+    (``src/nav2_mppi_controller`` -- the conda 1.3.12 binary was built against a
+    mismatched xtensor/xsimd pair and steered opposite the goal) plus the two
     ``nav2.yaml`` fixes (``min_y_velocity_threshold``, ``PreferForwardCritic``)
-    make the stack actually converge.  (The #125-era "plant does not compose"
-    diagnosis was re-measured and is false -- see
-    ``docs/features/vx-wz-composition/implementation.md``.)
+    make the base drive forward (5/5, ``vx`` never negative).
+
+    Deliberately NOT asserted: ``succeeded``, xy-convergence, yaw-convergence.
+    FULL closed-loop convergence is **not yet reliable** (~8 %: 1/12 standalone
+    probes, 0/3 pytest invocations -- red-team ruling R2) and is **deferred** to
+    two follow-ups: (1) MPPI convergence tuning (the ``wz`` oscillation/stall
+    that aborts via the progress checker/timeout), and (2) the vx rim-roller
+    plant slip (an open-loop ``vx`` command delivers only ~0.2x).  This test must
+    not claim the stack "converges"; it claims direction, which is what #127
+    fixed.
     """
     if not _have_package('mujoco_ros2_control'):
         pytest.skip(
             'mujoco_ros2_control (dfki-ric, source-build via robot.repos, D33) '
-            'is not installed; the closed-loop acceptance needs the live sim. '
+            'is not installed; the closed-loop probe needs the live sim. '
             'Build it with: `vcs import src < robot.repos && pixi run build`.')
 
     # Its own domain (base + 2): the open-loop test in this module already
     # holds NAV2_DOMAIN_ID and +1, and each launch needs its own FastDDS
     # shared-memory port namespace (see NAV2_DOMAIN_ID above).
-    dx, dy, dyaw, succeeded = _goal_probe(NAV2_DOMAIN_ID + 2)
+    dx, dy, dyaw, succeeded = _goal_probe(
+        NAV2_DOMAIN_ID + 2, (STRAIGHT_GOAL_X, STRAIGHT_GOAL_Y, STRAIGHT_GOAL_YAW))
+    print('[pr2-nav] straight-goal direction probe: dx=%.3f dy=%.3f dyaw=%.3f '
+          'succeeded=%s (forward requires dx > %.2f)'
+          % (dx, dy, dyaw, succeeded, MIN_FORWARD_DX))
 
-    xy_error = math.hypot(dx - GOAL_X, dy - GOAL_Y)
-    # Wrap to (-pi, pi] before comparing: dyaw is accumulated incrementally so
-    # an equivalent angle (e.g. +2*pi - 1.0) must not read as a huge error.
-    yaw_error = abs(math.atan2(math.sin(dyaw - GOAL_YAW),
-                               math.cos(dyaw - GOAL_YAW)))
-    assert succeeded, (
-        'NavigateToPose did not report STATUS_SUCCEEDED for goal '
-        '(%.2f, %.2f, yaw %.2f); base ended at delta (%.3f, %.3f, dyaw %.3f), '
-        'xy err %.3f m, yaw err %.3f rad'
-        % (GOAL_X, GOAL_Y, GOAL_YAW, dx, dy, dyaw, xy_error, yaw_error))
-    assert xy_error < GOAL_XY_TOLERANCE, (
-        'base did not converge in xy: goal (%.2f, %.2f), ended at delta '
-        '(%.3f, %.3f); xy err %.3f m (expected < %.2f)'
-        % (GOAL_X, GOAL_Y, dx, dy, xy_error, GOAL_XY_TOLERANCE))
-    assert yaw_error < GOAL_YAW_TOLERANCE, (
-        'base did not converge in yaw: goal %.2f rad, ended at dyaw %.3f rad; '
-        'yaw err %.3f rad (expected < %.2f)'
-        % (GOAL_YAW, dyaw, yaw_error, GOAL_YAW_TOLERANCE))
+    assert dx > MIN_FORWARD_DX, (
+        '#127 regression: goal (%.2f, %.2f, yaw %.2f) should drive the base '
+        'FORWARD, but ground-truth dx = %.3f m (expected > %.2f); the base drove '
+        'backwards (the pre-fix XSIMD-mismatched MPPI symptom). '
+        'dy=%.3f dyaw=%.3f succeeded=%s'
+        % (STRAIGHT_GOAL_X, STRAIGHT_GOAL_Y, STRAIGHT_GOAL_YAW, dx,
+           MIN_FORWARD_DX, dy, dyaw, succeeded))
