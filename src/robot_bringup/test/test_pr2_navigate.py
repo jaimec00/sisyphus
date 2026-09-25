@@ -966,33 +966,55 @@ def test_base_converges_on_a_lateral_navigate_to_pose_goal():
     ``nav2_msgs/action/NavigateToPose`` goal for the off-axis, yawed pose
     ``(GOAL_X, GOAL_Y, GOAL_YAW)`` on ``/navigate_to_pose`` and assert the
     ground-truth ``GetBodyState('base_link')`` pose converges within the Nav2
-    goal-checker tolerances (``xy_goal_tolerance`` / ``yaw_goal_tolerance``).
+    goal-checker tolerances (``xy_goal_tolerance`` = 0.10 m,
+    ``yaw_goal_tolerance`` = 0.15 rad) -- the same tolerance ``nav2.yaml``
+    gives ``general_goal_checker``, so the test's claim and the stack's own
+    success criterion are one and the same.
 
-    **Still skipped -- and the blocker is NOT the plant (issue #127 finding).**
-    The #125-era note blamed a plant defect ("combined vx+wz does not compose").
-    That was re-measured on this branch and is **false**: in steady state the
-    roller plant delivers every channel of a combined command at ~1.0x
-    simultaneously -- ``vx=0.3, wz=0.6`` gives body-frame forward speed
-    0.3006 m/s (1.00x) and yaw rate 0.610 rad/s (1.02x), with no off-axis
-    slide (see ``docs/features/vx-wz-composition/implementation.md``).  The
-    apparent "combined does not compose" was the probe comparing a cold,
-    ~1 s-ramping run against an ideal instant-velocity arc, measured in the
-    world frame.
+    Three claims, in the order the failure would be diagnosed:
 
-    The real blocker is one layer up, in the Nav2 stack: with a perfect plant
-    the controller still drives the base **away** from the goal -- even for a
-    trivially straight-ahead, un-yawed goal at +x the base is driven to
-    x ~ -3.2 m.  MPPI pins ``vx`` at its reverse limit and oscillates ``wz``
-    through +-0.6 rad/s (a stable limit cycle) while ``/odom``, the
-    ``odom -> base_link`` TF, the wheel tracking, the map extent and the
-    open-loop ``/cmd_vel`` path were each measured correct.  Root-causing that
-    is follow-up work on the Nav2/MPPI configuration (``nav2.yaml``), not a
-    plant change, and it is out of #127's plant scope; the test stays skipped
-    rather than asserting a claim the stack does not yet meet.
+    * the action's own ``STATUS_SUCCEEDED`` (the goal checker already folded
+      xy < 0.10 and yaw < 0.15 into it);
+    * ground-truth xy convergence -- ``hypot(dx - GOAL_X, dy - GOAL_Y)`` under
+      ``GOAL_XY_TOLERANCE``;
+    * ground-truth yaw convergence -- ``|wrap(dyaw - GOAL_YAW)|`` under
+      ``GOAL_YAW_TOLERANCE``.
+
+    This closes the #127 controller-side blocker: the conda
+    ``nav2_mppi_controller`` 1.3.12 binary was built against a mismatched
+    xtensor/xsimd pair and drove the base exactly opposite the goal; the
+    in-tree XSIMD-off rebuild (``src/nav2_mppi_controller``) plus the two
+    ``nav2.yaml`` fixes (``min_y_velocity_threshold``, ``PreferForwardCritic``)
+    make the stack actually converge.  (The #125-era "plant does not compose"
+    diagnosis was re-measured and is false -- see
+    ``docs/features/vx-wz-composition/implementation.md``.)
     """
-    pytest.skip(
-        'closed-loop NavigateToPose does not converge -- the blocker is in the '
-        'Nav2 controller layer (MPPI drives the base away from the goal even '
-        'for a straight-ahead goal), NOT the roller plant, which was measured '
-        'to compose at ~1.0x in every channel of a combined command. '
-        'Root-cause follow-up lives in nav2.yaml, not mjcf_model.py.')
+    if not _have_package('mujoco_ros2_control'):
+        pytest.skip(
+            'mujoco_ros2_control (dfki-ric, source-build via robot.repos, D33) '
+            'is not installed; the closed-loop acceptance needs the live sim. '
+            'Build it with: `vcs import src < robot.repos && pixi run build`.')
+
+    # Its own domain (base + 2): the open-loop test in this module already
+    # holds NAV2_DOMAIN_ID and +1, and each launch needs its own FastDDS
+    # shared-memory port namespace (see NAV2_DOMAIN_ID above).
+    dx, dy, dyaw, succeeded = _goal_probe(NAV2_DOMAIN_ID + 2)
+
+    xy_error = math.hypot(dx - GOAL_X, dy - GOAL_Y)
+    # Wrap to (-pi, pi] before comparing: dyaw is accumulated incrementally so
+    # an equivalent angle (e.g. +2*pi - 1.0) must not read as a huge error.
+    yaw_error = abs(math.atan2(math.sin(dyaw - GOAL_YAW),
+                               math.cos(dyaw - GOAL_YAW)))
+    assert succeeded, (
+        'NavigateToPose did not report STATUS_SUCCEEDED for goal '
+        '(%.2f, %.2f, yaw %.2f); base ended at delta (%.3f, %.3f, dyaw %.3f), '
+        'xy err %.3f m, yaw err %.3f rad'
+        % (GOAL_X, GOAL_Y, GOAL_YAW, dx, dy, dyaw, xy_error, yaw_error))
+    assert xy_error < GOAL_XY_TOLERANCE, (
+        'base did not converge in xy: goal (%.2f, %.2f), ended at delta '
+        '(%.3f, %.3f); xy err %.3f m (expected < %.2f)'
+        % (GOAL_X, GOAL_Y, dx, dy, xy_error, GOAL_XY_TOLERANCE))
+    assert yaw_error < GOAL_YAW_TOLERANCE, (
+        'base did not converge in yaw: goal %.2f rad, ended at dyaw %.3f rad; '
+        'yaw err %.3f rad (expected < %.2f)'
+        % (GOAL_YAW, dyaw, yaw_error, GOAL_YAW_TOLERANCE))
