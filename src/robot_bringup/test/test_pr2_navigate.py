@@ -834,10 +834,33 @@ def _goal_probe_worker(domain_id):
         assert goal_handle.accepted, (
             'NavigateToPose goal rejected\n%s' % _logs())
 
+        def _wrap(angle):
+            return math.atan2(math.sin(angle), math.cos(angle))
+
+        # Accumulate the yaw **incrementally** across the whole goal run, exactly
+        # like ``_drive_probe_worker``: each per-sample delta is far below pi, so
+        # it is unambiguous.  Wrapping the total ``end - start`` once aliases any
+        # turn beyond half a revolution (the #125 pitfall: +279 deg -> -81 deg),
+        # which is what made a correct plant look like it rotated the wrong way.
+        # The rotation that matters happens while the base drives to the goal, so
+        # the accumulation must start here, not at the settle loop.
+        tracked_yaw = _yaw_from_quaternion(start.orientation)
+        dyaw = 0.0
+
+        def _accumulate(pose):
+            """Fold one pose's yaw into the running total (incremental wrap)."""
+            nonlocal dyaw, tracked_yaw
+            if pose is None:
+                return
+            nxt = _yaw_from_quaternion(pose.orientation)
+            dyaw += _wrap(nxt - tracked_yaw)
+            tracked_yaw = nxt
+
         result_future = goal_handle.get_result_async()
         deadline = time.monotonic() + GOAL_TIMEOUT_S
         while time.monotonic() < deadline and not result_future.done():
             executor.spin_once(timeout_sec=0.1)
+            _accumulate(_base_state())
         succeeded = result_future.done()
         if succeeded:
             status = result_future.result().status
@@ -845,6 +868,7 @@ def _goal_probe_worker(domain_id):
 
         # Let the base settle before measuring: wait for the pose to hold still.
         final = _base_state()
+        _accumulate(final)
         stable_since = time.monotonic()
         settle_deadline = time.monotonic() + SETTLE_PERIOD_S * 5.0
         previous = None
@@ -853,6 +877,7 @@ def _goal_probe_worker(domain_id):
             pose = _base_state()
             if pose is None:
                 continue
+            _accumulate(pose)
             if previous is not None:
                 moved = math.hypot(
                     pose.position.x - previous.position.x,
@@ -864,17 +889,11 @@ def _goal_probe_worker(domain_id):
                 else:
                     stable_since = time.monotonic()
             previous = pose
-            if pose is not None:
-                final = pose
+            final = pose
 
-        def _wrap(angle):
-            return math.atan2(math.sin(angle), math.cos(angle))
-
-        start_yaw = _wrap(_yaw_from_quaternion(start.orientation))
-        end_yaw = _wrap(_yaw_from_quaternion(final.orientation))
         return (final.position.x - start.position.x,
                 final.position.y - start.position.y,
-                _wrap(end_yaw - start_yaw),
+                dyaw,
                 succeeded)
     finally:
         if executor is not None:
@@ -941,17 +960,39 @@ def test_base_drives_under_wheel_commands():
 
 
 def test_base_converges_on_a_lateral_navigate_to_pose_goal():
-    """DEFERRED to #127 -- closed-loop NavigateToPose convergence (vy + wz).
+    """The base CONVERGES on a lateral ``NavigateToPose`` goal (closed loop).
 
-    #125 (rim-roller model) fixed the pure channels (vx 0.98x, vy 1.02x,
-    wz +1.04x), but a combined ``vx+wz`` wheel command does not compose in sim
-    (measured dx 0.17x commanded + spurious dy ~0.85) -- a pre-existing PLANT
-    defect (the rollers slip/whirl rather than grip), not a bridge/sign bug.
-    That coupled-channel defect is the new prerequisite for closed-loop
-    navigation convergence and is tracked in #127.  This test is skipped until
-    #127 lands; re-enable it by dropping the ``pytest.skip`` below.
+    The closed-loop acceptance for the mobile base: send a real
+    ``nav2_msgs/action/NavigateToPose`` goal for the off-axis, yawed pose
+    ``(GOAL_X, GOAL_Y, GOAL_YAW)`` on ``/navigate_to_pose`` and assert the
+    ground-truth ``GetBodyState('base_link')`` pose converges within the Nav2
+    goal-checker tolerances (``xy_goal_tolerance`` / ``yaw_goal_tolerance``).
+
+    **Still skipped -- and the blocker is NOT the plant (issue #127 finding).**
+    The #125-era note blamed a plant defect ("combined vx+wz does not compose").
+    That was re-measured on this branch and is **false**: in steady state the
+    roller plant delivers every channel of a combined command at ~1.0x
+    simultaneously -- ``vx=0.3, wz=0.6`` gives body-frame forward speed
+    0.3006 m/s (1.00x) and yaw rate 0.610 rad/s (1.02x), with no off-axis
+    slide (see ``docs/features/vx-wz-composition/implementation.md``).  The
+    apparent "combined does not compose" was the probe comparing a cold,
+    ~1 s-ramping run against an ideal instant-velocity arc, measured in the
+    world frame.
+
+    The real blocker is one layer up, in the Nav2 stack: with a perfect plant
+    the controller still drives the base **away** from the goal -- even for a
+    trivially straight-ahead, un-yawed goal at +x the base is driven to
+    x ~ -3.2 m.  MPPI pins ``vx`` at its reverse limit and oscillates ``wz``
+    through +-0.6 rad/s (a stable limit cycle) while ``/odom``, the
+    ``odom -> base_link`` TF, the wheel tracking, the map extent and the
+    open-loop ``/cmd_vel`` path were each measured correct.  Root-causing that
+    is follow-up work on the Nav2/MPPI configuration (``nav2.yaml``), not a
+    plant change, and it is out of #127's plant scope; the test stays skipped
+    rather than asserting a claim the stack does not yet meet.
     """
     pytest.skip(
-        'deferred to #127: combined vx+wz does not compose (rollers slip/whirl '
-        '-- a pre-existing plant defect); closed-loop NavigateToPose '
-        'convergence is blocked until the coupled-channel fix lands.')
+        'closed-loop NavigateToPose does not converge -- the blocker is in the '
+        'Nav2 controller layer (MPPI drives the base away from the goal even '
+        'for a straight-ahead goal), NOT the roller plant, which was measured '
+        'to compose at ~1.0x in every channel of a combined command. '
+        'Root-cause follow-up lives in nav2.yaml, not mjcf_model.py.')
