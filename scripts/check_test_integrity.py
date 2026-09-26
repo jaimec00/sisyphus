@@ -132,6 +132,14 @@ NON_IMPLEMENTATION_FILES = frozenset({
 #: Checked-in per-package non-linter test counts -- the ratchet's floor.
 BASELINE_FILENAME = 'test_baseline.json'
 
+#: Marker file that marks a package directory as **vendored** third-party
+#: source (see :func:`discover_packages`). It carries a VENDORED.md written
+#: by whoever vendored the code, so the exemption is self-documenting and
+#: shows up in review as the file it is -- not a flag flipped somewhere far
+#: from the package. Kept distinct from every ``COLCON_IGNORE``-class escape
+#: on purpose: those must stay powerless (see ``discover_packages``).
+VENDORED_MARKER = 'VENDORED.md'
+
 #: Environment variable that permits this run to re-cut a floor downwards.
 ALLOW_DECREASE_ENV = 'ALLOW_TEST_DECREASE'
 
@@ -342,6 +350,26 @@ def _git_tracked_manifests(source_dir):
         if rel and Path(rel).name == 'package.xml'}
 
 
+def is_vendored_marker_package(manifest):
+    """Return True when a package directory carries a ``VENDORED.md`` marker.
+
+    A **tracked** package would otherwise always be owned, so vendoring
+    third-party source in-tree under a path git tracks (``src/nav2_mppi_
+    controller``, issue #127) had no way to be exempted: this repo cannot add
+    tests to upstream code, so the "implementation code needs real tests"
+    rule and the ratchet would both fire on a package it cannot test. The
+    marker is the deliberate second ownership signal for exactly that case.
+
+    It is intentionally *not* a generic ``COLCON_IGNORE``-class escape: only
+    the specific ``VENDORED.md`` name is honoured, and the file itself is
+    expected to document the upstream and the local patch (see the vendored
+    package's ``VENDORED.md``). Exempting a first-party package therefore
+    means adding a file whose contents claim the package is third-party --
+    a visible, reviewable act, never a silent opt-out.
+    """
+    return (manifest.parent / VENDORED_MARKER).is_file()
+
+
 def discover_packages(source_dir):
     """Return ``(expected, unowned)`` package names found under ``source_dir``.
 
@@ -358,15 +386,28 @@ def discover_packages(source_dir):
     only escape is removing its manifest from the index, which is a visible,
     reviewable change. ``COLCON_IGNORE`` and ``.gitignore`` remain powerless
     (an ignored-but-tracked file is still tracked).
+
+    The one exception is a package carrying a ``VENDORED.md`` marker
+    (:func:`is_vendored_marker_package`), which is unowned **even when git
+    tracks it**. That is what lets this repo vendor a monorepo subdirectory
+    in-tree with a local patch (nav2_mppi_controller, issue #127) without the
+    test guard demanding results from upstream code it cannot test.
     """
     manifests = find_manifests(source_dir)
     tracked = _git_tracked_manifests(source_dir)
     if tracked is None:
-        return sorted(name for name, _ in manifests), []
+        unowned = [name for name, manifest in manifests
+                   if is_vendored_marker_package(manifest)]
+        expected = [name for name, manifest in manifests
+                    if name not in unowned]
+        return sorted(expected), sorted(unowned)
     expected, unowned = [], []
     for name, manifest in manifests:
-        target = expected if manifest.resolve() in tracked else unowned
-        target.append(name)
+        if (manifest.resolve() in tracked
+                and not is_vendored_marker_package(manifest)):
+            expected.append(name)
+        else:
+            unowned.append(name)
     return sorted(expected), sorted(unowned)
 
 

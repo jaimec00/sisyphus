@@ -493,6 +493,72 @@ def test_untracked_vendored_packages_are_not_expected(git_workspace):
     assert unowned == ['mujoco_ros2_control']
 
 
+def test_a_tracked_vendored_package_is_not_expected(git_workspace):
+    """An in-tree vendored package (git-tracked) is exempt via its marker.
+
+    ``vcs import`` cannot fetch a single subdirectory of a monorepo, so a
+    package vendored in-tree (nav2_mppi_controller, issue #127) IS tracked by
+    this repo -- ownership by git alone would make ``pixi run test`` demand
+    results from upstream code this repo cannot add tests to. A ``VENDORED.md``
+    marker in the package directory is the deliberate second ownership signal.
+    """
+    source_dir, _ = git_workspace
+    write_source_package(source_dir, 'robot_a')
+    vendored = write_source_package(source_dir, 'nav2_mppi_controller')
+    (vendored / guard.VENDORED_MARKER).write_text('vendored upstream\n')
+    git_track(source_dir, 'robot_a/package.xml',
+              'nav2_mppi_controller/package.xml')
+
+    expected, unowned = guard.discover_packages(source_dir)
+
+    assert expected == ['robot_a']
+    assert unowned == ['nav2_mppi_controller']
+
+
+def test_the_vendored_marker_must_be_the_named_file(git_workspace):
+    """A near-miss marker does not exempt: only ``VENDORED.md`` counts."""
+    source_dir, _ = git_workspace
+    directory = write_source_package(source_dir, 'robot_a')
+    (directory / 'VENDORED').write_text('not the marker\n')
+    (directory / 'vendored.md').write_text('also not the marker\n')
+    git_track(source_dir, 'robot_a/package.xml')
+
+    assert guard.find_source_packages(source_dir) == ['robot_a']
+
+
+def test_the_vendored_marker_works_outside_a_git_work_tree(workspace):
+    """Without git, a marked package is still recognised as unowned."""
+    source_dir, _ = workspace
+    write_source_package(source_dir, 'robot_a')
+    vendored = write_source_package(source_dir, 'nav2_mppi_controller')
+    (vendored / guard.VENDORED_MARKER).write_text('vendored upstream\n')
+
+    expected, unowned = guard.discover_packages(source_dir)
+
+    assert expected == ['robot_a']
+    assert unowned == ['nav2_mppi_controller']
+
+
+def test_a_vendored_marker_package_is_reported_not_audited(git_workspace,
+                                                           capsys):
+    """A marked package is named in the report, exactly like an untracked one."""
+    source_dir, build_base = git_workspace
+    write_source_package(source_dir, 'robot_a')
+    vendored = write_source_package(source_dir, 'nav2_mppi_controller')
+    (vendored / guard.VENDORED_MARKER).write_text('vendored upstream\n')
+    git_track(source_dir, 'robot_a/package.xml',
+              'nav2_mppi_controller/package.xml')
+    write_result(build_base, 'robot_a', tests=1)
+    write_result(build_base, guard.TOOLING_PACKAGE, tests=3)
+
+    rc = guard.main(['--audit-only', '--source-dir', str(source_dir),
+                     '--build-base', str(build_base)])
+    out = capsys.readouterr().out
+
+    assert rc == 0
+    assert 'nav2_mppi_controller is in the source tree but not tracked' in out
+
+
 def test_an_untracked_package_is_reported_not_silently_dropped(git_workspace,
                                                                capsys):
     """Dropping a package out of the audit must be visible in the report."""
