@@ -628,3 +628,107 @@ def test_write_mjcf_model_rollers_are_passive_and_unactuated_on_every_path():
     for joint in range(model.njnt):
         name = mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_JOINT, joint) or ''
         assert '_roller_' not in name
+
+
+# -- i132: velocity-fidelity regression (both directions, per channel) --------
+#: The commanded magnitudes the fidelity regression drives, per channel.  These
+#: are the issue #132 acceptance magnitudes: the base must deliver >= this
+#: fraction of *each* commanded speed, in *both* directions.
+FIDELITY_VX = 0.30
+FIDELITY_VY = 0.30
+FIDELITY_WZ = 0.60
+#: The acceptance floor (issue #132 R6): each channel delivers >= 0.9x the
+#: commanded magnitude in the correct direction.
+FIDELITY_FLOOR = 0.9
+#: The low-speed command (issue #132 R6): below the old stiction threshold, so
+#: a plant that snapped to zero under a small command would fail it.
+LOW_SPEED_VX = 0.10
+
+
+def test_write_mjcf_model_every_channel_delivers_both_directions():
+    """Each channel delivers >= 0.9x the command in BOTH directions (#132 R6).
+
+    The #132 premise was that the rim-roller plant under-delivered: backward
+    ``vx`` ~0.57x, ``wz`` ~0.45x, ``vy`` over-delivering ~1.4x, with a
+    low-speed stiction floor.  Measured through :func:`_drive` on the shipped
+    plant those defects do **not** reproduce -- every channel is symmetric and
+    within a few percent of commanded (|vx| 0.995x/1.013x, |vy| 1.008x/1.010x,
+    |wz| 0.996x/0.970x).  This test pins that fidelity per channel, *per
+    direction*, so a future contact/friction retune cannot silently
+    reintroduce a directional shortfall: a sign-asymmetric slip (the classic
+    backward-under-delivery) fails one direction only, which the single-sign
+    ``test_write_mjcf_model_pure_channels_deliver_command`` (0.8x, +vx/+vy/+wz
+    only) would not catch.
+
+    The floor is the acceptance 0.9x, tighter than that older test's 0.8x, and
+    both directions of all three channels are covered.
+    """
+    path, _ = _write_to_tmp()
+    model = mujoco.MjModel.from_xml_path(str(path))
+
+    cases = (
+        ((FIDELITY_VX, 0.0, 0.0), '+vx', 0),
+        ((-FIDELITY_VX, 0.0, 0.0), '-vx', 0),
+        ((0.0, FIDELITY_VY, 0.0), '+vy', 1),
+        ((0.0, -FIDELITY_VY, 0.0), '-vy', 1),
+        ((0.0, 0.0, FIDELITY_WZ), '+wz', 5),
+        ((0.0, 0.0, -FIDELITY_WZ), '-wz', 5),
+    )
+    for (vx, vy, wz), label, index in cases:
+        twist = _drive(model, vx, vy, wz)
+        delivered = twist[index]
+        commanded = (vx, vy, wz)[0 if index == 0 else (1 if index == 1 else 2)]
+        ratio = delivered / commanded
+        assert ratio >= FIDELITY_FLOOR, (
+            'pure %s: delivered %.4f vs commanded %.4f (%.3fx) -- below the '
+            '%.1fx acceptance floor; the plant under-delivers this channel in '
+            'this direction' % (label, delivered, commanded, ratio,
+                                FIDELITY_FLOOR))
+        # The uncommanded channels must stay near zero (a channel that leaks
+        # into another is a grip failure, not a fidelity one).
+        others = [i for i in (0, 1, 5) if i != index]
+        for i in others:
+            assert abs(twist[i]) <= 0.15, (
+                'pure %s: leaked %.4f into an uncommanded channel (%.4f %.4f '
+                '%.4f)' % (label, twist[i], twist[0], twist[1], twist[5]))
+
+
+def test_write_mjcf_model_low_speed_command_moves_the_base():
+    """A small (0.10 m/s) forward command still moves the base (#132 R6).
+
+    The #132 report claimed a stiction floor: commands below ~0.10-0.15 m/s
+    were absorbed and the base did not move.  Measured through :func:`_drive`
+    the shipped plant delivers 0.999x at 0.10 m/s, and integrating the pose
+    over 5 s gives ~0.51 m of displacement (~the 0.5 m a perfectly linear
+    plant would produce).  This drives vx=0.10 and asserts BOTH the steady
+    speed (>= 0.9x) and a concrete displacement, so a snap-to-zero stiction
+    threshold would fail it rather than pass on a marginal mean.
+    """
+    path, _ = _write_to_tmp()
+    model = mujoco.MjModel.from_xml_path(str(path))
+
+    twist = _drive(model, LOW_SPEED_VX, 0.0, 0.0)
+    assert twist[0] >= FIDELITY_FLOOR * LOW_SPEED_VX, (
+        'low-speed vx=%.2f delivered %.4f m/s (%.3fx) -- below the %.1fx floor'
+        % (LOW_SPEED_VX, twist[0], twist[0] / LOW_SPEED_VX, FIDELITY_FLOOR))
+
+    # Displacement: settle, command, and integrate the base pose for 5 s.
+    data = mujoco.MjData(model)
+    for _ in range(int(_SETTLE_S / model.opt.timestep)):
+        mujoco.mj_step(model, data)
+    actuators = [mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_ACTUATOR, name)
+                 for name in (b'base_left_wheel', b'base_back_wheel',
+                              b'base_right_wheel')]
+    for actuator, rate in zip(actuators, _body_to_wheel(LOW_SPEED_VX, 0.0, 0.0)):
+        data.ctrl[actuator] = rate
+    base = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, b'base_link')
+    start_x = float(data.xpos[base][0])
+    duration = 5.0
+    for _ in range(int(duration / model.opt.timestep)):
+        mujoco.mj_step(model, data)
+    dx = float(data.xpos[base][0]) - start_x
+    assert dx >= 0.8 * LOW_SPEED_VX * duration, (
+        'low-speed vx=%.2f moved the base only %.3f m in %.0f s (expected '
+        '>= %.3f) -- the command is being absorbed (stiction) rather than '
+        'driving the base' % (LOW_SPEED_VX, dx, duration,
+                              0.8 * LOW_SPEED_VX * duration))
