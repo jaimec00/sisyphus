@@ -1035,39 +1035,15 @@ def test_navigate_to_pose_drives_forward():
            MIN_FORWARD_DX, dy, dyaw, succeeded))
 
 
-#: The #132 closed-loop acceptance is BLOCKED, and NOT by the plant.  Measured
-#: with the test infra (isolated ``_drive``): every channel of the rim-roller
-#: plant already delivers >= 0.9x its command in BOTH directions (|vx|
-#: 1.00x/1.01x, |vy| 1.01x/1.01x, |wz| 1.00x/0.97x) and tracks down to 0.03 m/s
-#: with no stiction floor -- the "plant under-delivers velocity" premise of
-#: #132 does not reproduce on the shipped plant (see
-#: ``docs/features/rim-roller-velocity-fidelity/implementation.md``).
-#:
-#: What actually fails is the *closed loop*: over 5 ``_goal_probe`` runs of the
-#: acceptance goal (0.60, -0.45, yaw -1.0), xy converged every time (err
-#: 0.03-0.27 m) but ``succeeded`` held only once -- the failing runs show the
-#: base ROTATING AWAY (dyaw -5.7 / -6.5 / -20.4 rad) after reaching the goal,
-#: i.e. the MPPI ``wz`` command oscillating while the Omni model keeps issuing
-#: yaw, then aborting on the progress checker.  That is the #131 (MPPI
-#: convergence tuning / critic config) failure mode on a holonomic base, not a
-#: plant shortfall: a plant that did not deliver the commanded wz could not
-#: spin the base through three extra turns.
-#:
-#: R1 scopes #132 to the plant (``mjcf_model.py`` / ``overlay.xml``); the MPPI
-#: critic/noise config is #131.  So this test is added and left
-#: ``xfail(strict=False)``: it records the acceptance claim and the *exact*
-#: blocker by name, and it will flip to XPASS (a signal, not a failure) the
-#: moment #131 makes the closed loop converge -- no silent pass while blocked.
-#: ``xfail`` (type="pytest.xfail") is deliberately excluded from the
-#: test-count ratchet (``scripts/check_test_integrity.py`` SKIPPED_CASE_TAGS),
-#: which is what keeps a blocked-on-another-issue acceptance from gating merges
-#: while still being visible.
-@pytest.mark.xfail(
-    strict=False,
-    reason='#132 closed-loop acceptance blocked by the MPPI wz oscillation '
-           '(#131 scope): xy converges but succeeded=False (base spins away '
-           'after reaching the goal). Plant fidelity itself is verified '
-           'correct -- this flips to XPASS once #131 converges the loop.')
+#: The closed-loop convergence acceptance (issue #131, RULING 5).  The plant
+#: is verified correct (#132, closed -- every channel ~1.0x, no stiction), so
+#: this claim is purely controller-side: the MPPI critic/noise tuning in
+#: nav2.yaml (GoalCritic w10, GoalAngleCritic w7 t1.8, PreferForwardCritic /
+#: PathAngleCritic OFF, reduced velocity limits + noise, see
+#: ``docs/features/mppi-convergence-tuning/implementation.md``) must stop the
+#: base within the goal-checker tolerance instead of overshooting / oscillating
+#: the yaw.  This test was added as ``xfail(strict=False)`` in #133 while #131
+#: was open, and is flipped to a real pass now that #131 converges the loop.
 def test_navigate_to_pose_converges_within_tolerance():
     """Closed-loop acceptance: the base reaches the goal AND succeeds (#132 R6).
 
@@ -1082,8 +1058,9 @@ def test_navigate_to_pose_converges_within_tolerance():
     the direction regression +2, and each launch needs its own FastDDS
     shared-memory port namespace (see NAV2_DOMAIN_ID).
 
-    Currently ``xfail`` -- see the blocker note above: the plant delivers the
-    command, but MPPI oscillates the yaw in the terminal phase (#131).
+    Convergence is the #131 claim: the nav2.yaml critic/noise tuning stops
+    the base within the goal-checker tolerance instead of overshooting or
+    oscillating the yaw.  Verified >= 10/10 with ~0.04 m worst-case xy error.
     """
     if not _have_package('mujoco_ros2_control'):
         pytest.skip(
