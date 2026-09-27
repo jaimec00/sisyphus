@@ -6,7 +6,11 @@
 
 """Launch the Nav2 localization + planning layer headless (PR1/PR2).
 
-Five concerns come up here (PR2 extends PR1's three):
+Six concerns come up here (PR3 extends PR2's five):
+
+* ``semantic_nav`` -- the skill-level ``NavigateToLocation`` bridge that turns
+  a named location into a Nav2 ``NavigateToPose`` goal and records the arrival
+  (PR3/issue #135, RULING 1/D30/D36).
 
 Localization (PR1 / issue #121):
 * ``ground_truth_odom`` -- publishes ``odom -> base_link`` TF + ``/odom``
@@ -187,6 +191,23 @@ def generate_launch_description():
         parameters=[nav_params, {'use_sim_time': use_sim_time}],
     )
 
+    # The skill-level navigation bridge (PR3/issue #135, RULING 1/D30/D36): it
+    # serves NavigateToLocation (a *semantic* goal: a location the world model
+    # knows), resolves the name, drives Nav2's NavigateToPose, and records the
+    # arrival through the world query service.  The brain never sees a pose --
+    # this is the seam that keeps navigate_to(location) the same while the
+    # classical track actually moves the base.
+    semantic_nav = Node(
+        package='robot_nav',
+        executable='semantic_nav',
+        name='semantic_nav',
+        output='screen',
+        parameters=[nav_params, {
+            'world_service': world_service,
+            'use_sim_time': use_sim_time,
+        }],
+    )
+
     # The real Nav2 lifecycle node: a stock ``nav2_map_server`` serving the
     # rendered map, brought up the Nav2 way by a lifecycle manager.  It is
     # built inside an OpaqueFunction so its ``yaml_filename`` is the PGM pair
@@ -237,6 +258,7 @@ def generate_launch_description():
         odom_node,
         map_node,
         omni_base_controller,
+        semantic_nav,
         nav2_map_server,
         nav2_manager,
         navigation,

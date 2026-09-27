@@ -46,6 +46,7 @@ from types import MappingProxyType
 from typing import Iterator, Mapping
 
 from robot_skills import Pose, Side
+from robot_skills.validation import as_identifier
 from robot_world.document import duplicate_hold_sides, WorldDocument, WorldObject
 from robot_world.storage import (
     read_document,
@@ -198,6 +199,33 @@ class WorldStore:
         )
         self._refuse_hold_conflict(updated)
         self._replace(updated)
+
+    def set_start_location(self, name: str) -> None:
+        """Record the location a robot comes up (and resets) at.
+
+        The base's semantic "where do I live" fact, distinct from its live
+        pose: a skill that drives the robot somewhere (or a backend that
+        teleports it) reports the arrival here, so the world's
+        ``start_location`` keeps agreeing with where the robot actually is
+        (D30/D36).  ``start_column_height`` is untouched -- the column travel
+        is the robot's, not part of which room it is standing in.
+
+        The name must be a known location (an identifier, and one of the
+        ``locations`` map): a scene whose ``start_location`` named nowhere
+        would fail to parse (``WorldDocument`` enforces it), so the store
+        refuses the transition rather than committing an unreadable document.
+        Setting the current value is a no-op, so a repeated arrival at the
+        same room commits nothing.
+        """
+        name = as_identifier(name, name='set_start_location name')
+        if name not in self._locations:
+            raise WorldStoreError(
+                f'unknown location {name!r}; known locations: '
+                f"{', '.join(sorted(self._locations)) or '(none)'}")
+        if name == self._start_location:
+            return
+        self._start_location = name
+        self._touch()
 
     def add_object(self, item: WorldObject) -> None:
         """Register a new object, refusing an id that is already taken."""

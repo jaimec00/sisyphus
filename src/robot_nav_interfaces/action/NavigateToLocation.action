@@ -1,0 +1,19 @@
+# Drive the base to a named location (the skill-level navigate seam, D30/D36).
+#
+# This is the *semantic* contract: the brain names a location it already knows
+# from the world model, never a raw pose or a velocity. The bridge resolves the
+# name against the world store, drives Nav2 there, and reports whether the base
+# arrived -- so the skill API's `navigate_to(location)` stays exactly the same
+# while the classical/real track actually moves (R1).
+string location
+---
+# success=true means the base reached the requested location and the world's
+# start_location was updated to match; error is empty.
+# success=false means the base did NOT reach the location (unknown name, no
+# Nav2 stack, a failed/aborted navigation, ...): error says which.
+bool success
+string error
+---
+# No feedback: a semantic location goal has no intermediate progress the brain
+# consumes (the bridge owns Nav2's own feedback). Kept deliberately empty so
+# the seam exposes nothing but the location and the outcome.

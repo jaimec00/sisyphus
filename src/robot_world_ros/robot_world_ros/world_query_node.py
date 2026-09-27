@@ -16,7 +16,9 @@ node is the small ROS-facing shell around it: it owns a single
   returns the store's own canonical JSON;
 * *change the world* -- ``/world_query/update_object_pose``,
   ``/world_query/add_object`` and ``/world_query/remove_object`` mutate one
-  object at a time on that same store.
+  object at a time on that same store, and
+  ``/world_query/set_start_location`` records which named location the robot
+  comes up at (a nav-driven scene update, not a perception one -- invariant 4).
 
 Read path: why a JSON string and not typed fields (R2/D23)
 ---------------------------------------------------------
@@ -30,20 +32,25 @@ it evolves. Carrying the canonical JSON is what makes the query return the
 seed world "exactly as the store reads it" -- byte-for-byte -- and makes the
 service a thin adapter rather than a second source of truth (D23).
 
-Write path: three per-object ops, typed poses (R1/R2)
------------------------------------------------------
-The write surface is three services, one per object-store mutator -- never a
-single full-document write. The store's mutators already encode the correct
-boundary: perception (invariant 4) observes *objects with poses*; it does not
-observe the human-curated locations map, ``start_location`` or
-``start_column_height``. A full-document ``UpdateWorld`` would force perception
-to echo back scene infrastructure it does not know (or force a merge step
-here) -- a second representation again (D23/D35). Each per-object op is also
-naturally atomic: one mutation is one temp-file + ``os.replace`` commit (D23's
-"one batch = one write").
+Write path: per-mutator ops, typed fields (R1/R2/R3)
+---------------------------------------------------
+The write surface is one service per store mutator -- three per-object ops plus
+``set_start_location`` for the scene's start parameter -- never a single
+full-document write. The store's mutators already encode the correct boundary:
+perception (invariant 4) observes *objects with poses*; it does not observe the
+human-curated locations map or ``start_column_height``. A full-document
+``UpdateWorld`` would force perception to echo back scene infrastructure it
+does not know (or force a merge step here) -- a second representation again
+(D23/D35). Each op is also naturally atomic: one mutation is one temp-file +
+``os.replace`` commit (D23's "one batch = one write").
 
-Unlike the read path, the write ops *are* field-shaped, so they use typed
-fields and ``geometry_msgs/Pose`` -- which is byte-structurally identical to
+``set_start_location`` is the one write that is *not* perception's: no sensor
+ever observes "where the robot lives", so a nav skill originates it on arrival
+(R3). It carries a location *name*, never a pose -- the locations map stays
+human-curated scene infrastructure, so the write stays semantic (D30/D36).
+
+Unlike the read path, the object write ops *are* field-shaped, so they use
+typed fields and ``geometry_msgs/Pose`` -- which is byte-structurally identical to
 the store's :class:`robot_skills.Pose` (three float64 position components plus
 four float64 quaternion components). Building the store pose from the message
 is a lossless copy, not a re-encoding that could round floats or re-map enums,
@@ -77,6 +84,7 @@ from robot_world_ros_interfaces.srv import (
     AddObject,
     GetWorld,
     RemoveObject,
+    SetStartLocation,
     UpdateObjectPose,
 )
 
@@ -168,6 +176,11 @@ class WorldQueryNode(Node):
             AddObject, 'add_object', self._handle_add_object)
         self._remove_object_service = self.create_service(
             RemoveObject, 'remove_object', self._handle_remove_object)
+        # A nav-driven scene update, not a perception one (invariant 4): the
+        # skill-level navigate bridge calls it on arrival so the world's
+        # start_location tracks where the base actually is (R3/D36).
+        self._set_start_location_service = self.create_service(
+            SetStartLocation, 'set_start_location', self._handle_set_start_location)
         seed_note = repr(seed_path) if seed_path else 'shipped seed'
         self.get_logger().info(
             f'world query service up: live file {live_path!r}, seed {seed_note}')
@@ -223,6 +236,22 @@ class WorldQueryNode(Node):
         """Drop an object; report a store refusal instead of raising."""
         try:
             self._store.remove_object(request.object_id)
+        except (ValueError, TypeError) as exc:
+            response.success = False
+            response.error = str(exc)
+            return response
+        response.success = True
+        response.error = ''
+        return response
+
+    def _handle_set_start_location(
+        self,
+        request: SetStartLocation.Request,
+        response: SetStartLocation.Response,
+    ) -> SetStartLocation.Response:
+        """Record where the robot comes up; report a store refusal instead of raising."""
+        try:
+            self._store.set_start_location(request.location)
         except (ValueError, TypeError) as exc:
             response.success = False
             response.error = str(exc)

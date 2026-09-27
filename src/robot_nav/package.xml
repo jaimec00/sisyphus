@@ -11,6 +11,7 @@
   <depend>rclpy</depend>
   <depend>robot_world</depend>
   <depend>robot_world_ros_interfaces</depend>
+  <depend>robot_nav_interfaces</depend>
   <depend>nav_msgs</depend>
   <depend>geometry_msgs</depend>
   <depend>std_msgs</depend>
