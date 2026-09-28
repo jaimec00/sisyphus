@@ -664,11 +664,11 @@ def test_navigate_to_location_drives_the_base_and_updates_the_world():
             and abs(dy) < MAX_ARRIVAL_ABS_DY
             and abs(dyaw) < MAX_ARRIVAL_ABS_DYAW), (
         "NavigateToLocation('%s') reported success but the base did not reach "
-        'kitchen\'s neighbourhood (%.2f, %.2f): dx=%.3f (needs > %.2f) '
+        "kitchen's neighbourhood (%.2f, %.2f): dx=%.3f (needs > %.2f) "
         'dy=%.3f dyaw=%.3f (needs |dy| < %.2f and |dyaw| < %.2f)'
         % (TARGET_LOCATION, KITCHEN_X, KITCHEN_Y, dx, MIN_ARRIVAL_DX, dy, dyaw,
            MAX_ARRIVAL_ABS_DY, MAX_ARRIVAL_ABS_DYAW))
     assert start_location == TARGET_LOCATION, (
-        "the query -> nav -> query round trip failed: /world_query/get_world "
+        'the query -> nav -> query round trip failed: /world_query/get_world '
         'reports start_location=%r after navigating to %r'
         % (start_location, TARGET_LOCATION))
