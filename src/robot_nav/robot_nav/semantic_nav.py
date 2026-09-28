@@ -50,6 +50,20 @@ Pure half vs. ROS half
 ``static_map.occupancy_grid_from_document`` use -- so the field-by-field pose
 copy is unit-testable with no ROS runtime.  Everything else is the thin rclpy
 shell around it.
+
+Why the node needs *two* threads (``main``)
+-------------------------------------------
+A goal handler runs the whole resolve -> drive -> record chain synchronously in
+its ``execute_callback``, and each step blocks on a nested service/action
+client (``GetWorld``, ``NavigateToPose``, ``SetStartLocation``) while it polls
+its future.  A single-threaded spin would therefore deadlock: the very thread
+blocked in the poll is the one that must deliver the client's response.  So
+``main`` spins a :class:`rclpy.executors.MultiThreadedExecutor`, and the action
+server gets a :class:`rclpy.callback_groups.ReentrantCallbackGroup` -- without
+the reentrant group the executor's threads are still serialised behind the
+default (mutually-exclusive) group's lock, and the nested callbacks starve the
+same way.  The nested clients stay in the default group: exactly one is active
+at a time, so serialising *them* is correct.
 """
 
 import json
@@ -59,6 +73,8 @@ from geometry_msgs.msg import Pose as RosPose
 from nav2_msgs.action import NavigateToPose
 import rclpy
 from rclpy.action import ActionClient
+from rclpy.callback_groups import ReentrantCallbackGroup
+from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
 from robot_nav_interfaces.action import NavigateToLocation
 from robot_skills import Pose
@@ -185,9 +201,18 @@ class SemanticNavNode(Node):
             self, NavigateToPose, self._navigate_action)
         self._set_start_client = self.create_client(
             SetStartLocation, self._set_start_service)
+        # The action server is the one callback that *blocks* (its handler calls
+        # the nested clients and waits on their futures), so it gets a reentrant
+        # callback group of its own: paired with the MultiThreadedExecutor in
+        # ``main``, that lets a nested client's response callback be serviced
+        # while the handler is still running.  Under the default
+        # mutually-exclusive group the handler would hold the group's lock for
+        # the whole goal and starve every nested callback, however many threads
+        # spin the executor.
         self._action_server = rclpy.action.ActionServer(
             self, NavigateToLocation, 'navigate_to_location',
             execute_callback=self._execute,
+            callback_group=ReentrantCallbackGroup(),
         )
         self.get_logger().info(
             'semantic nav bridge up: navigate_to_location -> %s, world %s, '
@@ -201,11 +226,15 @@ class SemanticNavNode(Node):
         return self.get_parameter(name).get_parameter_value().string_value
 
     def _wait_for(self, predicate, what: str, timeout: float) -> bool:
-        """Spin (bounded) until ``predicate`` holds; log and return False on timeout.
+        """Poll (bounded) until ``predicate`` holds; log and return False on timeout.
 
-        A thin, testable shim over the busy-wait polling each client does: the
-        servers appear asynchronously, so every use is a bounded retry rather
-        than a fixed sleep (R4's "wait/retry for the two servers").
+        A thin, testable shim over the bounded retry each client does: the
+        servers appear asynchronously, so every use is a retry rather than a
+        fixed sleep (R4's "wait/retry for the two servers").  The loop does not
+        spin the executor itself -- it runs on the action server's own thread,
+        and the *other* executor threads deliver whatever this poll is waiting
+        for (the module docstring's two-thread note); that split is precisely
+        what makes the multi-threaded spin necessary.
         """
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
@@ -343,11 +372,21 @@ class SemanticNavNode(Node):
 
 
 def main(args=None) -> None:
-    """Run the semantic navigation bridge until interrupted."""
+    """Run the semantic navigation bridge until interrupted.
+
+    Spins a :class:`~rclpy.executors.MultiThreadedExecutor`, not
+    ``rclpy.spin``'s single thread: a goal handler blocks while it waits on its
+    nested service/action clients, so it needs sibling threads to service their
+    response callbacks (together with the action server's reentrant callback
+    group -- see the module docstring).
+    """
     rclpy.init(args=args)
     node = SemanticNavNode()
+    executor = MultiThreadedExecutor()
+    executor.add_node(node)
     try:
-        rclpy.spin(node)
+        executor.spin()
     finally:
+        executor.shutdown()
         node.destroy_node()
         rclpy.shutdown()
