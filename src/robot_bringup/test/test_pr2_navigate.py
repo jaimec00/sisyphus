@@ -982,6 +982,87 @@ def test_base_drives_under_wheel_commands():
         % (VX_COMMAND, max_travel))
 
 
+# -- Issue #137: rim-roller plant velocity fidelity THROUGH the ROS chain ------
+#
+# The #137 defect: a pure ``+vx`` command at or above ~0.14 m/s made the base
+# *stall* a few tenths of a metre in -- the wheels kept spinning at the full
+# commanded rate while the base body sat still (pure roller-against-floor
+# contact slip, NOT a command drop).  The cause was pinned to the vendored
+# MuJoCo 3.9.0 the ROS sim links: with the original 0.01 kg rim-roller mass the
+# 3.9 solver wedges the light-roller-between-heavy-bodies contact at the
+# nominal 0.002 s timestep, while MuJoCo 3.12 (the direct/Python path) holds
+# the same model.  Raising the roller mass (``_ROLLER_MASS`` 0.01 -> 0.16 kg,
+# ``robot_description.mjcf_model``) makes 3.9 deliver the commanded speed too.
+#
+# These thresholds are the post-fix empirical delivery through the *shipped*
+# chain (``/cmd_vel`` -> omni bridge -> ``base_velocity_controller`` ->
+# ``mujoco_ros2_control`` -> MuJoCo 3.9): measured 0.996x / 1.008x / 1.005x at
+# 0.10 / 0.14 / 0.20 m/s over 3 s, |dyaw| < 0.01 rad.  The floor of 0.85x
+# leaves margin below the measured ~1.0x while still failing the pre-fix stall
+# (which delivered ~0.2x and then froze).
+
+#: The speeds the #137 acceptance drives THROUGH the ROS chain (m/s).
+VX_FIDELITY_COMMANDS = (0.10, 0.14, 0.20)
+#: How long each fidelity drive is held (s).  >= 3 s so the pre-fix stall
+#: (which set in after ~1.5-2 s) is unambiguously inside the window.
+VX_FIDELITY_DRIVE_S = 3.0
+#: Minimum delivered fraction of the commanded speed (post-fix measured
+#: ~1.0x; the pre-fix stall delivered ~0.2x, so 0.85x separates them).
+MIN_VX_FIDELITY_RATIO = 0.85
+#: Bounded-yaw ceiling for the fidelity drives (rad).  A faithful drive is
+#: straight (|dyaw| < 0.01 measured); the pre-fix contact slip whirled the
+#: base, so this must stay well under a quarter turn.
+MAX_VX_FIDELITY_DYAWR = 0.30
+
+
+@pytest.mark.parametrize('vx', VX_FIDELITY_COMMANDS)
+def test_base_delivers_commanded_vx_through_the_ros_chain(vx):
+    """Pure ``+vx`` delivers ~1.0x through the shipped chain (#137, R4).
+
+    Drives ``+vx`` at 0.10 / 0.14 / 0.20 m/s for >= 3 s **through the full ROS
+    chain** (the shipped ``mujoco.launch.py``: sim + controllers + Nav2 layer)
+    from a **fresh sim session per speed** (each probe gets its own process and
+    ROS domain -- the same isolation contract as ``_drive_probe``), and asserts
+    the ground-truth ``GetBodyState('base_link')`` displacement delivers the
+    commanded speed (>= ``MIN_VX_FIDELITY_RATIO`` x) with bounded yaw.
+
+    This is the #137 regression: the pre-fix vendored-3.9 plant stalled at
+    ~0.14 m/s and above (dx ~= 0.2x of commanded, then frozen while the wheels
+    spun), and the roller-mass fix makes 3.9 deliver ~1.0x.  Asserting speed
+    (not just direction) is what ``test_base_drives_under_wheel_commands``
+    deliberately does not do.
+    """
+    if not _have_package('mujoco_ros2_control'):
+        pytest.skip(
+            'mujoco_ros2_control (dfki-ric, source-build via robot.repos, D33) '
+            'is not installed; the drive acceptance needs the live sim. '
+            'Build it with: `vcs import src < robot.repos && pixi run build`.')
+
+    # Its own domain per speed (base + 4 + index): the open-loop test holds
+    # NAV2_DOMAIN_ID and +1, the direction regression +2, the convergence test
+    # +3, and each launch needs its own FastDDS shared-memory port namespace.
+    domain = NAV2_DOMAIN_ID + 4 + VX_FIDELITY_COMMANDS.index(vx)
+    dx, _, dyaw, max_travel = _drive_probe(
+        vx, 0.0, VX_FIDELITY_DRIVE_S, domain)
+    delivered = dx / (vx * VX_FIDELITY_DRIVE_S)
+    print('[pr2-nav] vx fidelity +vx=%.2f: dx=%.3f delivered=%.3fx dyaw=%.3f '
+          'max_travel=%.3f' % (vx, dx, delivered, dyaw, max_travel))
+
+    assert delivered >= MIN_VX_FIDELITY_RATIO, (
+        '#137 regression: pure +vx=%.2f over %.0f s through the ROS chain '
+        'delivered only %.3fx of the commanded speed (dx=%.3f m, expected '
+        '>= %.2fx) -- the base stalled (rim-roller contact slip in the vendored '
+        'MuJoCo 3.9, wheels spinning while the body sits still)'
+        % (vx, VX_FIDELITY_DRIVE_S, delivered, dx, MIN_VX_FIDELITY_RATIO))
+    assert abs(dyaw) <= MAX_VX_FIDELITY_DYAWR, (
+        '#137 regression: pure +vx=%.2f turned dyaw=%.3f rad (expected '
+        '|dyaw| <= %.2f) -- the base is whirling rather than driving straight'
+        % (vx, dyaw, MAX_VX_FIDELITY_DYAWR))
+    assert max_travel >= MIN_INTERMEDIATE_DELTA, (
+        '#137 regression: pure +vx=%.2f never displaced (max travel %.3f m) -- '
+        'not a drive' % (vx, max_travel))
+
+
 def test_navigate_to_pose_drives_forward():
     """#127 DIRECTION regression: a straight-ahead goal drives the base FORWARD.
 
