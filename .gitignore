@@ -36,4 +36,5 @@ node/
 # captured in robot.repos, not by vendoring the trees into this repo.
 src/mujoco_vendor/
 src/mujoco_ros2_control/
+src/mujoco/
 MUJOCO_LOG.TXT

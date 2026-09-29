@@ -13,16 +13,19 @@
 # LIBRARY_PATH from pixi.toml activation.env) into the installed RPATH fixes
 # that regardless of LD_LIBRARY_PATH.
 #
-# dfki-ric's MuJoCo is fetched and built from source (FetchContent, 3.9.0), so
-# no mujoco_vendor or NEVER_VENDOR flag applies to the C++ sim path. The conda
-# mujoco 3.12.0 in pixi.toml is only for the Python MJCF derivation.
+# dfki-ric's MuJoCo is fetched and built from source (FetchContent), so
+# no mujoco_vendor or NEVER_VENDOR flag applies to the C++ sim path. Since
+# #139 it is pinned to MuJoCo 3.12.0 (see decisions.md D38): the vendored
+# CMakeLists still says GIT_TAG 3.9.0, but pixi.toml's `build` task sets
+# FETCHCONTENT_SOURCE_DIR_MUJOCO to the vcs-imported src/mujoco/ checkout, so
+# the same 3.12.0 the conda mujoco (Python MJCF derivation) uses is built.
 build:
   cmake-args:
     - -DBUILD_TESTING=OFF
     - -DCMAKE_INSTALL_RPATH_USE_LINK_PATH=TRUE
     - -DCMAKE_BUILD_TYPE=Release
 #
-# MUJOCO_BUILD_EXAMPLES=OFF (PR2, issue #124): MuJoCo 3.9.0 builds its
+# MUJOCO_BUILD_EXAMPLES=OFF (PR2, issue #124): MuJoCo builds its
 # sample programs (basic/compile/record/...) when MUJOCO_BUILD_EXAMPLES is
 # ON (its default); those samples include glfw3.h -> <GL/gl.h>, which is
 # not on the compiler include path in this env, so the build fails after
