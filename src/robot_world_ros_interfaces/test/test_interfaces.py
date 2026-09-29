@@ -125,3 +125,27 @@ def test_remove_object_round_trips():
     response.error = ''
     assert response.success is True
     assert response.error == ''
+
+
+def test_set_start_location_request_and_response_fields():
+    """``SetStartLocation`` carries a location request, success/error back."""
+    from robot_world_ros_interfaces.srv import SetStartLocation
+    request = SetStartLocation.Request()
+    assert hasattr(request, 'location')
+    response = SetStartLocation.Response()
+    assert hasattr(response, 'success')
+    assert hasattr(response, 'error')
+
+
+def test_set_start_location_round_trips():
+    """The request's location and the response's status round-trip verbatim."""
+    from robot_world_ros_interfaces.srv import SetStartLocation
+    request = SetStartLocation.Request()
+    request.location = 'kitchen'
+    assert request.location == 'kitchen'
+
+    response = SetStartLocation.Response()
+    response.success = True
+    response.error = ''
+    assert response.success is True
+    assert response.error == ''

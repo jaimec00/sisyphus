@@ -36,6 +36,7 @@ setup(
             'map_node = robot_nav.map_node:main',
             'ground_truth_odom = robot_nav.ground_truth_odom:main',
             'omni_base_controller = robot_nav.omni_base_controller:main',
+            'semantic_nav = robot_nav.semantic_nav:main',
         ],
     },
 )

@@ -24,6 +24,7 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "srv/UpdateObjectPose.srv"
   "srv/AddObject.srv"
   "srv/RemoveObject.srv"
+  "srv/SetStartLocation.srv"
   DEPENDENCIES geometry_msgs
 )
 

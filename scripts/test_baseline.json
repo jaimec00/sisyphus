@@ -4,15 +4,16 @@
     "_workspace_tooling": 196,
     "robot_backends": 113,
     "robot_brain": 57,
-    "robot_bringup": 13,
+    "robot_bringup": 14,
     "robot_description": 73,
     "robot_mcp": 102,
-    "robot_nav": 28,
+    "robot_nav": 36,
+    "robot_nav_interfaces": 4,
     "robot_perception": 0,
     "robot_safety": 176,
     "robot_skills": 106,
-    "robot_world": 61,
-    "robot_world_ros": 8,
-    "robot_world_ros_interfaces": 8
+    "robot_world": 68,
+    "robot_world_ros": 11,
+    "robot_world_ros_interfaces": 10
   }
 }

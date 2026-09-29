@@ -1,0 +1,18 @@
+# Record the location the robot comes up at (a nav-driven scene update).
+#
+# This is NOT perception (invariant 4): a nav skill originates it when the base
+# arrives at a location, so it updates the world's ``start_location`` only.  It
+# is a named location, never a raw pose -- the locations map is the
+# human-curated scene infrastructure, so the write stays semantic (D35/R3).
+# Refused (success=false) for an unknown location name: the scene is untouched,
+# and the refusal lists the known locations.
+string location
+---
+# success=true means the write committed atomically to disk; error is empty.
+# success=false means the write did NOT durably commit. As with the object
+# writes, the reason is in error: the store refused the input and left the
+# scene unchanged (an unknown location), or the atomic disk write failed and
+# the change is held in the store's memory to be re-written on the next
+# mutation (robot_world's dirty-flag design, D23) -- not "rejected".
+bool success
+string error
