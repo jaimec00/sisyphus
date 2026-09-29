@@ -4,10 +4,15 @@
 #
 # PR8b probe (issue #92): MuJoCo sim source-built via dfki-ric/mujoco_ros2_control
 # (jazzy branch, pinned). dfki-ric is a DISTINCT implementation from the
-# ros-controls org: it vendors its own MuJoCo 3.9.0 via FetchContent (builds
-# from source; distinct libmujoco SONAME, coexists with the conda mujoco 3.12.0
-# the Python derivation uses), loads the MJCF synchronously in configure
-# (sidesteps the ros-controls std::bad_alloc), and reads URDF <mimic> natively.
+# ros-controls org: it FetchContent-builds MuJoCo from source, loads the MJCF
+# synchronously in configure (sidesteps the ros-controls std::bad_alloc), and
+# reads URDF <mimic> natively.
+#
+# #139: the FetchContent MuJoCo is pinned to **3.12.0** (the `mujoco` repo
+# below), matching the conda mujoco the Python derivation uses -- the 3.9/3.12
+# version split is gone. The vendored CMakeLists still hardcodes GIT_TAG 3.9.0,
+# but `FETCHCONTENT_SOURCE_DIR_MUJOCO` (set in pixi.toml's `build` task) points
+# FetchContent at this checkout instead of cloning. See decisions.md D38.
 # It needs NO separate mujoco_vendor. Per the R-PR8b probe, actuator types are
 # <velocity> for the wheels and <position kp> (no dampratio) for position
 # joints -- what dfki-ric's PRM-based classifier recognizes.
@@ -17,3 +22,10 @@ repositories:
     type: git
     url: https://github.com/dfki-ric/mujoco_ros2_control.git
     version: f151b7df9ee366fd6a93ee760652d3d809a5f788
+  # MuJoCo 3.12.0 source tree, consumed by the sim's FetchContent via
+  # FETCHCONTENT_SOURCE_DIR_MUJOCO (pixi.toml `build`). Commit == the 3.12.0 tag.
+  # Has no submodules, so a plain vcs import clone is complete.
+  mujoco:
+    type: git
+    url: https://github.com/google-deepmind/mujoco.git
+    version: 13827e9ee56f097f57acf69ae52b078f9839682d

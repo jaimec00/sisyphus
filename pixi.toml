@@ -64,19 +64,59 @@ ros-jazzy-nav2-lifecycle-manager = ">=1.3.12,<2"
 #   mujoco_ros2_control             (likely source-build via robot.repos)
 
 [tasks]
+# Ensure the vcs-imported MuJoCo 3.12 checkout is invisible to colcon for every
+# verb (see the note before `build`).  Idempotent; a no-op before `vcs import`.
+ensure-mujoco-ignore = "[ -d src/mujoco ] && touch src/mujoco/COLCON_IGNORE || true"
 # colcon does NOT expand the repo-root colcon_defaults.yaml on its own
 # (verified PR2/issue #124: COLCON_DEFAULTS_FILE is set but the build:/
 # package: cmake-args are not applied, BUILD_TESTING stays ON).  So the
 # vendored mujoco_ros2_control flags it holds are passed explicitly here.
-# muJoCo 3.9.0 otherwise builds its glfw sample programs, which fail on
-# the env's missing GL/gl.h.  BUILD_TESTING=OFF + RPATH are the PR8b
-# flags the defaults file documents.
-build = "colcon build --symlink-install --cmake-args -DBUILD_TESTING=OFF -DCMAKE_INSTALL_RPATH_USE_LINK_PATH=TRUE -DCMAKE_BUILD_TYPE=Release -DMUJOCO_BUILD_EXAMPLES=OFF"
+# MuJoCo otherwise builds its glfw sample programs (MUJOCO_BUILD_EXAMPLES
+# default ON), which fail on the env's missing GL/gl.h.  BUILD_TESTING=OFF +
+# RPATH are the PR8b flags the defaults file documents.
+#
+# FETCHCONTENT_SOURCE_DIR_MUJOCO (issue #139): the vendored
+# mujoco_ros2_control CMakeLists hardcodes `GIT_TAG 3.9.0` for its FetchContent
+# MuJoCo; this override makes FetchContent use the vcs-imported 3.12.0 checkout
+# at src/mujoco/ instead of cloning, so the ROS sim links 3.12.0 like the
+# Python path (see decisions.md D38). pixi runs tasks from the project root and
+# expands a *plain* `$PWD` (but NOT a braced `${PWD}` -- verified empirically),
+# so `$PWD/src/mujoco` resolves to the worktree's src/mujoco; the flag is a
+# harmless unused cache var for the non-mujoco packages.
+#
+# `ensure-mujoco-ignore` (issue #139): colcon scans src/ and finds upstream
+# MuJoCo's own top-level CMakeLists as a workspace package (`mujoco`, type
+# cmake).  Left alone it would (a) be built standalone with upstream defaults
+# -- bundled glfw -> the GL/gl.h failure MUJOCO_BUILD_EXAMPLES=OFF does not
+# cover, the simulate lib itself pulls glfw_adapter.cc -- and (b) shadow the
+# *conda* `mujoco` that robot_description's <exec_depend>mujoco</exec_depend>
+# refers to, making colcon demand a (non-existent) workspace build of it in
+# every verb, including the `colcon test` inside `pixi run test` (where a
+# --packages-ignore on the `build` task alone cannot help).  Marking the
+# checkout COLCON_IGNORE removes it from package discovery for every verb.  The
+# marker is created by `ensure-mujoco-ignore` because src/mujoco/ is gitignored,
+# and only when the dir exists, so it is a no-op before `vcs import`.  src/mujoco
+# exists ONLY as the FetchContent override source; mujoco_ros2_control builds
+# the source itself with MUJOCO_SIMULATE_USE_SYSTEM_GLFW=ON (its vendored
+# CMakeLists FORCEs that).
+#
+# -DCMAKE_CXX_FLAGS=-I$PWD/src/mujoco/simulate (issue #139): the vendored
+# CMakeLists reaches the simulate headers through a GLOBAL include_directories()
+# entry pointing at $<build>/_deps/mujoco-src/simulate.  Under the FetchContent
+# override that path no longer exists (the source is at src/mujoco), and the
+# target interface does NOT cover every TU: simulate_gui's dependency on
+# mujoco::platform_ui_adapter is PRIVATE, so it does not propagate simulate/ to
+# mujoco_ros2_control_plugin.cpp, which reaches simulate_gui.hpp -> <simulate.h>
+# transitively.  Restore exactly the include path the vendored CMakeLists
+# intended, repointed at the override source.  Both header sets are 3.12.0 now,
+# so this carries no shadowing risk (the old header-shadow patch stayed
+# obsolete, per D38).
+build = { cmd = "colcon build --symlink-install --cmake-args -DBUILD_TESTING=OFF -DCMAKE_INSTALL_RPATH_USE_LINK_PATH=TRUE -DCMAKE_BUILD_TYPE=Release -DMUJOCO_BUILD_EXAMPLES=OFF -DFETCHCONTENT_SOURCE_DIR_MUJOCO=$PWD/src/mujoco -DCMAKE_CXX_FLAGS=-I$PWD/src/mujoco/simulate", depends-on = ["ensure-mujoco-ignore"] }
 # `colcon test` reports success for a package that collected zero tests, and
 # `colcon test-result` hides such a result unless --all is passed. This driver
 # runs colcon (plus the workspace-tooling suite), surfaces every result, and
 # fails if any package produced no tests -- see scripts/check_test_integrity.py.
-test = { cmd = "python scripts/check_test_integrity.py", depends-on = ["check-provisioning"] }
+test = { cmd = "python scripts/check_test_integrity.py", depends-on = ["check-provisioning", "ensure-mujoco-ignore"] }
 # Front-run the suite with the un-provisioned-worktree check: a missing
 # `install-openclaw` is otherwise six opaque robot_brain failures at the end of
 # a full colcon run. pixi aborts `test` and propagates the exit code when a
