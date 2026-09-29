@@ -30,14 +30,17 @@ Manager: worktree-manager (i141). Worktree: `/home/sisyphus/worktrees/i141-drop-
   a genuine design fork -> STOP, escalate to the manager (do not keep 0.16).
 
 ## Open questions / escalations
-None yet — pending the empirical fidelity-regression result on the 3.12 sim.
+**ESCALATED — design fork.** The "plain value edit" branch fails (see `red_team.md`):
+0.01 kg slips on the 3.12 ROS chain (0.666x at 0.20 m/s) while holding on the
+3.12 direct path (1.0x) and while 0.16 kg holds on the ROS chain (1.0x). The
+#138 premise ("3.9-only solver delta") is incomplete. Fix direction undetermined.
 
 ## Loop state
 - [x] Worktree created @ c0568e4 (latest origin/main).
 - [x] Provisioned: `pixi install` + `pixi run install-openclaw` (OpenClaw 2026.9.6).
-- [ ] Build (with `src/mujoco` + `src/mujoco_ros2_control` @ pinned commits).
-- [ ] Implement (value + comment).
-- [ ] Fidelity regression (0.10/0.14/0.20 through ROS chain) — the acceptance gate.
-- [ ] Red-team (read-only, N+1).
-- [ ] Test-runner full `pixi run test`.
-- [ ] PR (squash-merge), report "ready".
+- [x] Build (with `src/mujoco` + `src/mujoco_ros2_control` @ pinned commits; 3.12.0 link verified).
+- [x] Implement (value 0.16->0.01 + comment update; commits fca738e, f8d8fb2).
+- [x] Fidelity regression (0.10/0.14/0.20 through ROS chain) — **0.20 m/s FAILS (0.666x)**.
+- [x] Red-team / debug (read-only; direct-path + 0.16 kg + impratio probes) — `red_team.md`.
+- [ ] Test-runner full `pixi run test` — **not run** (moot: acceptance branch failed).
+- [ ] PR — **do NOT open/merge**; escalate instead.
