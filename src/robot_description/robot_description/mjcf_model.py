@@ -144,25 +144,15 @@ _HUB_RADIUS = 0.040
 #: (and visual) only.
 _HUB_CONTYPE = 0
 _HUB_CONAFFINITY = 0
-#: Roller barrel mass, kg.  Raised from the original 0.01 kg by issue #137:
-#: a 0.01 kg roller against the ~6 kg chassis is a numerically stiff
-#: light-body-between-heavy-bodies contact, and the *vendored MuJoCo 3.9.0*
-#: solver that the ROS sim links (dfki-ric FetchContent) cannot hold it at
-#: the nominal 0.002 s timestep -- the base ramps to ~0.4 m then STALLS dead
-#: while the wheels keep spinning at full commanded rate (contact slip, not a
-#: command drop; reproduced with the vendored 3.9 library alone, no ROS).
-#: MuJoCo 3.12 (the direct/Python path) holds the same model fine, so this is
-#: a solver-generation delta, not a controller-interleave bug (see
-#: ``docs/features/i137-rim-roller-contact-numerics/implementation.md``).
-#: 0.16 kg (16x) is a deliberately INTERIOR retune: under the shipped
-#: ``_drive`` protocol 3.9 delivers ~1.0x for every mass from 0.02 to 0.20
-#: (the original 0.01 is the one narrow chaotic pocket that wedges), so 0.16
-#: has margin on both sides.  Measured on the vendored 3.9 lib: ~1.0x from
-#: 0.02 to 0.60 m/s and out to 10 s.  The plant then also delivers ~1.0x on
-#: 3.12 (direct) and through the shipped ROS chain, so the fix retunes ONE
-#: number with no mitigation and no version split.  Stay well above
-#: ``mjMINVAL``.
-_ROLLER_MASS = 0.16
+#: Roller barrel mass, kg.  The physical value — a real omniwheel barrel
+#: roller is grams.  #138 temporarily raised this 0.01 -> 0.16 kg to stabilize
+#: the light-roller-between-heavy-bodies contact against the then-vendored
+#: MuJoCo 3.9.0 solver (R9: a 3.9-vs-3.12 solver-generation delta).  The
+#: version split is now resolved (#139/#140 merged — the ROS sim links MuJoCo
+#: 3.12.0, D38), so the workaround is dropped and the honest 0.01 kg restored
+#: (issue #141).  The inertia below recomputes from this mass, so a retune
+#: cannot leave a stale tensor.  Stay well above ``mjMINVAL``.
+_ROLLER_MASS = 0.01
 #: Roller barrel inertia: solid cylinder about its barrel axis (I_AXIS) and
 #: transverse to it (I_TRANS), from the mass/dimensions above so a retune
 #: cannot leave a stale tensor behind.
