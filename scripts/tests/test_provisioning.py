@@ -135,7 +135,13 @@ def test_the_test_task_runs_the_guard_before_the_suite():
         tasks = tomllib.load(handle)['tasks']
 
     assert tasks['check-provisioning'].endswith('check_provisioning.py')
-    assert tasks['test']['depends-on'] == ['check-provisioning']
+    # The guard must be the FIRST dependency (it is the fail-fast); other
+    # pre-suite prep steps may follow it (e.g. #139's ensure-mujoco-ignore,
+    # which marks the vcs-imported MuJoCo checkout COLCON_IGNORE before
+    # `colcon test` runs).  `test-audit` must not grow any.
+    depends_on = tasks['test']['depends-on']
+    assert depends_on and depends_on[0] == 'check-provisioning', depends_on
+    assert 'check-provisioning' in depends_on
     assert isinstance(tasks['test-audit'], str), (
         'test-audit gained a dependency it does not need')
 
