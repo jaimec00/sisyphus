@@ -182,6 +182,7 @@ def body_to_wheel(vx: float, vy: float, wz: float,
         for row in _IK_MATRIX
     )
 
+
 #: Default linear acceleration limit, m/s^2 (issue #141).  The verified no-tip
 #: band for the shipped ROS loop is R >= ~0.03-0.05 s, i.e. <= ~4.0-6.7 m/s^2
 #: at the 0.20 m/s acceptance speed; 4.0 m/s^2 is the conservative end of that
