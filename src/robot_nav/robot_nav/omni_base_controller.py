@@ -86,9 +86,36 @@ layer, D17, is out of scope here; this is a minimal local guard.)
 A keep-alive re-publish at ``publish_rate`` also re-sends the last command, so
 the group controller (which expects a fresh command each cycle) does not time
 out between ``cmd_vel`` messages.
+
+Acceleration limit (issue #141)
+-------------------------------
+A ``cmd_vel`` Twist is a *velocity* command, and an unramped one steps the
+wheels 0 -> full rate in a single tick.  In the shipped ROS loop (MuJoCo
+3.12.0, ``_ROLLER_MASS=0.01``) that sharp step tips the tall, top-heavy chassis
+forward onto its nose: the free-jointed base pitches 0 -> +1.21 rad (~69 deg)
+over ~1.2 s, then locks nose-down with the wheels free-spinning airborne, so
+the base delivers only ~0.5x of the commanded speed (issue #141; the earlier
+#138 "roller-contact slip" reading was refuted -- the model is byte-identical
+and the direct path never tips).
+
+The fix is a **trapezoidal ramp on the commanded body velocity** at this seam:
+the commanded ``(vx, vy, wz)`` is slewed toward the target Twist at
+``max_accel`` (linear, m/s^2) and ``max_angular_accel`` (rad/s^2) rather than
+jumping there.  This is a *physical* parameter -- a real base cannot teleport
+to speed -- and it is **not** a magnitude cap: the steady-state speed is
+unchanged (only the transient is shaped).  A ramp time of R >= ~0.03-0.05 s
+(``max_accel`` <= ~4-6.7 m/s^2 at 0.20 m/s) prevents the tip and restores
+~1.0x delivery; the default ``max_accel=4.0`` sits at the conservative end of
+that verified band.
+
+The timeout behaves symmetrically: on timeout the *target* becomes (0, 0, 0)
+and the ramp decelerates the wheels to rest over the same accel limit (jumping
+the wheels to zero instantly would be the same sharp step in reverse).
 """
 
 from __future__ import annotations
+
+import math
 
 from geometry_msgs.msg import Twist
 import rclpy
@@ -96,7 +123,7 @@ from rclpy.node import Node
 from std_msgs.msg import Float64MultiArray
 
 __all__ = ['COMMAND_TOPIC', 'OmniBaseController', 'WHEEL_SIGN',
-           'WZ_SIGN', 'body_to_wheel']
+           'WZ_SIGN', 'body_to_wheel', 'ramp_velocity']
 
 #: The velocity group controller's command topic (PR8b ``controllers.yaml``).
 COMMAND_TOPIC = '/base_velocity_controller/commands'
@@ -156,6 +183,52 @@ def body_to_wheel(vx: float, vy: float, wz: float,
     )
 
 
+#: Default linear acceleration limit, m/s^2 (issue #141).  The verified no-tip
+#: band for the shipped ROS loop is R >= ~0.03-0.05 s, i.e. <= ~4.0-6.7 m/s^2
+#: at the 0.20 m/s acceptance speed; 4.0 m/s^2 is the conservative end of that
+#: band (a 0.05 s ramp to 0.20 m/s).
+DEFAULT_MAX_ACCEL = 4.0
+#: Default angular acceleration limit, rad/s^2 (issue #141).  There is no
+#: measured no-tip bound for yaw (the fidelity regression drives pure ``+vx``,
+#: so wz is zero throughout and this value does not affect it); it is set to
+#: ``DEFAULT_MAX_ACCEL / BASE_RADIUS`` -- the linear limit expressed at the
+#: wheel-contact radius -- as a simple, defensible, *documented* choice rather
+#: than an arbitrary number.
+DEFAULT_MAX_ANGULAR_ACCEL = DEFAULT_MAX_ACCEL / BASE_RADIUS
+
+
+def ramp_velocity(current: tuple[float, float, float],
+                  target: tuple[float, float, float],
+                  max_accel: float,
+                  max_angular_accel: float,
+                  dt: float) -> tuple[float, float, float]:
+    """Slew ``current`` toward ``target`` respecting per-axis accel limits.
+
+    Pure function (unit-testable without a graph).  Each linear component
+    (``vx``, ``vy``) may change by at most ``max_accel * dt`` this tick, and the
+    angular component (``wz``) by at most ``max_angular_accel * dt``; a
+    component already within one step of its target snaps exactly onto it (no
+    overshoot, no residual).  A non-positive ``dt`` returns ``current``
+    unchanged (so a degenerate timer period cannot produce NaN or a jump).
+
+    This is the issue #141 ramp: applied every controller tick between the
+    commanded Twist and the holonomic IK, it turns a velocity *step* into a
+    trapezoidal command, which is what stops the base from tipping.
+    """
+    if dt <= 0.0:
+        return current
+    limits = (max_accel, max_accel, max_angular_accel)
+    out = []
+    for cur, tgt, limit in zip(current, target, limits):
+        step = limit * dt
+        delta = tgt - cur
+        if abs(delta) <= step:
+            out.append(tgt)
+        else:
+            out.append(cur + math.copysign(step, delta))
+    return (out[0], out[1], out[2])
+
+
 class OmniBaseController(Node):
     """Convert ``/cmd_vel`` Twists into ``/base_velocity_controller/commands``.
 
@@ -165,6 +238,12 @@ class OmniBaseController(Node):
       in Hz (the group controller expects a fresh command every cycle).
     * ``cmd_vel_timeout`` (double, default 0.5) -- seconds without a
       ``/cmd_vel`` message after which the wheels are commanded zeros.
+    * ``max_accel`` (double, default 4.0) -- linear acceleration limit, m/s^2,
+      for the commanded body velocity (issue #141; the trapezoidal ramp that
+      stops the base tipping on a step command).
+    * ``max_angular_accel`` (double, default ``max_accel / BASE_RADIUS``,
+      ~32.0 rad/s^2) -- angular acceleration limit, rad/s^2, for the commanded
+      yaw rate.
     * ``cmd_vel_topic`` (string, default ``cmd_vel``) -- the Twist topic.
     * ``command_topic`` (string, default
       ``/base_velocity_controller/commands``) -- the wheel command topic.
@@ -175,6 +254,8 @@ class OmniBaseController(Node):
         super().__init__('omni_base_controller')
         self.declare_parameter('publish_rate', 50.0)
         self.declare_parameter('cmd_vel_timeout', 0.5)
+        self.declare_parameter('max_accel', DEFAULT_MAX_ACCEL)
+        self.declare_parameter('max_angular_accel', DEFAULT_MAX_ANGULAR_ACCEL)
         self.declare_parameter('cmd_vel_topic', CMD_VEL_TOPIC)
         self.declare_parameter('command_topic', COMMAND_TOPIC)
 
@@ -186,6 +267,18 @@ class OmniBaseController(Node):
         if self._timeout <= 0.0:
             raise ValueError(
                 f'cmd_vel_timeout must be positive, got {self._timeout}')
+        self._max_accel = (
+            self.get_parameter('max_accel').get_parameter_value().double_value)
+        if self._max_accel <= 0.0:
+            raise ValueError(
+                f'max_accel must be positive, got {self._max_accel}')
+        self._max_angular_accel = (
+            self.get_parameter('max_angular_accel')
+            .get_parameter_value().double_value)
+        if self._max_angular_accel <= 0.0:
+            raise ValueError(
+                f'max_angular_accel must be positive, got '
+                f'{self._max_angular_accel}')
         cmd_topic = (
             self.get_parameter('cmd_vel_topic').get_parameter_value().string_value
             or CMD_VEL_TOPIC)
@@ -193,7 +286,12 @@ class OmniBaseController(Node):
             self.get_parameter('command_topic').get_parameter_value().string_value
             or COMMAND_TOPIC)
 
-        self._wheels = (0.0, 0.0, 0.0)
+        #: Nominal period of the keep-alive timer; the ramp steps per tick.
+        self._dt = 1.0 / rate
+        #: The commanded body Twist most recently received (the ramp target).
+        self._target = (0.0, 0.0, 0.0)
+        #: The ramped body Twist actually sent through the IK (the ramp state).
+        self._cur = (0.0, 0.0, 0.0)
         self._last_cmd_time = None
         self._zeroed = True
 
@@ -204,36 +302,43 @@ class OmniBaseController(Node):
         self.get_logger().info(
             f'omni_base_controller up: {cmd_topic} -> {command_topic} '
             f'(WHEEL_SIGN={WHEEL_SIGN:+.1f}, WZ_SIGN={WZ_SIGN:+.1f}, '
-            f'timeout={self._timeout:.2f}s)')
+            f'timeout={self._timeout:.2f}s, max_accel={self._max_accel:.2f} '
+            f'm/s^2, max_angular_accel={self._max_angular_accel:.2f} rad/s^2)')
 
     def _on_cmd_vel(self, msg: Twist) -> None:
-        """Convert an incoming Twist to wheel speeds and remember the time."""
-        self._wheels = body_to_wheel(
-            msg.linear.x, msg.linear.y, msg.angular.z)
+        """Record the incoming Twist as the ramp *target* and remember the time."""
+        self._target = (msg.linear.x, msg.linear.y, msg.angular.z)
         self._last_cmd_time = self.get_clock().now()
         if self._zeroed:
             self._zeroed = False
             self.get_logger().info('cmd_vel received; base control engaged')
 
     def _publish_wheels(self) -> None:
-        """Publish the (possibly zeroed) wheel speeds; keep the controller fed.
+        """Ramp toward the target, publish the wheel speeds, keep the controller fed.
 
         The keep-alive runs at ``publish_rate`` so the group controller always
         has a fresh command, and it substitutes zeros once
-        ``cmd_vel_timeout`` has elapsed since the last Twist.
+        ``cmd_vel_timeout`` has elapsed since the last Twist -- but as a
+        *target* that the ``max_accel``/``max_angular_accel`` ramp decelerates
+        toward, not an instant jump (issue #141).
         """
-        if self._last_cmd_time is not None:
-            age = (self.get_clock().now() - self._last_cmd_time).nanoseconds * 1e-9
-            if age > self._timeout:
-                if not self._zeroed:
-                    self._zeroed = True
-                    self.get_logger().warn(
-                        f'no cmd_vel for {age:.2f}s; zeroing the wheels')
-                wheels = (0.0, 0.0, 0.0)
-            else:
-                wheels = self._wheels
+        if (self._last_cmd_time is not None
+                and (self.get_clock().now() - self._last_cmd_time).nanoseconds
+                * 1e-9 <= self._timeout):
+            target = self._target
         else:
-            wheels = (0.0, 0.0, 0.0)
+            if self._last_cmd_time is not None and not self._zeroed:
+                self._zeroed = True
+                age = ((self.get_clock().now() - self._last_cmd_time).nanoseconds
+                       * 1e-9)
+                self.get_logger().warn(
+                    f'no cmd_vel for {age:.2f}s; zeroing the wheels')
+            target = (0.0, 0.0, 0.0)
+
+        self._cur = ramp_velocity(
+            self._cur, target, self._max_accel, self._max_angular_accel,
+            self._dt)
+        wheels = body_to_wheel(*self._cur)
 
         msg = Float64MultiArray()
         msg.data = [float(w) for w in wheels]
