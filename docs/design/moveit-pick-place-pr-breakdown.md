@@ -42,17 +42,18 @@ MoveIt does.
 ## The PRs
 
 ### PR1 — MoveIt deps + move_group bringup + planning scene
-- **Probe the real API first** (the open design question): the RoboStack coverage
-  preflight (2026-09-30) found MoveIt's *planning* stack is **NOT on the
-  RoboStack channel** — only `moveit-core`, `moveit-common`,
-  `moveit-configs-utils`, `moveit-hybrid-planning` (and the `moveit` umbrella)
-  are present; `moveit-ros-planning`, `moveit-ros-planning-interface`,
-  `moveit-planners-ompl`, `moveit-py`, `moveit-kinematics`, and `trac-ik` are
-  all absent. So MoveIt planning must be **source-built in-tree** (the D37 MPPI
-  pattern: vendored + scalar/patched build), OR a fuller moveit set found on
-  another channel. PR1 pins which, and records it.
-- Add the MoveIt dependency (source-build or channel) to `pixi.toml` and confirm
-  the env builds.
+- **MoveIt is on the RoboStack channel — added as pixi deps, not source-built.**
+  The full `ros-jazzy-moveit-*` planning stack is present (verified 2026-09-30):
+  `moveit-ros-planning`, `moveit-ros-planning-interface`, `moveit-ros-move-group`,
+  `moveit-planners-ompl`, `moveit-py`, `moveit-kinematics`, `moveit-setup-assistant`,
+  `moveit-simple-controller-manager`, `moveit-servo`, `moveit-task-constructor-*`.
+  Add them to `pixi.toml` and confirm the env builds. *(Correction: an earlier
+  preflight misused `pixi search --limit`, truncating the package list and wrongly
+  concluding a source-build was needed.)*
+- **IK solver:** TRAC-IK is the one genuine gap — it is **not** on the channel.
+  MoveIt's default **KDL** solver ships with `moveit-kinematics` (present), so
+  start with KDL; source-build TRAC-IK only if KDL's convergence proves
+  inadequate for SO-101's 5-DOF arm.
 - Author the MoveIt **SRDF** for the arm (planning group over the 5 arm DOF +
   gripper, end-effector link = gripper frame, per-side prefix).
 - Feed the planning scene from `robot_world` (D35): object poses + collision
@@ -84,9 +85,10 @@ PR1 ─► PR2 ─► PR3
 Sequential (same track). One dispatch slot.
 
 ## Open risks
-- **MoveIt source-build (PR1)** — the big one: the planning stack is missing
-  from RoboStack, so this is another vendored-build like D37's MPPI. The scope
-  and size of the source-build is the unknown.
+- **IK solver choice (PR1)** — TRAC-IK is not on RoboStack, so the arm starts on
+  MoveIt's default KDL solver; if KDL's iterative convergence is janky for the
+  SO-101 (a real possibility on 6-DOF arms), TRAC-IK is a source-build fallback
+  (a much smaller build than all of MoveIt).
 - **Execution path (PR2)** — whether dfki-ric's ROS-sim exposes a joint
   trajectory controller, or whether MoveIt drives the position controllers
   directly, is unproven.
