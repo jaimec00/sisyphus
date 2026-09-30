@@ -47,7 +47,7 @@ import time
 #: 117 world_launch, 119 bridge_e2e): move_group is long-lived, so it must not
 #: collide with anything else on the machine.
 MOVE_GROUP_DOMAIN_ID = '118'
-SERVICE_READY_TIMEOUT_S = 90.0
+SERVICE_READY_TIMEOUT_S = 180.0
 SERVICE_CALL_TIMEOUT_S = 30.0
 
 #: The planning groups the SRDF declares (R2).

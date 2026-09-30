@@ -38,8 +38,8 @@ import time
 #: Private ROS domain (112 tf_tree, 113 mujoco, 115 world_write, 117
 #: world_launch, 118 move_group): this stack runs three long-lived nodes.
 BRIDGE_E2E_DOMAIN_ID = '119'
-WORLD_READY_TIMEOUT_S = 60.0
-SCENE_OBJECT_TIMEOUT_S = 120.0
+WORLD_READY_TIMEOUT_S = 180.0
+SCENE_OBJECT_TIMEOUT_S = 180.0
 SERVICE_CALL_TIMEOUT_S = 20.0
 
 #: The seed's object ids the planning scene must contain (from robot_world).

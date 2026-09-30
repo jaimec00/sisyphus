@@ -7,6 +7,8 @@
     "robot_bringup": 18,
     "robot_description": 73,
     "robot_mcp": 102,
+    "robot_moveit": 7,
+    "robot_moveit_config": 5,
     "robot_nav": 43,
     "robot_nav_interfaces": 4,
     "robot_perception": 0,
