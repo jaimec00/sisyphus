@@ -12,7 +12,7 @@ planning scene from `robot_world`. **No arm motion** (PR2), **no pick-and-place*
 | `pixi.toml` | 8 × `ros-jazzy-moveit-*` (2.12.4) pinned; stale "unverified" TODO block replaced with a D39 note. |
 | `src/robot_moveit_config/` | NEW ament_python package: `config/sisyphus.srdf`, `kinematics.yaml`, `joint_limits.yaml`, `ompl_planning.yaml`, `.setup_assistant`, `launch/move_group.launch.py`, 6 tests. |
 | `src/robot_moveit/` | NEW ament_python package: `planning_scene_bridge` node, `scene_geometry.py` (R5 table), `world_to_scene.py` (pure transform), `launch/planning_scene_bridge.launch.py`, 10 tests. |
-| `scripts/test_baseline.json` | `robot_moveit_config: 5`, `robot_moveit: 7` (non-linter). |
+| `scripts/test_baseline.json` | `robot_moveit_config: 8`, `robot_moveit: 7` (non-linter; raised from 5 after the red-team fix pass added three planner/collision tests). |
 
 ## Acceptance criteria
 
@@ -121,9 +121,11 @@ everywhere.
 
 ## Test coverage (R10)
 
-- `robot_moveit_config` (non-linter 5): SRDF structure vs. R2/R3/R4; SRDF joint
+- `robot_moveit_config` (non-linter 8): SRDF structure vs. R2/R3/R4; SRDF joint
   sets vs. the expanded URDF; SRDF↔URDF name drift; launch structural check;
-  `move_group` headless + groups loaded via `/compute_ik`.
+  `move_group` headless + groups loaded via `/compute_ik`; **planner config
+  name resolves on the param server (R-fix3)**; **neutral pose collision free
+  (R-fix2)**; **`/plan_kinematic_path` returns SUCCESS with a trajectory**.
 - `robot_moveit` (non-linter 7): seed transform → CollisionObjects; unknown-label
   fallback; every table label builds a valid primitive; `diff_scene` removals;
   JSON round-trip; bridge launch structure; e2e objects-arrive poll.
@@ -142,3 +144,92 @@ Both new packages pass ament copyright/flake8/pep257.
 - The static TF is identity, which is only correct at the start pose; a moving
   base would make it wrong. That is the one place this PR is explicitly a
   foundation rather than a finished feature.
+
+## Red-team fix pass (2026-09-30) — 2 BLOCKs fixed
+
+The red-team pass VERIFIED two blockers. Both are fixed here, with a regression
+assertion each so neither can ship green again.
+
+### BLOCK 1 — OMPL planner config names did not exist (fixed)
+
+`config/ompl_planning.yaml` selected `RRTConnectkConfigDefault` /
+`RRTstarkConfigDefault` / `PRMkConfigDefault`. Those names are NOT defined by
+the shipped `moveit_configs_utils` `default_configs/ompl_defaults.yaml`, which
+defines `RRTConnect` / `RRTstar` / `PRM` (no `kConfigDefault` suffix) — the
+suffix is a Setup-Assistant / `moveit_resources` naming convention, not a
+move_group one. move_group therefore logged
+`Could not find the planner configuration 'RRTConnectkConfigDefault' on the
+param server` on every launch (VERIFIED: 5 such lines in the pre-fix launch
+log), `/get_planner_params` returned empty, and `/plan_kinematic_path` failed
+with `error_code=99999`, 0 trajectory points.
+
+Fix: the `default_planner_config` + `planner_configs` entries now name the
+shipped keys (`RRTConnect`, `RRTstar`, `PRM`). Verified (VERIFIED empirically,
+live):
+- param server: `ompl.left_arm.default_planner_config = RRTConnect`,
+  `ompl.right_arm.default_planner_config = RRTConnect`, and
+  `ompl.planner_configs.{RRTConnect,RRTstar,PRM}.type` = `geometric::*`.
+- `/plan_kinematic_path` (left_arm, short joint-space move): `error_code=1`
+  (SUCCESS), 12 trajectory points, 0.079 s.
+- launch log: 0 `Could not find the planner configuration` lines.
+
+Note on the mechanism (kept in the file's comment): `MoveItConfigsBuilder`
+loads `ompl_planning.yaml`, and because that file has no top-level
+`planner_configs` key, `planning_pipelines()` merges the package's
+`ompl_defaults.yaml` in; `MoveItConfigs.to_dict()` then flattens the whole
+pipeline to a top-level `ompl` namespace. So the parameters move_group receives
+are `ompl.planner_configs.*` and `ompl.<group>.*`.
+
+### BLOCK 2 — SRDF had no `<disable_collisions>`; neutral pose self-collided (fixed)
+
+`sisyphus.srdf` shipped 0 `<disable_collisions>`, so MoveIt checked every link
+pair and the neutral (all-zeros) pose self-collided. VERIFIED pre-fix:
+`/check_state_validity` returned `valid=False` with **8 contacts per side**,
+exactly:
+
+```
+<side>_shoulder_link        <-> <side>_shoulder_pitch_link
+<side>_shoulder_pitch_link  <-> <side>_upper_arm_link
+<side>_upper_arm_link       <-> <side>_lower_arm_link
+<side>_lower_arm_link       <-> <side>_wrist_link
+<side>_wrist_link           <-> <side>_wrist_roll_link
+<side>_gripper_base_link    <-> <side>_wrist_roll_link
+<side>_gripper_base_link    <-> <side>_wrist_link
+<side>_gripper_lower_tip_link <-> <side>_gripper_upper_tip_link
+```
+
+(Identical set for both arms; the red-team's "column_rail_link – column_top"
+line was a second, differently-scoped probe.)
+
+Fix: 43 `<disable_collisions>` entries added to `sisyphus.srdf`, all with an
+explicit `reason` code and a header comment naming the provenance:
+- the 8 measured contacts per side (adjacent chain joints = `Adjacent`; the
+  skip-1 and jaw-tip pairs = `Default`/`Never`);
+- the remaining standard adjacent pairs for the same chain, disabled
+  pre-emptively so a commanded pose cannot trip an adjacency contact the
+  neutral pose happens not to show (e.g. `shoulder_link`↔`column_top`);
+- the jaws on the gripper base and each jaw to its fixed tip link (`Never`);
+- the body pairs (`column_rail_link`↔`column_top` `Adjacent`,
+  `base_link`↔`base_chassis_link` `Adjacent`, `base_link`↔`base_footprint`
+  `Never`) and a minimal left↔right cross-side set (`Default`).
+
+Verified (VERIFIED empirically, live): `/check_state_validity` on the neutral
+pose now returns `valid=True`, 0 contacts, for both arms.
+
+### R-fix3 — regression assertions (added)
+
+`test_move_group_launch.py` gained three tests (see the updated R10 test list
+above). The planner one is the direct guard for BLOCK 1: it reads
+`ompl.<group>.default_planner_config` off the live param server, asserts it is
+non-empty and present in `ompl.<group>.planner_configs`, and asserts every
+selected name resolves to a non-empty `ompl.planner_configs.<name>.type` —
+with the old typo `RRTConnectkConfigDefault` as a negative control (it must NOT
+resolve). Two discrimination notes found while writing it: `/get_parameters`
+returns an undefined parameter as `NOT_SET` with an empty string (so "exists"
+must be tested as "STRING with a non-empty value"), and
+`ParameterValue.type` is a plain int while `Parameter.Type` is a non-IntEnum
+(so the comparison uses `.value`).
+
+The neutral-pose and `/plan_kinematic_path` tests guard BLOCK 2 and BLOCK 1
+end-to-end respectively. `scripts/test_baseline.json` raised
+`robot_moveit_config` 5 → 8.

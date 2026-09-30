@@ -94,3 +94,15 @@ hand-authored SRDF needs no GUI generator).
    `/get_planning_scene` until the seed objects appear as collision objects.
 All non-skipping; follow `test_world_launch.py`'s private-domain + killpg
 pattern. Commit `scripts/test_baseline.json` when the floor rises.
+
+## Red-team verdict (i145-redteam, 2026-09-30) — 2 BLOCKs, 2 NOTEs
+- Acceptance #1 (move_group headless + SRDF group loads) PASS (VERIFIED); #2 (planning_scene_bridge populates scene) PASS (VERIFIED).
+- CPU busy-wait + teardown-leak: NOT reproduced (monitoring artifacts, not node defects).
+- **BLOCK 1 (VERIFIED):** OMPL planner config names in `config/ompl_planning.yaml` (`RRTConnectkConfigDefault` / `RRTstarkConfigDefault` / `PRMkConfigDefault`) do not exist — the merged `ompl_defaults.yaml` defines them WITHOUT the `kConfigDefault` suffix (`RRTConnect`/`RRTstar`/`PRM`). `move_group` errors on every launch; `/plan_kinematic_path` → error 99999, 0 points. No test asserts planner availability, so suite stays green.
+- **BLOCK 2 (VERIFIED):** SRDF ships no `<disable_collisions>`; neutral (all-zero) pose self-collides (8 contacts, incl column_rail_link-column_top) → `CheckStartStateCollision` rejects every plan.
+- NOTE: `future.result()` re-raises on exception (timeout guard only covers hang). NOTE: e2e doesn't assert planner availability.
+
+## Fix rulings (Sisyphus driving the loop directly — manager died)
+- R-fix1: make ompl_planning.yaml planner names consistent with the shipped ompl_defaults.yaml (probe it first; rename references OR ship a consistent ompl_defaults.yaml). Verify /get_planner_params non-empty + /plan_kinematic_path no longer fails on missing-planner.
+- R-fix2: add <disable_collisions> to sisyphus.srdf for the self-colliding pairs + standard adjacent pairs. Verify /check_state_validity neutral pose → valid.
+- R-fix3: add a regression assertion that the default_planner_config name resolves on the param server.
