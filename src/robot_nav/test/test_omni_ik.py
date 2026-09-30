@@ -24,10 +24,12 @@ hand-written constants cannot pass.
 import math
 
 import numpy as np
+import pytest
 
 from robot_nav.omni_base_controller import (
     BASE_RADIUS,
     body_to_wheel,
+    ramp_velocity,
     WHEEL_RADIUS,
     WHEEL_SIGN,
     WZ_SIGN,
@@ -166,3 +168,73 @@ def test_scaling_is_linear_in_the_twist():
     single = np.array(body_to_wheel(0.1, 0.05, 0.2))
     double = np.array(body_to_wheel(0.2, 0.1, 0.4))
     np.testing.assert_allclose(double, 2.0 * single, atol=1e-12)
+
+
+# -- Issue #141: the cmd_vel acceleration ramp --------------------------------
+#
+# ``ramp_velocity`` is the pure core of the #141 fix: the commanded body Twist
+# is slewed toward the target at ``max_accel`` / ``max_angular_accel`` instead of
+# stepping there in one tick (a step tips the tall chassis in the shipped ROS
+# loop).  These tests pin the slew rate, the no-overshoot snap, the symmetric
+# deceleration and the degenerate-input guards -- no ROS graph needed.
+
+
+def test_ramp_reaches_a_step_target_in_three_ticks_with_no_overshoot():
+    """A 0 -> 0.20 m/s step at 4.0 m/s^2 / dt=0.02 ramps 0.08, 0.16, 0.20.
+
+    The per-tick budget is ``max_accel*dt = 0.08`` m/s, so the target is met on
+    the third tick and then *snaps* exactly onto it (0.24 would be an
+    overshoot).
+    """
+    cur = (0.0, 0.0, 0.0)
+    target = (0.20, 0.0, 0.0)
+    for expected in (0.08, 0.16, 0.20):
+        cur = ramp_velocity(cur, target, 4.0, 2.0, 0.02)
+        assert cur == pytest.approx((expected, 0.0, 0.0))
+    # One more tick on-target: no creep past it.
+    assert ramp_velocity(cur, target, 4.0, 2.0, 0.02) == pytest.approx(target)
+
+
+def test_ramp_decelerates_symmetrically_toward_zero():
+    """Ramping 0.20 -> 0 uses the same per-tick limit (no instant jump)."""
+    cur = (0.20, 0.0, 0.0)
+    target = (0.0, 0.0, 0.0)
+    cur = ramp_velocity(cur, target, 4.0, 2.0, 0.02)
+    assert cur == pytest.approx((0.12, 0.0, 0.0))
+    cur = ramp_velocity(cur, target, 4.0, 2.0, 0.02)
+    assert cur == pytest.approx((0.04, 0.0, 0.0))
+    cur = ramp_velocity(cur, target, 4.0, 2.0, 0.02)
+    assert cur == pytest.approx((0.0, 0.0, 0.0))  # |delta| < step -> snap
+
+
+def test_ramp_zero_target_stays_zero():
+    """No command in, no motion out."""
+    assert ramp_velocity(
+        (0.0, 0.0, 0.0), (0.0, 0.0, 0.0), 4.0, 2.0, 0.02) == (0.0, 0.0, 0.0)
+
+
+def test_ramp_target_already_reached_is_a_fixed_point():
+    """Once on target the ramp is idempotent."""
+    cur = (0.20, -0.05, 0.3)
+    assert ramp_velocity(cur, cur, 4.0, 2.0, 0.02) == pytest.approx(cur)
+
+
+def test_ramp_uses_per_axis_limits():
+    """Linear axes use ``max_accel``; the wz axis uses ``max_angular_accel``."""
+    out = ramp_velocity(
+        (0.0, 0.0, 0.0), (1.0, -1.0, 1.0), 4.0, 2.0, 0.02)
+    assert out == pytest.approx((0.08, -0.08, 0.04))
+
+
+def test_ramp_nonpositive_dt_returns_current_unchanged():
+    """A degenerate ``dt`` (0 or negative) cannot jump or NaN the state."""
+    cur = (0.13, -0.02, 0.4)
+    assert ramp_velocity(cur, (1.0, 1.0, 1.0), 4.0, 2.0, 0.0) == cur
+    assert ramp_velocity(cur, (1.0, 1.0, 1.0), 4.0, 2.0, -0.02) == cur
+
+
+def test_ramp_result_is_finite_for_finite_inputs():
+    """The ramp never emits NaN/inf for a finite command."""
+    out = ramp_velocity(
+        (0.0, 0.0, 0.0), (0.20, 0.10, -0.5), 4.0, 2.0, 0.02)
+    assert all(math.isfinite(v) for v in out)

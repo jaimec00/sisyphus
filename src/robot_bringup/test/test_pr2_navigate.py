@@ -404,6 +404,17 @@ def _yaw_from_quaternion(quat):
     return math.atan2(siny, cosy)
 
 
+def _pitch_from_quaternion(quat):
+    """Return the pitch (rad) of a geometry_msgs Quaternion.
+
+    Standard pitch extraction ``asin(2*(w*y - z*x))``, with the argument
+    clamped to [-1, 1] so float error at the poles cannot raise ``ValueError``.
+    The issue #141 tip-over shows up here as the free base pitching 0 -> ~1.21
+    rad; a healthy drive stays within ~0.006 rad.
+    """
+    return math.asin(max(-1.0, min(1.0, 2.0 * (quat.w * quat.y - quat.z * quat.x))))
+
+
 def _run_probe_in_subprocess(queue, vx, wz, duration, domain_id):
     """Child-process entry point: run one probe and put its result on ``queue``.
 
@@ -502,8 +513,9 @@ def _drive_probe_worker(vx, wz, duration, domain_id):
     whole Nav2 layer) headless on an isolated ROS domain, waits for the stack to
     be ACTIVE and ``GetBodyState`` to answer (proving the stack composes), then
     publishes the given body Twist **directly** on ``/cmd_vel`` for ``duration``
-    seconds and returns ``(dx, dy, dyaw, max_travel)`` of the ground-truth base
-    pose over that window.
+    seconds and returns ``(dx, dy, dyaw, max_travel, max_pitch)`` of the
+    ground-truth base pose over that window (``max_pitch`` is the largest
+    absolute base pitch seen -- a tip-over detector, issue #141).
 
     Each direction gets its **own sim session**: a second command in the same
     session is unreliable, so a fresh start per direction is the reproducible
@@ -654,6 +666,7 @@ def _drive_probe_worker(vx, wz, duration, domain_id):
         deadline = time.monotonic() + duration
         final = start
         max_travel = 0.0
+        max_pitch = 0.0
         while time.monotonic() < deadline:
             executor.spin_once(timeout_sec=0.0)
             cmd_pub.publish(twist)
@@ -666,10 +679,12 @@ def _drive_probe_worker(vx, wz, duration, domain_id):
                 max_travel = max(max_travel, math.hypot(
                     pose.position.x - start_xy[0],
                     pose.position.y - start_xy[1]))
+                max_pitch = max(max_pitch, abs(_pitch_from_quaternion(
+                    pose.orientation)))
             time.sleep(0.02)
         return (final.position.x - start.position.x,
                 final.position.y - start.position.y,
-                dyaw, max_travel)
+                dyaw, max_travel, max_pitch)
     finally:
         if executor is not None:
             executor.shutdown()
@@ -961,7 +976,7 @@ def test_base_drives_under_wheel_commands():
             'Build it with: `vcs import src < robot.repos && pixi run build`.')
 
     # -- 2a. pure +wz: the base rotates +yaw (the sign-split fix).
-    _, _, dyaw_wz, _ = _drive_probe(
+    _, _, dyaw_wz, _, _ = _drive_probe(
         0.0, WZ_COMMAND, WZ_DRIVE_S, NAV2_DOMAIN_ID)
     assert dyaw_wz >= MIN_WZ_DYAWM, (
         'pure +wz=%.2f rotated dyaw=%.3f rad (expected >= %.2f) -- the base did '
@@ -969,7 +984,7 @@ def test_base_drives_under_wheel_commands():
         % (WZ_COMMAND, dyaw_wz, MIN_WZ_DYAWM))
 
     # -- 2b. pure +vx: the base translates +x, not a spin or a teleport.
-    dx_vx, _, dyaw_vx, max_travel = _drive_probe(
+    dx_vx, _, dyaw_vx, max_travel, _ = _drive_probe(
         VX_COMMAND, 0.0, VX_DRIVE_S, NAV2_DOMAIN_ID + 1)
     assert dx_vx >= MIN_VX_DX, (
         'pure +vx=%.2f drove dx=%.3f m (expected >= %.2f) -- base did not '
@@ -1013,6 +1028,11 @@ MIN_VX_FIDELITY_RATIO = 0.85
 #: straight (|dyaw| < 0.01 measured); the pre-fix contact slip whirled the
 #: base, so this must stay well under a quarter turn.
 MAX_VX_FIDELITY_DYAWR = 0.30
+#: Max absolute base pitch allowed over a fidelity drive (rad, issue #141).
+#: The #141 failure is a base *tip-over*: a STEP cmd_vel pitches the free base
+#: 0 -> ~1.21 rad (~69 deg) and parks it on its nose.  A healthy drive stays
+#: within ~0.006 rad, so 0.15 rad separates them with ~25x / ~8x margin.
+MAX_VX_FIDELITY_PITCH = 0.15
 
 
 @pytest.mark.parametrize('vx', VX_FIDELITY_COMMANDS)
@@ -1042,11 +1062,12 @@ def test_base_delivers_commanded_vx_through_the_ros_chain(vx):
     # NAV2_DOMAIN_ID and +1, the direction regression +2, the convergence test
     # +3, and each launch needs its own FastDDS shared-memory port namespace.
     domain = NAV2_DOMAIN_ID + 4 + VX_FIDELITY_COMMANDS.index(vx)
-    dx, _, dyaw, max_travel = _drive_probe(
+    dx, _, dyaw, max_travel, max_pitch = _drive_probe(
         vx, 0.0, VX_FIDELITY_DRIVE_S, domain)
     delivered = dx / (vx * VX_FIDELITY_DRIVE_S)
     print('[pr2-nav] vx fidelity +vx=%.2f: dx=%.3f delivered=%.3fx dyaw=%.3f '
-          'max_travel=%.3f' % (vx, dx, delivered, dyaw, max_travel))
+          'max_travel=%.3f max_pitch=%.3f'
+          % (vx, dx, delivered, dyaw, max_travel, max_pitch))
 
     assert delivered >= MIN_VX_FIDELITY_RATIO, (
         '#137 regression: pure +vx=%.2f over %.0f s through the ROS chain '
@@ -1061,6 +1082,11 @@ def test_base_delivers_commanded_vx_through_the_ros_chain(vx):
     assert max_travel >= MIN_INTERMEDIATE_DELTA, (
         '#137 regression: pure +vx=%.2f never displaced (max travel %.3f m) -- '
         'not a drive' % (vx, max_travel))
+    assert max_pitch <= MAX_VX_FIDELITY_PITCH, (
+        '#141 regression: pure +vx=%.2f tipped the base (max pitch %.3f rad, '
+        'expected <= %.2f) -- the STEP cmd_vel pitches the free base onto its '
+        'nose; the max_accel ramp in omni_base_controller must prevent this'
+        % (vx, max_pitch, MAX_VX_FIDELITY_PITCH))
 
 
 def test_navigate_to_pose_drives_forward():
