@@ -1,0 +1,75 @@
+# Joint velocity/acceleration overrides for planning (D29 shape: the URDF owns
+# position limits, this file owns the *planner's* view of vel/accel).
+#
+# moveit_configs_utils loads this as `<robot_description>_planning`. MoveIt
+# MERGES it over the URDF's own <limit> blocks: a joint absent here keeps its
+# URDF effort/velocity. The arm joints' URDF velocity (3.5 rad/s) is an
+# ESTIMATED STS3215-class stand-in (arm.xacro), so the values below are that
+# same estimate carried through -- not an independent measurement.
+#
+# `has_velocity_limits` / `has_acceleration_limits` gate which of the two the
+# planner enforces. Acceleration is given a deliberately conservative fraction
+# (the servos have no published accel curve); this is the ESTIMATED number a
+# later actuator model replaces (arm.xacro's own "owed a real actuator model").
+# `has_jerk_limits` stays false everywhere -- no jerk model exists.
+joint_limits:
+  left_shoulder_pan:
+    has_velocity_limits: true
+    max_velocity: 3.5
+    has_acceleration_limits: true
+    max_acceleration: 3.5
+    has_jerk_limits: false
+  left_shoulder_lift:
+    has_velocity_limits: true
+    max_velocity: 3.5
+    has_acceleration_limits: true
+    max_acceleration: 3.5
+    has_jerk_limits: false
+  left_elbow_flex:
+    has_velocity_limits: true
+    max_velocity: 3.5
+    has_acceleration_limits: true
+    max_acceleration: 3.5
+    has_jerk_limits: false
+  left_wrist_flex:
+    has_velocity_limits: true
+    max_velocity: 3.5
+    has_acceleration_limits: true
+    max_acceleration: 3.5
+    has_jerk_limits: false
+  left_wrist_roll:
+    has_velocity_limits: true
+    max_velocity: 3.5
+    has_acceleration_limits: true
+    max_acceleration: 3.5
+    has_jerk_limits: false
+  right_shoulder_pan:
+    has_velocity_limits: true
+    max_velocity: 3.5
+    has_acceleration_limits: true
+    max_acceleration: 3.5
+    has_jerk_limits: false
+  right_shoulder_lift:
+    has_velocity_limits: true
+    max_velocity: 3.5
+    has_acceleration_limits: true
+    max_acceleration: 3.5
+    has_jerk_limits: false
+  right_elbow_flex:
+    has_velocity_limits: true
+    max_velocity: 3.5
+    has_acceleration_limits: true
+    max_acceleration: 3.5
+    has_jerk_limits: false
+  right_wrist_flex:
+    has_velocity_limits: true
+    max_velocity: 3.5
+    has_acceleration_limits: true
+    max_acceleration: 3.5
+    has_jerk_limits: false
+  right_wrist_roll:
+    has_velocity_limits: true
+    max_velocity: 3.5
+    has_acceleration_limits: true
+    max_acceleration: 3.5
+    has_jerk_limits: false

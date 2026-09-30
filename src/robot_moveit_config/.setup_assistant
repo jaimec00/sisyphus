@@ -1,0 +1,14 @@
+# Pointers moveit_configs_utils uses to find the URDF (in another package) and
+# the SRDF (in this one). Hand-written, not generated (R9): the same keys the
+# Setup Assistant GUI would emit, minus everything this repo does not use. The
+# real version string is kept empty -- no Setup Assistant produced this config,
+# and claiming otherwise would be a lie in the file a future maintainer trusts.
+moveit_setup_assistant_config:
+  URDF:
+    package: robot_description
+    relative_path: urdf/robot.urdf.xacro
+  SRDF:
+    relative_path: config/sisyphus.srdf
+  CONFIG:
+    author_name: "Jaime C."
+    author_email: "hejaca00@gmail.com"

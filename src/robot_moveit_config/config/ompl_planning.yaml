@@ -1,0 +1,60 @@
+# OMPL planning pipeline overrides for the two arm groups.
+#
+# How this file is loaded (VERIFIED against the installed moveit_configs_utils
+# 2.12.4, `moveit_configs_builder.planning_pipelines()`): the builder reads
+# `config/ompl_planning.yaml` as the `ompl` pipeline, and -- because this file
+# carries no top-level `planner_configs` key -- *merges in* the package's
+# `share/moveit_configs_utils/default_configs/ompl_defaults.yaml`, the standard
+# planner set. The merged pipeline dict is then flattened to the TOP LEVEL of
+# the node's parameter dict by `MoveItConfigs.to_dict()` (each entry of
+# `planning_pipelines` becomes its own top-level parameter namespace). So the
+# parameters move_group actually receives are `ompl.planner_configs.*`,
+# `ompl.left_arm.*`, `ompl.right_arm.*`, `planning_plugins`, ...
+#
+# Planner names MUST match the shipped `ompl_defaults.yaml` verbatim. That file
+# defines `RRTConnect`, `RRTstar`, `PRM` -- NOT the Setup-Assistant-style
+# `*kConfigDefault` spellings -- so this repo references them without the
+# suffix. (BLOCK 1 of the red-team pass: an earlier draft used
+# `RRTConnectkConfigDefault` et al., which do not exist as keys, so move_group
+# logged "Could not find the planner configuration ... on the param server" on
+# every launch, `/get_planner_params` came back empty and `/plan_kinematic_path`
+# failed with code 99999. `test_move_group_launch.py` now asserts the
+# default_planner_config name resolves, so this cannot silently regress.)
+#
+# The plugin/adapter lists below are the env's own `default_configs/
+# ompl_planning.yaml` verbatim -- the OMPL planner plugin and the stock
+# request/response adapters -- reproduced here so the pipeline is inspectable
+# in-repo rather than implicit.
+planning_plugins:
+  - ompl_interface/OMPLPlanner
+request_adapters:
+  - default_planning_request_adapters/ResolveConstraintFrames
+  - default_planning_request_adapters/ValidateWorkspaceBounds
+  - default_planning_request_adapters/CheckStartStateBounds
+  - default_planning_request_adapters/CheckStartStateCollision
+response_adapters:
+  - default_planning_response_adapters/AddTimeOptimalParameterization
+  - default_planning_response_adapters/ValidateSolution
+  - default_planning_response_adapters/DisplayMotionPath
+
+# Per-group planner selection. A revolute 5-DOF arm is the textbook RRTConnect
+# workload: fast, probabilistically complete, no tuning. RRTstar is listed
+# second as the asymptotically-optimal fallback a caller can select by
+# planner_id without editing config; PRM is the roadmap-based third.
+left_arm:
+  default_planner_config: RRTConnect
+  planner_configs:
+    - RRTConnect
+    - RRTstar
+    - PRM
+  projection_evaluator: joints(left_shoulder_pan,left_shoulder_lift)
+  longest_valid_segment_fraction: 0.005
+
+right_arm:
+  default_planner_config: RRTConnect
+  planner_configs:
+    - RRTConnect
+    - RRTstar
+    - PRM
+  projection_evaluator: joints(right_shoulder_pan,right_shoulder_lift)
+  longest_valid_segment_fraction: 0.005
