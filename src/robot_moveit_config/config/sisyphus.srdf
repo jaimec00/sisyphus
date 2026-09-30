@@ -1,0 +1,68 @@
+<?xml version="1.0"?>
+<!--
+  Sisyphus semantic robot description (SRDF), PR1 of the MoveIt roadmap
+  (issue #145). Hand-authored; `moveit_setup_assistant` is deliberately NOT a
+  runtime or build dependency (R9), because the semantic model here is small
+  (two 5-DOF arms + two 1-DOF grippers) and the whole point of the file is that
+  its link/joint names are *readable against the xacro*; a GUI generator would
+  hide that mapping behind a click-through.
+
+  The robot name matches `<robot name="sisyphus">` in
+  `robot_description/urdf/robot.urdf.xacro`; MoveIt warns (and the launch test
+  asserts) when they disagree.
+
+  Naming contract (R2): every link/joint named here is the xacro's `${name}`-
+  prefixed name, so the SO-101 arm macro's `left`/`right` instantiations
+  produce exactly these strings, and a PiPER swap is a macro swap (D26). The
+  per-side groups are declared by *chain*, not by an explicit joint list, so
+  the chain's fixed mount joint (`<side>_gripper_mount_joint`) is included
+  automatically and the group's joints cannot drift from the URDF's chain.
+
+  Deliberate omissions, read before "fixing" them:
+
+  * `<side>_gripper_mirror` is a URDF `<mimic joint="<side>_gripper"
+    multiplier="-1"/>`. It appears in NO group and NO `<passive_joint>`: MoveIt
+    reads mimic constraints from the URDF and propagates them (R3). Adding it to
+    a group would double-count the jaw DOF and let a planner command a joint the
+    URDF immediately overwrites.
+  * The wheels (`base_left_wheel`, `base_back_wheel`, `base_right_wheel`) and
+    the prismatic `column_lift` are NOT planning groups: this PR is the arm
+    foundation, and mobile-base planning is Nav2's (D36), not MoveIt's.
+  * End effectors (R4) are the gripper *mount* frames (`<side>_gripper_base_link`
+    == the wrist-roll frame), not the fingertip frames. The grasp midpoint is a
+    derived point PR2/PR3 will add a dedicated tool frame for if it needs one.
+-->
+<robot name="sisyphus">
+
+  <!-- ==================================================================
+       Left arm: 5 revolute DOF, shoulder -> gripper mount (R2).
+       ================================================================== -->
+  <group name="left_arm">
+    <chain base_link="left_shoulder_link" tip_link="left_gripper_base_link"/>
+  </group>
+
+  <!-- Left gripper: the single driven jaw (mirror jaw is a URDF mimic, R3). -->
+  <group name="left_gripper">
+    <chain base_link="left_gripper_base_link" tip_link="left_gripper_upper_jaw_link"/>
+  </group>
+
+  <!-- Left end effector: parent frame = gripper mount; gripper group rides the
+       arm group (R2/R4). -->
+  <end_effector name="left_eef" parent_link="left_gripper_base_link"
+                group="left_gripper" parent_group="left_arm"/>
+
+  <!-- ==================================================================
+       Right arm: mirror of the left (identical internal kinematics, D26).
+       ================================================================== -->
+  <group name="right_arm">
+    <chain base_link="right_shoulder_link" tip_link="right_gripper_base_link"/>
+  </group>
+
+  <group name="right_gripper">
+    <chain base_link="right_gripper_base_link" tip_link="right_gripper_upper_jaw_link"/>
+  </group>
+
+  <end_effector name="right_eef" parent_link="right_gripper_base_link"
+                group="right_gripper" parent_group="right_arm"/>
+
+</robot>

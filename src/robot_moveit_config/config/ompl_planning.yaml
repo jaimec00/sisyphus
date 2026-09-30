@@ -1,0 +1,43 @@
+# OMPL planning pipeline overrides for the two arm groups.
+#
+# `moveit_configs_utils.planning_pipelines()` loads this file as the `ompl`
+# pipeline and, if no planner_configs are present, merges the package's
+# `default_configs/ompl_defaults.yaml` (the standard planner set: RRTConnect,
+# RRTstar, PRM, ...). So this file deliberately carries only what is
+# *robot-specific*: which planner each group uses. The plugin/adapter lists
+# below are the env's own default_configs/ompl_planning.yaml verbatim -- they
+# name the OMPL planner plugin and the stock request/response adapters, and are
+# reproduced here so the pipeline is inspectable in-repo rather than implicit.
+planning_plugins:
+  - ompl_interface/OMPLPlanner
+request_adapters:
+  - default_planning_request_adapters/ResolveConstraintFrames
+  - default_planning_request_adapters/ValidateWorkspaceBounds
+  - default_planning_request_adapters/CheckStartStateBounds
+  - default_planning_request_adapters/CheckStartStateCollision
+response_adapters:
+  - default_planning_response_adapters/AddTimeOptimalParameterization
+  - default_planning_response_adapters/ValidateSolution
+  - default_planning_response_adapters/DisplayMotionPath
+
+# Per-group planner selection. A revolute 5-DOF arm is the textbook RRTConnect
+# workload: fast, probabilistically complete, no tuning. RRTstar is listed
+# second as the asymptotically-optimal fallback a caller can select by
+# planner_id without editing config.
+left_arm:
+  default_planner_config: RRTConnectkConfigDefault
+  planner_configs:
+    - RRTConnectkConfigDefault
+    - RRTstarkConfigDefault
+    - PRMkConfigDefault
+  projection_evaluator: joints(left_shoulder_pan,left_shoulder_lift)
+  longest_valid_segment_fraction: 0.005
+
+right_arm:
+  default_planner_config: RRTConnectkConfigDefault
+  planner_configs:
+    - RRTConnectkConfigDefault
+    - RRTstarkConfigDefault
+    - PRMkConfigDefault
+  projection_evaluator: joints(right_shoulder_pan,right_shoulder_lift)
+  longest_valid_segment_fraction: 0.005
