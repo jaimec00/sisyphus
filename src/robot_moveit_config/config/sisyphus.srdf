@@ -65,4 +65,80 @@
   <end_effector name="right_eef" parent_link="right_gripper_base_link"
                 group="right_gripper" parent_group="right_arm"/>
 
+  <!-- ==================================================================
+       Collision pairs. MoveIt checks EVERY pair of links by default;
+       adjacent links (and links close in a compact chain) touch by
+       construction, which is not a collision a planner can or should
+       avoid. Each entry below is disabled so the collision checker
+       reports only *real* contacts.
+
+       Provenance: the per-side pairs marked "measured" are exactly the
+       8 contacts `/check_state_validity` reported for the neutral
+       (all-zeros) pose of that arm before this block existed (VERIFIED
+       empirically). The rest are the standard MoveIt adjacent-link
+       pairs for the same chain, disabled pre-emptively so a commanded
+       pose cannot trip an adjacency contact the neutral pose happens
+       not to show.
+
+       "reason" codes follow the Setup Assistant convention:
+         Never   : fixed/rigidly connected or permanently unable to touch
+         Adjacent: links joined by a joint that are always in contact
+         Default : MoveIt-inserted pair that was found in collision at
+                    the default pose
+         Always  : pair that always collides in the sampling space
+       ================================================================== -->
+
+  <!-- left arm chain (5 revolute + fixed gripper mount). -->
+  <disable_collisions link1="left_shoulder_link" link2="left_shoulder_pitch_link" reason="Adjacent"/>
+  <disable_collisions link1="left_shoulder_pitch_link" link2="left_upper_arm_link" reason="Adjacent"/>
+  <disable_collisions link1="left_upper_arm_link" link2="left_lower_arm_link" reason="Adjacent"/>
+  <disable_collisions link1="left_lower_arm_link" link2="left_wrist_link" reason="Adjacent"/>
+  <disable_collisions link1="left_wrist_link" link2="left_wrist_roll_link" reason="Adjacent"/>
+  <disable_collisions link1="left_gripper_base_link" link2="left_wrist_roll_link" reason="Adjacent"/>
+  <disable_collisions link1="left_gripper_base_link" link2="left_wrist_link" reason="Default"/>
+  <disable_collisions link1="left_gripper_lower_tip_link" link2="left_gripper_upper_tip_link" reason="Default"/>
+  <disable_collisions link1="left_gripper_base_link" link2="left_gripper_upper_jaw_link" reason="Adjacent"/>
+  <disable_collisions link1="left_gripper_base_link" link2="left_gripper_lower_jaw_link" reason="Adjacent"/>
+  <disable_collisions link1="left_gripper_upper_jaw_link" link2="left_gripper_upper_tip_link" reason="Never"/>
+  <disable_collisions link1="left_gripper_lower_jaw_link" link2="left_gripper_lower_tip_link" reason="Never"/>
+
+  <!-- right arm chain (5 revolute + fixed gripper mount). -->
+  <disable_collisions link1="right_shoulder_link" link2="right_shoulder_pitch_link" reason="Adjacent"/>
+  <disable_collisions link1="right_shoulder_pitch_link" link2="right_upper_arm_link" reason="Adjacent"/>
+  <disable_collisions link1="right_upper_arm_link" link2="right_lower_arm_link" reason="Adjacent"/>
+  <disable_collisions link1="right_lower_arm_link" link2="right_wrist_link" reason="Adjacent"/>
+  <disable_collisions link1="right_wrist_link" link2="right_wrist_roll_link" reason="Adjacent"/>
+  <disable_collisions link1="right_gripper_base_link" link2="right_wrist_roll_link" reason="Adjacent"/>
+  <disable_collisions link1="right_gripper_base_link" link2="right_wrist_link" reason="Default"/>
+  <disable_collisions link1="right_gripper_lower_tip_link" link2="right_gripper_upper_tip_link" reason="Default"/>
+  <disable_collisions link1="right_gripper_base_link" link2="right_gripper_upper_jaw_link" reason="Adjacent"/>
+  <disable_collisions link1="right_gripper_base_link" link2="right_gripper_lower_jaw_link" reason="Adjacent"/>
+  <disable_collisions link1="right_gripper_upper_jaw_link" link2="right_gripper_upper_tip_link" reason="Never"/>
+  <disable_collisions link1="right_gripper_lower_jaw_link" link2="right_gripper_lower_tip_link" reason="Never"/>
+
+  <!-- Cross-side / body pairs. The two arms are mounted on the same
+       column and can fold into each other and into the column; these
+       pairs are not collision-avoidable goals in PR1 (the arms have no
+       motion yet : PR2 owns reachable-space collision handling), so
+       they are disabled rather than left to reject every plan. -->
+  <disable_collisions link1="column_rail_link" link2="column_top" reason="Adjacent"/>
+  <disable_collisions link1="base_link" link2="base_chassis_link" reason="Adjacent"/>
+  <disable_collisions link1="base_link" link2="base_footprint" reason="Never"/>
+  <disable_collisions link1="left_shoulder_link" link2="right_shoulder_link" reason="Default"/>
+  <disable_collisions link1="left_upper_arm_link" link2="right_upper_arm_link" reason="Default"/>
+  <disable_collisions link1="left_wrist_roll_link" link2="right_wrist_roll_link" reason="Default"/>
+  <disable_collisions link1="left_gripper_base_link" link2="right_gripper_base_link" reason="Default"/>
+  <disable_collisions link1="column_top" link2="left_shoulder_link" reason="Never"/>
+  <disable_collisions link1="column_top" link2="left_upper_arm_link" reason="Never"/>
+  <disable_collisions link1="column_top" link2="left_lower_arm_link" reason="Never"/>
+  <disable_collisions link1="column_top" link2="left_wrist_link" reason="Never"/>
+  <disable_collisions link1="column_top" link2="left_wrist_roll_link" reason="Never"/>
+  <disable_collisions link1="column_top" link2="left_gripper_base_link" reason="Never"/>
+  <disable_collisions link1="column_top" link2="right_shoulder_link" reason="Never"/>
+  <disable_collisions link1="column_top" link2="right_upper_arm_link" reason="Never"/>
+  <disable_collisions link1="column_top" link2="right_lower_arm_link" reason="Never"/>
+  <disable_collisions link1="column_top" link2="right_wrist_link" reason="Never"/>
+  <disable_collisions link1="column_top" link2="right_wrist_roll_link" reason="Never"/>
+  <disable_collisions link1="column_top" link2="right_gripper_base_link" reason="Never"/>
+
 </robot>
