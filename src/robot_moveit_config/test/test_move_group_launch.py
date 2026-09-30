@@ -90,9 +90,14 @@ SUCCESS = 1
 #: ``ompl.<group>.default_planner_config``.
 OMPL_PLANNER_CONFIGS_PARAM = '/move_group'
 
-#: A name that must NOT resolve -- the pre-fix typo, kept as the negative
-#: control so the resolution check is not vacuous.
-BOGUS_PLANNER_CONFIG = 'RRTConnectkConfigDefault'
+#: A name that must NOT resolve -- the negative control that makes the
+#: resolution check meaningful. It is deliberately a name nothing could ever
+#: define (NOT the pre-fix typo): keying the negative control off the same
+#: literal the group *selects* would divert that group's own entry into the
+#: "must be absent" branch and leave its resolution unasserted -- exactly the
+#: vacuity R-fix3 (re-red-team) found. The positive check below keys off the
+#: live ``default_planner_config`` value, whatever it is.
+NONEXISTENT_PLANNER_CONFIG = 'no_such_planner_xyz'
 
 
 def _require_tool(name):
@@ -369,8 +374,16 @@ def test_move_group_planner_config_resolves():
     * ``ompl.<group>.default_planner_config`` is set and non-empty;
     * that name exists as ``ompl.planner_configs.<name>`` with a ``type``;
     * every name in ``ompl.<group>.planner_configs`` resolves the same way;
-    * the old typo (``RRTConnectkConfigDefault``) does NOT resolve -- the
-      negative control that makes the check meaningful.
+    * a definitely-nonexistent name (``no_such_planner_xyz``) does NOT resolve
+      -- the negative control that makes the check meaningful.
+
+    The positive assertion is keyed off the group's *live*
+    ``default_planner_config`` value (whatever the config currently names), and
+    the negative control off a different, invented name. Keying both off the
+    same literal is what made the first draft vacuous: when the config selected
+    the bogus name, the entry derived from the group's own selection was
+    diverted into the "must be absent" branch, so the test passed even with the
+    typo shipped.
     """
     from rclpy.parameter import Parameter
     from rcl_interfaces.srv import GetParameters
@@ -401,7 +414,9 @@ def test_move_group_planner_config_resolves():
                 'planner_configs=%r' % (group, default_name, listed))
 
         # Every selected name + every listed name must exist in the registry,
-        # and the registry entries must carry a non-empty OMPL type.
+        # and the registry entries must carry a non-empty OMPL type. The
+        # negative control is a *separate*, definitely-nonexistent name, so no
+        # real selection can collide with it.
         selected = sorted({got['ompl.%s.default_planner_config' % g
                                ].string_value for g in ARM_GROUPS} |
                           {n for g in ARM_GROUPS
@@ -409,10 +424,11 @@ def test_move_group_planner_config_resolves():
                                         ].string_array_value})
         registry_names = ['ompl.planner_configs.%s.type' % n for n in selected]
         registry_names.append('ompl.planner_configs.%s.type'
-                              % BOGUS_PLANNER_CONFIG)
+                              % NONEXISTENT_PLANNER_CONFIG)
         request = GetParameters.Request()
         request.names = registry_names
         response = probe.call(client, request)
+        resolved_by_name = {}
         for name, value in zip(registry_names, response.values):
             # An undefined parameter comes back as ``NOT_SET`` with an empty
             # string -- which is exactly the shape a *missing* planner_config
@@ -422,15 +438,40 @@ def test_move_group_planner_config_resolves():
             # is a non-IntEnum, so compare against its ``.value``.
             resolved = (value.type == Parameter.Type.STRING.value
                         and bool(value.string_value))
-            if name.endswith('%s.type' % BOGUS_PLANNER_CONFIG):
-                assert not resolved, (
-                    'the pre-fix typo %r resolves on the param server (%r); '
-                    'the negative control is broken'
-                    % (BOGUS_PLANNER_CONFIG, value.string_value))
-                continue
+            resolved_by_name[name] = (resolved, value)
+
+        # Positive: the name each arm group actually *selects* must be a real
+        # registry key with a non-empty type. This is the assertion BLOCK 1
+        # needs -- it must be keyed off the live selection value, never off a
+        # fixed literal, or a typo'd selection escapes it.
+        for group in ARM_GROUPS:
+            selected_name = got['ompl.%s.default_planner_config'
+                                % group].string_value
+            key = 'ompl.planner_configs.%s.type' % selected_name
+            resolved, value = resolved_by_name[key]
             assert resolved, (
-                '%s resolves to %r (type=%d) -- move_group cannot find planner '
-                'config %r' % (name, value.string_value, value.type, name))
+                '%s.default_planner_config=%r does not resolve to a planner '
+                'type on the param server (type=%d, value=%r) -- move_group '
+                'cannot find planner config %r'
+                % (group, selected_name, value.type, value.string_value,
+                   key))
+
+        # Positive: every *listed* planner config resolves the same way.
+        for name in selected:
+            resolved, value = resolved_by_name[
+                'ompl.planner_configs.%s.type' % name]
+            assert resolved, (
+                'ompl.planner_configs.%s.type resolves to %r (type=%d) -- '
+                'move_group cannot find planner config %r'
+                % (name, value.string_value, value.type, name))
+
+        # Negative: an invented name must NOT resolve.
+        key = 'ompl.planner_configs.%s.type' % NONEXISTENT_PLANNER_CONFIG
+        resolved, value = resolved_by_name[key]
+        assert not resolved, (
+            'the negative control %r resolves on the param server (%r); the '
+            'resolution check would be vacuous'
+            % (NONEXISTENT_PLANNER_CONFIG, value.string_value))
 
 
 def test_move_group_neutral_pose_is_collision_free():

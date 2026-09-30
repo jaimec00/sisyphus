@@ -233,3 +233,19 @@ must be tested as "STRING with a non-empty value"), and
 The neutral-pose and `/plan_kinematic_path` tests guard BLOCK 2 and BLOCK 1
 end-to-end respectively. `scripts/test_baseline.json` raised
 `robot_moveit_config` 5 → 8.
+
+### R-fix3 follow-up (2026-09-30) — the planner test was vacuous; made non-vacuous
+
+The re-red-team VERIFIED the planner-name test was vacuous for its own target:
+both its negative control and its positive assertion keyed off the same literal
+(the old typo `RRTConnectkConfigDefault`), so when a group's
+`default_planner_config` equalled that name, every occurrence — including the
+one derived from the group's own selection — was diverted into the
+"must be absent" branch, and the typo shipped green (reproduced: the old test is
+GREEN on a config with `left_arm.default_planner_config: RRTConnectkConfigDefault`).
+Fix: the positive assertion now keys off the group's *live*
+`default_planner_config` value (whatever it names) and asserts it resolves to a
+non-empty `ompl.planner_configs.<name>.type`; the negative control is a separate,
+definitely-nonexistent name (`no_such_planner_xyz`). Verified: the same typo'd
+config now goes RED on the new positive assertion, and the shipped config is
+green (`robot_moveit_config` 8 non-linter, unchanged).
