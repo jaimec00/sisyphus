@@ -4,7 +4,7 @@
 # license that can be found in the LICENSE file or at
 # https://opensource.org/licenses/MIT.
 
-"""Feed the `robot_world` scene into the MoveIt planning scene (PR1 / R6).
+r"""Feed the `robot_world` scene into the MoveIt planning scene (PR1 / R6).
 
 This node is the runtime half of the world -> MoveIt bridge. Once per
 ``publish_period`` it:
@@ -56,7 +56,6 @@ node keeps its last-applied state -- it never clears the scene on a transient
 error, because "the world said nothing" is not "the world is empty".
 """
 
-import json
 import threading
 
 from geometry_msgs.msg import Pose
@@ -66,14 +65,13 @@ import rclpy
 from rclpy.callback_groups import ReentrantCallbackGroup
 from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
-from shape_msgs.msg import SolidPrimitive
-
 from robot_moveit.scene_geometry import BOX, CYLINDER
 from robot_moveit.world_to_scene import (
-    SceneObject,
     scene_objects_from_world_json,
+    SceneObject,
 )
 from robot_world_ros_interfaces.srv import GetWorld
+from shape_msgs.msg import SolidPrimitive
 
 #: Map this module's shape kind -> shape_msgs/SolidPrimitive type constant and
 #: the dimension ordering that type expects.
@@ -139,6 +137,7 @@ class PlanningSceneBridge(Node):
     """Polls the world service and mirrors its objects into the planning scene."""
 
     def __init__(self):
+        """Configure params, clients and the poll timer (see the class doc)."""
         super().__init__('planning_scene_bridge')
 
         self.declare_parameter('world_service', '/world_query/get_world')

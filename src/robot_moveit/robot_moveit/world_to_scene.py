@@ -25,9 +25,8 @@ transform.
 from dataclasses import dataclass
 from typing import Iterable
 
-from robot_world import WorldDocument, WorldObject
-
 from robot_moveit.scene_geometry import ShapeSpec, spec_for_label
+from robot_world import WorldDocument, WorldObject
 
 #: The frame every world object's pose is expressed in. ``robot_world`` is
 #: frame-agnostic by design (it stores coordinates, not TF), and the shipped
