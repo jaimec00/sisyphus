@@ -53,11 +53,12 @@ both the differentiators and the real risks (D22).
   under `dfki-ric/mujoco_ros2_control` (D33); the MuJoCo `RobotBackend`
   (Mock → Sim swap, D9/D34 — all 5 PRs merged); `robot_world` wrapped in a ROS 2
   query service (D35 — PR1/PR2/PR3 merged).
-- **In flight:** step 5 base navigation — Nav2 on the classical/real track
-  (D36). Sequence and per-PR acceptance in
-  [`nav2-base-pr-breakdown.md`](nav2-base-pr-breakdown.md).
-- **Not started:** MoveIt arm planning (second half of step 5); perception on
-  the real/detector path; any real hardware (nothing purchased).
+- **In flight:** MoveIt pick-and-place — step 5's manipulation half (D39). The
+  base-navigation half (Nav2, D36) is done (PR1/PR2/PR3 merged, incl. the
+  semantic `navigate_to` bridge). Sequence and per-PR acceptance in
+  [`moveit-pick-place-pr-breakdown.md`](moveit-pick-place-pr-breakdown.md).
+- **Not started:** perception on the real/detector path; any real hardware
+  (nothing purchased).
 
 ## Open questions (still genuinely open)
 - **Brain LLM choice** (which hosted model) + when/if to move to a self-hosted
@@ -67,9 +68,11 @@ both the differentiators and the real risks (D22).
 - **Fragile-object grip:** whether the stock parallel-jaw + a compliant fin-ray
   fingertip swap (the reserved first upgrade, D26) is enough, or whether force
   sensing is needed.
-- **Payload ceiling:** SO-101's ~0.4 m reach and ~0.25–0.5 kg/arm won't handle a
-  loaded plate or a laundry pile. Fine for harness/sim; the real-hardware answer
-  is the penciled PiPER upgrade (D26), which costs the single bus — unresolved.
+- **Payload ceiling — RESOLVED (D39):** SO-101 is committed as the first
+  hardware purchase; PiPER stays a later real-hardware upgrade (the swappable
+  arm macro makes it a drop-in). SO-101's ~0.4 m / ~0.25–0.5 kg ceiling is fine
+  for the first chore (grab a remote); revisit PiPER only if a chore needs real
+  payload.
 - **Nori Bot is UNVERIFIED** (arXiv 2605.16537) — the column crib and the
   agent↔hardware seam both lean on a paper we have not read (D26).
 - **RoboStack coverage** of `foxglove_bridge` / `mujoco_ros2_control` —
@@ -91,6 +94,7 @@ depth-camera class, base geometry — all settled by D26.)*
    on Mock 2026-09-04; the context-free-subagent variant is still open.)*
 4. **~~Wrap `robot_world` in a ROS 2 query service~~ — done** (D35; PR1/PR2/PR3
    merged).
-5. **Classical skills first** (D22): base navigation via Nav2 (D36, in flight —
-   see [`nav2-base-pr-breakdown.md`](nav2-base-pr-breakdown.md)), then MoveIt
-   pick-and-place of rigid objects; learned skills only where unavoidable.
+5. **Classical skills first** (D22): base navigation via Nav2 (D36 — done), then
+   MoveIt pick-and-place of rigid objects (D39, in flight — see
+   [`moveit-pick-place-pr-breakdown.md`](moveit-pick-place-pr-breakdown.md));
+   learned skills only where unavoidable.
