@@ -1,13 +1,33 @@
-# ros2_control controller configuration for the MuJoCo bringup (PR8b / issue #92).
+# ros2_control controller configuration for the MuJoCo bringup (PR8b / issue #92;
+# restructured for the MoveIt execution stack in PR2 / issue #147).
 #
-# controller_manager with two group controllers + a joint-state broadcaster:
+# controller_manager with five controllers + a joint-state broadcaster:
 #   - joint_state_broadcaster   publishes the 18-joint state (position/velocity).
-#   - arm_gripper_position_controller: JointGroupPositionController over the 13
-#     position-commanded joints (column_lift + 10 arm revolute + 2 driven
-#     grippers). Publish a Float64MultiArray of 13 values in the listed order.
+#   - left_arm_controller       JointTrajectoryController over the left arm's 5
+#                               revolute joints (position command + position
+#                               state). This is what MoveIt's
+#                               moveit_simple_controller_manager drives through a
+#                               control_msgs/action/FollowJointTrajectory goal,
+#                               which is what makes an executed plan a *real
+#                               time-parameterised trajectory* rather than a
+#                               teleport. `action_ns: follow_joint_trajectory`
+#                               in robot_moveit_config/config/moveit_controllers
+#                               .yaml resolves the JTC's `~/follow_joint_trajectory`
+#                               action to /left_arm_controller/follow_joint_trajectory.
+#   - right_arm_controller      Mirror of the left (identical internal
+#                               kinematics, D26).
+#   - arm_gripper_position_controller: JointGroupPositionController over the 3
+#                               remaining position-commanded joints (column_lift
+#                               + left/right_gripper). The name is historical
+#                               (PR8b): the 10 arm revolute joints it used to own
+#                               moved to the per-arm JTCs above, because a joint's
+#                               command interface can only be claimed by one
+#                               controller (R1c). Publish a Float64MultiArray of
+#                               3 values in the listed order.
 #   - base_velocity_controller: JointGroupVelocityController over the 3
-#     omniwheels (velocity command, holonomic wheel speeds). Float64MultiArray
-#     of 3 values in the listed order.
+#                               omniwheels (velocity command, holonomic wheel
+#                               speeds). Float64MultiArray of 3 values in the
+#                               listed order.
 #
 # The 2 gripper-mirror joints are mimics handled by the hardware interface
 # itself (R-PR8b-6); they are NOT in any controller.
@@ -22,6 +42,10 @@ controller_manager:
     update_rate: 100
     joint_state_broadcaster:
       type: joint_state_broadcaster/JointStateBroadcaster
+    left_arm_controller:
+      type: joint_trajectory_controller/JointTrajectoryController
+    right_arm_controller:
+      type: joint_trajectory_controller/JointTrajectoryController
     arm_gripper_position_controller:
       type: position_controllers/JointGroupPositionController
     base_velocity_controller:
@@ -32,21 +56,39 @@ joint_state_broadcaster:
     update_rate: 50
     type: joint_state_broadcaster/JointStateBroadcaster
 
-arm_gripper_position_controller:
+left_arm_controller:
   ros__parameters:
-    type: position_controllers/JointGroupPositionController
+    type: joint_trajectory_controller/JointTrajectoryController
     joints:
-      - column_lift
       - left_shoulder_pan
       - left_shoulder_lift
       - left_elbow_flex
       - left_wrist_flex
       - left_wrist_roll
+    command_interfaces:
+      - position
+    state_interfaces:
+      - position
+
+right_arm_controller:
+  ros__parameters:
+    type: joint_trajectory_controller/JointTrajectoryController
+    joints:
       - right_shoulder_pan
       - right_shoulder_lift
       - right_elbow_flex
       - right_wrist_flex
       - right_wrist_roll
+    command_interfaces:
+      - position
+    state_interfaces:
+      - position
+
+arm_gripper_position_controller:
+  ros__parameters:
+    type: position_controllers/JointGroupPositionController
+    joints:
+      - column_lift
       - left_gripper
       - right_gripper
 

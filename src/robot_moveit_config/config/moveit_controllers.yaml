@@ -1,0 +1,65 @@
+# MoveIt -> ros2_control controller wiring (PR2 / issue #147, ruling R6).
+#
+# This is the `moveit_controllers.yaml` that `move_group` loads to get a
+# controller manager. Without it, `allow_trajectory_execution: true` is inert:
+# move_group plans, then has nowhere to send the trajectory.
+#
+# The manager is moveit_simple_controller_manager (msscm, 2.12.4). For each
+# controller named in `controller_names` it reads four keys:
+#
+#   type      the msscm *handle* kind. `FollowJointTrajectory` selects
+#             FollowJointTrajectoryControllerHandle, which creates an
+#             rclcpp_action client for control_msgs/action/FollowJointTrajectory
+#             (VERIFIED against the 2.12.4 sources in this repo's pixi env:
+#             moveit_simple_controller_manager.cpp dispatches on this exact
+#             literal, and the handle's ctor is
+#             `ActionBasedControllerHandle<T>(node, name, action_ns, logger)`).
+#   action_ns the action namespace appended to the controller name. msscm's
+#             getActionName() is `namespace_.empty() ? name_ : name_ + "/" + ns`
+#             -- so the resolved action is
+#             /left_arm_controller/follow_joint_trajectory (VERIFIED: the
+#             ros-jazzy-joint-trajectory-controller 4.42.1 plugin creates its
+#             server at `~/follow_joint_trajectory`, and the spawner gives the
+#             controller that name). NB an EMPTY action_ns makes msscm dial the
+#             bare controller name (e.g. `/left_arm_controller`), which no JTC
+#             serves; the R6 note in the PRD flagged exactly this ambiguity.
+#   joints    the joint names this controller actuates. msscm refuses a
+#             trajectory for a joint no controller claims ("The joints for
+#             controller '%s' are not known..."), so this must be the same set —
+#             same names — as `controllers.yaml`'s JTC blocks.
+#   default   true marks the controller that msscm picks when a trajectory's
+#             joints match more than one. Each arm's joints are disjoint sets,
+#             so per-side `default: true` is unambiguous (and matches the
+#             upstream franka/Gen3 example shape).
+#
+# Kept deliberately controller-manager-only: the arm JTCs' *parameters* live in
+# robot_bringup/params/controllers.yaml (single source of truth for controllers,
+# R1b). This file is the MoveIt side's view of the same controllers.
+moveit_controller_manager: moveit_simple_controller_manager/MoveItSimpleControllerManager
+
+moveit_simple_controller_manager:
+  controller_names:
+    - left_arm_controller
+    - right_arm_controller
+
+  left_arm_controller:
+    type: FollowJointTrajectory
+    action_ns: follow_joint_trajectory
+    joints:
+      - left_shoulder_pan
+      - left_shoulder_lift
+      - left_elbow_flex
+      - left_wrist_flex
+      - left_wrist_roll
+    default: true
+
+  right_arm_controller:
+    type: FollowJointTrajectory
+    action_ns: follow_joint_trajectory
+    joints:
+      - right_shoulder_pan
+      - right_shoulder_lift
+      - right_elbow_flex
+      - right_wrist_flex
+      - right_wrist_roll
+    default: true

@@ -63,6 +63,12 @@ ros-jazzy-moveit-py = ">=2.12.4,<3"
 ros-jazzy-moveit-kinematics = ">=2.12.4,<3"
 ros-jazzy-moveit-simple-controller-manager = ">=2.12.4,<3"
 ros-jazzy-moveit-configs-utils = ">=2.12.4,<3"
+# Execution stack (issue #147, R1a): the JointTrajectoryController is what
+# makes an executed MoveIt plan a *real time-parameterised joint trajectory*
+# instead of a teleport -- MoveIt's moveit_simple_controller_manager sends it a
+# control_msgs/FollowJointTrajectory goal, and the controller interpolates.
+# The RoboStack channel ships 4.42.1 (verified); pinned `>=4.40.0,<5`.
+ros-jazzy-joint-trajectory-controller = ">=4.40.0,<5"
 
 # MoveIt 2 deps (issue #145, D39): the eight ros-jazzy-moveit-* packages above
 # are all present on the robostack-jazzy channel (2.12.4) and now pinned. Note
