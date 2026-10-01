@@ -33,18 +33,23 @@ Three claims, each the reason a piece of this PR exists:
 Why the launch is a subprocess on its own domain
 ------------------------------------------------
 The stack is long-lived and heavy (sim + Nav2 + move_group), so it runs as one
-``ros2`` launch in its own process group on a private ``ROS_DOMAIN_ID`` (120:
-112-119, 121 and 131 are taken by the other suites). Launching it once per test
-would cost minutes; the tests therefore share one stacked fixture-scoped launch
-and each drives it through a service call, subscribing to ``/joint_states`` for
-the trajectory observation.
+``ros2`` launch in its own process group on a private ``ROS_DOMAIN_ID`` (base
+120: 112-119, 121 and 131 are taken by the other suites). The domain is derived
+**per run** from the process id (see :func:`_unique_domain_id`), never a fixed
+literal, so concurrent invocations cannot poison each other's ``/joint_states``
+or ``cartesian_goal`` service -- the hazard that invalidated an earlier review.
+Launching it once per test would cost minutes; the tests therefore share one
+stacked fixture-scoped launch and each drives it through a service call,
+subscribing to ``/joint_states`` for the trajectory observation.
 
 The world is seeded through the live-state file the world service reads, so the
 object-based path (``object_id``) is exercised without inventing a second world
 API: the test writes a document with one reachable object and one far object,
 then the world service serves it.
 """
+import itertools
 import os
+import re
 import shutil
 import signal
 import subprocess
@@ -53,10 +58,44 @@ import time
 
 import pytest
 
-#: Private ROS domain for this suite (in use: 112,113,115,116,117,118,119,121,131).
-EXECUTION_DOMAIN_ID = '120'
+#: Base ROS domain for this suite (in use: 112,113,115,116,117,118,119,121,131;
+#: 120 is this suite's nominal slot). The value actually used is derived per
+#: run -- ``base + (pid % PYTEST_DOMAIN_PID_SPAN)`` -- so two concurrent
+#: invocations (e.g. the manager's run and a reviewer's probe, which is exactly
+#: the collision that corrupted an earlier review) never share a domain nor a
+#: FastDDS shared-memory port namespace. See :func:`_unique_domain_id`.
+EXECUTION_DOMAIN_BASE = 120
+#: The per-run domain is spread across this many values above the base; a PID
+#: modulo keeps the choice deterministic for a given process and cheap, and the
+#: span is wide enough that two simultaneous runs almost never collide.
+PYTEST_DOMAIN_PID_SPAN = 16
+#: Steps the domain forward per *fresh-domain retry* so a relaunch after a
+#: transient bringup abort is guaranteed a different namespace than the failed
+#: attempt.
+_DOMAIN_ATTEMPT = itertools.count()
 #: The stack is heavy (sim + Nav2 + move_group); give it a long, honest budget.
 STACK_READY_TIMEOUT_S = 420.0
+#: Bringup attempts on fresh domains. A cold/loaded host can hit a transient
+#: FastDDS discovery failure that leaves the stack half-up; the fixture
+#: relaunches on a new domain rather than declaring the code under test broken.
+#: A real defect still fails every attempt.
+_BRINGUP_ATTEMPTS = 3
+#: Signatures in the launch output that mean the bringup is already doomed, so
+#: waiting the full readiness budget cannot help (bail and retry immediately).
+_BRINGUP_ABORT_MARKERS = (
+    'Failed to bring up all requested nodes. Aborting bringup',
+    'process has died',
+)
+#: A transient bringup failure the retry is meant to ride out (as opposed to a
+#: genuine defect that must surface). The DDS discovery race shows up as these;
+#: anything else is re-raised on the first failure.
+_TRANSIENT_BRINGUP_MARKERS = (
+    'Aborting bringup',
+    'async_send_request failed',
+    'Failed init_port',
+    'open_and_lock_file failed',
+    'RTPS_TRANSPORT_SHM',
+)
 SERVICE_CALL_TIMEOUT_S = 120.0
 #: How long to watch /joint_states for the mid-trajectory sample.
 TRAJECTORY_OBSERVE_TIMEOUT_S = 60.0
@@ -122,6 +161,217 @@ def _require_tool(name):
 def _launch_file(package, name):
     from ament_index_python.packages import get_package_share_directory
     return os.path.join(get_package_share_directory(package), 'launch', name)
+
+
+# -- DDS isolation / teardown hardening --------------------------------------
+#
+# Ported from the peer suites (src/robot_bringup/test/test_pr2_navigate.py /
+# test_pr3_navigate.py), which already ship exactly this contract. The launcher
+# here spawns a *heavier* stack (sim + move_group + world + goal node) than the
+# nav suites, so the leaked-orphan and stale-SHM failure modes are if anything
+# more likely -- and an orphan was in fact reproduced after a colcon run before
+# this was ported.
+#
+#: FastDDS leaves its POSIX shared-memory segments in ``/dev/shm`` named
+#: ``fastrtps_<...>`` (SHM transport port segments + per-participant files) plus
+#: a ``sem.fastrtps_<...>_mutex`` lock per port. It does not always unlink them
+#: on an ungraceful exit, and when they accumulate a later launch dies at
+#: startup with ``RTPS_TRANSPORT_SHM Error: Failed init_port ...:
+#: open_and_lock_file failed`` -- a false negative unrelated to the code under
+#: test.
+_SHM_NAME_RE = re.compile(r'^(?:fastrtps_|sem\.fastrtps_)')
+
+
+def _unique_domain_id():
+    """Return a per-run ROS domain id derived from the process id.
+
+    Never a fixed literal: two concurrent invocations of this suite must not
+    share a domain (nor the FastDDS SHM port namespace that hangs off it), the
+    exact hazard the re-red-team reproduced by running this suite twice on the
+    hardcoded ``120``. ``base + (pid % span)`` is cheap, deterministic within a
+    process, and spreads simultaneous runs across ``span`` values.
+    """
+    return str(EXECUTION_DOMAIN_BASE + (os.getpid() % PYTEST_DOMAIN_PID_SPAN))
+
+
+def _next_retry_domain_id(domain_id):
+    """Return a domain different from ``domain_id`` for a fresh-domain retry."""
+    return str(int(domain_id) + PYTEST_DOMAIN_PID_SPAN + next(_DOMAIN_ATTEMPT))
+
+
+def _shm_inventory():
+    """Return the set of names currently in ``/dev/shm`` (missing dir -> empty)."""
+    try:
+        return set(os.listdir('/dev/shm'))
+    except OSError:
+        return set()
+
+
+def _held_by_a_live_process(path):
+    """Return True iff some live process still holds ``path`` open or mapped.
+
+    ``fuser`` exits 0 when at least one process holds the file. Used to make the
+    sweep safe on a **shared** host: a concurrent, unrelated ROS process'
+    segments are held, so they are never removed. If ``fuser`` is unavailable we
+    fail safe (report "held") and leave the file alone.
+    """
+    try:
+        result = subprocess.run(
+            ['fuser', path], stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL, timeout=10)
+    except (OSError, subprocess.SubprocessError):
+        return True
+    return result.returncode == 0
+
+
+def _worktree_marker():
+    """Return the root path identifying THIS worktree."""
+    prefix = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    return prefix.rsplit('/src/', 1)[0]
+
+
+def _node_path_markers():
+    """Path markers that appear only in THIS worktree's launched nodes.
+
+    Two launch spaces: our ament ``install/`` packages and the pixi/conda env's
+    ``lib/`` executables (upstream MoveIt/MoveItPy). Neither appears in the
+    pytest driver (relative ``src/``) nor the ``pixi run`` wrapper.
+    """
+    root = _worktree_marker()
+    return (os.path.join(root, 'install'),
+            os.path.join(root, '.pixi', 'envs', 'default', 'lib'))
+
+
+def _is_our_process(pid):
+    """Return True iff ``pid`` is one of THIS worktree's ROS processes.
+
+    Scoped to this worktree's own paths, which appear in the cmdline of every
+    node this checkout launches; a stray node from another checkout, an
+    unrelated ROS user's process, the pytest driver (relative ``src/`` cmdline)
+    and the ``pixi run`` wrapper never match. Returns False for our own process
+    and any PID we cannot read.
+    """
+    if pid == os.getpid():
+        return False
+    try:
+        with open('/proc/%d/cmdline' % pid, 'rb') as handle:
+            cmdline = handle.read().decode('utf-8', 'replace')
+    except OSError:
+        return False
+    return any(marker in cmdline for marker in _node_path_markers())
+
+
+def _stray_our_processes():
+    """Return the PIDs of every live process of THIS worktree (minus us)."""
+    strays = set()
+    for entry in os.listdir('/proc'):
+        if not entry.isdigit():
+            continue
+        pid = int(entry)
+        if _is_our_process(pid):
+            strays.add(pid)
+    return strays
+
+
+def _reap_orphans():
+    """Kill this worktree's launch children that escaped the process group.
+
+    Some ``ros2 launch`` children are re-parented to the user systemd session
+    and survive the group kill (reproduced by the re-red-team: an orphan
+    ``robot_state_publisher`` whose PPID was ``systemd --user`` and whose group
+    leader had already exited). They then linger in the ROS domain -- a stale
+    node corrupts the next bringup and holds FastDDS SHM segments, breaking the
+    next launch with ``open_and_lock_file failed``. They may be from THIS
+    session or an earlier crashed run, so we scan every process, not just this
+    session's.
+
+    Safe on a node shared with other ROS users: a PID is reaped only if its
+    cmdline names THIS worktree's own paths (see :func:`_is_our_process`). Waits
+    (bounded) for them to exit, so their SHM segments are freed for the sweep
+    that follows. Returns the count reaped.
+    """
+    culprits = _stray_our_processes()
+    for pid in culprits:
+        try:
+            os.kill(pid, signal.SIGKILL)
+        except (ProcessLookupError, PermissionError):
+            pass
+    if culprits:
+        deadline = time.monotonic() + 15.0
+        while time.monotonic() < deadline and _stray_our_processes():
+            time.sleep(0.2)
+    return len(culprits)
+
+
+def _sweep_stale_shm():
+    """Remove *all* unheld FastDDS SHM artifacts before a launch.
+
+    Unlike :func:`_cleanup_shm` this is not time-scoped -- it also clears
+    orphans left by an earlier crashed run, because the FastDDS SHM
+    meta-traffic ports are host-global (not domain-scoped) and a stale lock
+    there breaks the next launch. Safe on a shared node: any file held by a live
+    process is skipped (``fuser``). Returns the number removed.
+    """
+    removed = 0
+    for name in sorted(_shm_inventory()):
+        if not _SHM_NAME_RE.match(name):
+            continue
+        path = os.path.join('/dev/shm', name)
+        if _held_by_a_live_process(path):
+            continue
+        try:
+            os.unlink(path)
+            removed += 1
+        except OSError:
+            pass
+    return removed
+
+
+def _cleanup_shm(before):
+    """Remove only the fastrtps SHM artifacts *this* session created.
+
+    Scoped and guarded, so it is safe on a node shared with other ROS users:
+
+    * **Scoped by time** -- only names that appeared since the pre-launch
+      ``before`` inventory are candidates, so a file present before this session
+      is never touched.
+    * **Guarded by liveness** -- a candidate still held open by a live process is
+      skipped (``fuser``); we never yank a segment out from under a running peer.
+
+    Returns the number of files removed (for the caller to log).
+    """
+    removed = 0
+    # A few passes: a child that died just after the liveness probe releases its
+    # segment late, so one sweep can miss files a later sweep reclaims.
+    for _ in range(10):
+        pending = 0
+        for name in _shm_inventory() - before:
+            if not _SHM_NAME_RE.match(name):
+                continue
+            path = os.path.join('/dev/shm', name)
+            if _held_by_a_live_process(path):
+                pending += 1
+                continue
+            try:
+                os.unlink(path)
+                removed += 1
+            except OSError:
+                pass
+        if pending == 0:
+            break
+        time.sleep(0.5)
+    return removed
+
+
+def _group_alive(group):
+    """Return True iff any process is still in process group ``group``."""
+    try:
+        os.killpg(group, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
 
 
 # -- world seeding -----------------------------------------------------------
@@ -211,6 +461,13 @@ def _terminate_group(process, group):
             process.wait(timeout=20)
         except subprocess.TimeoutExpired:
             pass
+    # Wait for the whole group (sim + move_group + world + goal node) to exit:
+    # they hold their FastDDS SHM segments until they die, and the cleanup that
+    # follows is liveness-guarded, so it can only reclaim them once they are
+    # gone.
+    deadline = time.monotonic() + 15.0
+    while time.monotonic() < deadline and _group_alive(group):
+        time.sleep(0.2)
 
 
 class _ExecutionStack:
@@ -222,8 +479,9 @@ class _ExecutionStack:
     stacked ``joint_states`` recorder the trajectory assertions read.
     """
 
-    def __init__(self, domain_id=EXECUTION_DOMAIN_ID):
-        self._domain_id = domain_id
+    def __init__(self, domain_id=None):
+        self._domain_id = (str(domain_id) if domain_id is not None
+                           else _unique_domain_id())
         self._process = None
         self._group = None
         self._output = None
@@ -231,6 +489,7 @@ class _ExecutionStack:
         self._node = None
         self._executor = None
         self._world_path = None
+        self._shm_before = set()
         self._samples = []          # (monotonic_s, {joint: position})
 
     def __enter__(self):
@@ -242,8 +501,20 @@ class _ExecutionStack:
         os.makedirs(os.path.join(os.path.expanduser('~'), '.ros'), exist_ok=True)
         self._world_path = os.path.join(
             os.path.expanduser('~'), '.ros',
-            'pr2_i147_execution_%s.json' % self._domain_id)
+            'pr2_i147_execution_%s_%d.json' % (self._domain_id, os.getpid()))
         _seed_live_world(self._world_path)
+
+        # Clear stale FastDDS state *before* launching: reap this worktree's
+        # escaped children (an orphan `robot_state_publisher` reparented to
+        # systemd survives `killpg` -- reproduced by the re-red-team) and sweep
+        # unheld SHM segments (the FastDDS meta-traffic ports are host-global,
+        # not domain-scoped, so a leftover lock breaks the next launch with
+        # 'open_and_lock_file failed'). Both are liveness/scoped-guarded, so a
+        # concurrent ROS user on this shared host is never disturbed. Then
+        # snapshot /dev/shm so teardown removes exactly what this session adds.
+        _reap_orphans()
+        _sweep_stale_shm()
+        self._shm_before = _shm_inventory()
 
         # PYTHONUNBUFFERED: the stack's nodes are Python; without it their
         # stdout is block-buffered into a pipe and the readiness line the fixture
@@ -270,6 +541,18 @@ class _ExecutionStack:
                 self._context.try_shutdown()
         finally:
             _terminate_group(self._process, self._group)
+            # `killpg` alone is not enough: a child can be reparented to systemd
+            # after its group leader exits, so it survives the group kill and
+            # lingers in the DDS domain. Reap ours explicitly, then reclaim the
+            # FastDDS SHM segments this session created.
+            reaped = _reap_orphans()
+            removed = _cleanup_shm(self._shm_before)
+            if reaped:
+                print('[i147-exec] reaped %d orphaned node process(es) '
+                      'after teardown' % reaped)
+            if removed:
+                print('[i147-exec] reclaimed %d FastDDS /dev/shm segment(s) '
+                      'after teardown' % removed)
             if self._world_path and os.path.exists(self._world_path):
                 os.unlink(self._world_path)
 
@@ -414,9 +697,18 @@ class _ExecutionStack:
             % timeout)
 
 
-@pytest.fixture(scope='module')
-def stack():
-    """One execution stack for the module (launching it per test is minutes).
+def _is_transient_bringup_failure(text):
+    """Return True iff ``text`` shows a transient (retryable) bringup failure.
+
+    A genuine defect (a crash in the code under test, a missing dependency)
+    does not match these markers, so it is re-raised on the first attempt
+    instead of being masked by a retry.
+    """
+    return any(marker in text for marker in _TRANSIENT_BRINGUP_MARKERS)
+
+
+def _bring_up_stack(domain_id):
+    """Launch on ``domain_id`` and return a *ready* ``_ExecutionStack``.
 
     Readiness is two-stage and both stages matter: the ``cartesian_goal``
     service must answer (the goal node is up), and ``/joint_states`` must be
@@ -427,7 +719,9 @@ def stack():
     """
     from robot_moveit_ros_interfaces.srv import CartesianGoal
 
-    with _ExecutionStack() as running:
+    running = _ExecutionStack(domain_id=domain_id)
+    running.__enter__()
+    try:
         running.wait_for_client(
             running._node.create_client(
                 CartesianGoal, '/cartesian_goal/cartesian_goal'),
@@ -448,7 +742,49 @@ def stack():
         # half-built tree returns "not part of the same tree", which reads as a
         # goal failure rather than the startup race it is.
         running.wait_for_tf_chain(timeout=STACK_READY_TIMEOUT_S)
-        yield running
+        return running
+    except BaseException:
+        # Tear the half-up stack down before re-raising (or retrying), so its
+        # children and SHM segments do not leak into the next attempt.
+        running.__exit__(None, None, None)
+        raise
+
+
+@pytest.fixture(scope='module')
+def stack():
+    """One *ready* execution stack for the module, retried on fresh domains.
+
+    Launching the full stack per test would cost minutes, so one stacked
+    fixture-scoped launch is shared and each test drives it through the
+    ``cartesian_goal`` service.
+
+    The bringup is retried on a **fresh domain** (up to ``_BRINGUP_ATTEMPTS``)
+    to ride out a transient DDS-discovery failure on a cold/loaded host; a
+    genuine defect fails every attempt and surfaces. The per-run base domain is
+    derived from the pid (:func:`_unique_domain_id`), so concurrent invocations
+    never share a domain.
+    """
+    last_error = None
+    for attempt in range(_BRINGUP_ATTEMPTS):
+        domain_id = (_unique_domain_id() if attempt == 0
+                     else _next_retry_domain_id(_unique_domain_id()))
+        try:
+            running = _bring_up_stack(domain_id)
+        except Exception as exc:  # noqa: BLE001 - retry decision below
+            last_error = exc
+            if not _is_transient_bringup_failure(str(exc)):
+                raise
+            if attempt + 1 < _BRINGUP_ATTEMPTS:
+                print('[i147-exec] bringup attempt %d/%d failed transiently; '
+                      'relaunching on a fresh domain'
+                      % (attempt + 1, _BRINGUP_ATTEMPTS))
+            continue
+        with running:
+            yield running
+        return
+    raise AssertionError(
+        'the execution stack never came up after %d attempts; last error:\n%s'
+        % (_BRINGUP_ATTEMPTS, last_error))
 
 
 def _goal_request(stack, arm='left', object_id='', pose=None):
@@ -481,11 +817,17 @@ def test_execution_stack_moves_arm_along_a_trajectory(stack):
     its goal value -- a strictly interior point of the motion.
     """
     client = _goal_client(stack)
+    # Re-arm the recorder (this clears the fixture's samples) and then *wait*
+    # for a fresh pre-move sample rather than spinning a fixed window: on a
+    # loaded host (e.g. under `colcon test`, where this suite shares the machine
+    # with the other packages' tests) a bare `spin_for(2.0)` can return before
+    # the re-subscribed `/joint_states` delivers anything, leaving
+    # `start_positions` empty and starving the interior-sample check.
     stack.start_recording(LEFT_ARM_JOINTS)
-
-    # Let the recorder observe the pre-move pose.
-    stack.spin_for(2.0)
-    start_positions = dict(stack.samples[-1][1]) if stack.samples else {}
+    stack.wait_for_joint_state()
+    stack.spin_for(1.0)
+    assert stack.samples, 'no pre-move /joint_states sample was recorded'
+    start_positions = dict(stack.samples[-1][1])
 
     response = stack.call(
         client, _goal_request(stack, arm='left', pose=REACHABLE_TARGET))

@@ -512,47 +512,31 @@ class CartesianGoalNode(Node):
         # name at the root, which is where createPlanningPipelineMap looks when
         # the namespace is empty.
 
-        # Do NOT put `use_sim_time` in MoveItPy's config dict.
-        #
-        # rclpy declares `qos_overrides.<topic>.subscription.durability` as a
-        # READ-ONLY parameter for every subscription of a sim-time node, and
+        # `use_sim_time` IS set on MoveItPy's node here (see below), and the
+        # four clock QoS overrides are supplied alongside it. The reason is a
+        # MoveItPy/rclpy interaction: rclpy declares
+        # `qos_overrides.<topic>.subscription.durability` as a READ-ONLY
+        # parameter for a sim-time node (rclpy/qos_overriding_options.py), and
         # MoveItPy's node -- created with
         # `automatically_declare_parameters_from_overrides(true)` over a
-        # generated params file -- then aborts while setting it:
+        # generated params file -- aborts trying to set it when no value is
+        # present:
         #
         #   terminate called after throwing an instance of
         #   'rclcpp::exceptions::InvalidParameterValueException'
         #     what(): parameter 'qos_overrides./clock.subscription.durability'
         #             could not be set
         #
-        # (SIGABRT, exit -6). This is a MoveItPy/rclpy interaction, not a bug in
-        # this node, and it is intermittent -- which is worse. MoveIt's own node
-        # therefore runs on the wall clock.
-        #
-        # The consequence is that MoveIt's state monitor has to *wait* for
-        # /joint_states rather than assume it is already sim-time-aligned, so
-        # `wait_for_initial_state_timeout` is raised well past its 10 s default
-        # (this host is slow and the sim is loaded). That is the honest trade:
-        # a longer, explicit wait instead of an abort.
+        # (SIGABRT, exit -6). The fix is to supply each override *up front*, as
+        # the STRING rclpy itself would declare (a QoS policy name), leaving
+        # nothing for the node to resolve -- see the `params.update` below.
         params['use_sim_time'] = True
-        # rclpy declares `qos_overrides.<topic>.subscription.durability` as a
-        # READ-ONLY parameter for a sim-time node (rclpy/qos_overriding_
-        # options.py), and MoveItPy's node -- created with
-        # `automatically_declare_parameters_from_overrides(true)` over a
-        # generated params file -- aborts trying to set it when no value is
-        # present:
-        #
-        #   InvalidParameterValueException: parameter
-        #   'qos_overrides./clock.subscription.durability' could not be set
-        #
-        # Supplying the override up front, as the STRING rclpy itself would
-        # declare (a durability policy name), leaves nothing to resolve.
-        # The parameter name is dotted, so the YAML form is a single flattened
-        # key -- not a nested mapping. rclpy declares one parameter per QoS
-        # policy on the clock subscription, so every policy it inspects must be
-        # present and correctly typed; leaving any out aborts on the next one
-        # (observed: fixing `durability` moved the failure to `history`).
-        # Values match the /clock subscription rclpy's time source creates.
+        # rclpy declares one parameter per QoS policy on the clock subscription,
+        # so every policy it inspects must be present and correctly typed;
+        # leaving any out aborts on the next one (observed: fixing `durability`
+        # moved the failure to `history`). The parameter name is dotted, so the
+        # YAML form is a single flattened key -- not a nested mapping. Values
+        # match the /clock subscription rclpy's time source creates.
         params.update({
             'qos_overrides./clock.subscription.durability': 'volatile',
             'qos_overrides./clock.subscription.history': 'keep_last',
@@ -891,8 +875,16 @@ class CartesianGoalNode(Node):
         # directly against the planning scene is the honest, readable way to say
         # why: `check_collision` is the same checker the planner uses, with the
         # same disabled-collision set (R2).
-        collision_reason = self._goal_collision_reason(
+        collision_reason, check_failed = self._goal_collision_reason(
             moveit, goal_state, group_name)
+        if check_failed:
+            # The checker raised -- do NOT fall through as if the goal were
+            # collision-free (that would mask a self-colliding goal behind the
+            # opaque pipeline FAILURE). Surface it as an explicit failure.
+            return self._fail(
+                response, STATUS_FAILURE, MoveItErrorCodes.FAILURE,
+                'goal collision check failed; cannot decide whether the goal '
+                'is in collision (arm=%s)' % side)
         if collision_reason is not None:
             response.success = False
             response.status = STATUS_COLLISION
@@ -964,11 +956,19 @@ class CartesianGoalNode(Node):
         return response
 
     def _goal_collision_reason(self, moveit, goal_state, group_name):
-        """Return a reason string if ``goal_state`` is in collision, else None.
+        """Return ``(reason, failed)`` for the goal-state collision check.
 
         Runs the planning scene's own collision checker (the same one the
         planner uses, with the SRDF's disabled-collision set) against the goal
         configuration for ``group_name``.
+
+        ``(reason, False)`` means the goal state IS in collision and ``reason``
+        names the group; ``(None, False)`` means it checked cleanly with no
+        collision; ``(None, True)`` means the check itself raised. The failure
+        case is no longer swallowed -- the caller turns it into a loud FAILURE,
+        because silently treating "checker crashed" as "not colliding" would
+        flip a self-colliding goal back to the opaque FAILURE the collision
+        path exists to replace (the defect the re-red-team flagged).
         """
         try:
             monitor = moveit.get_planning_scene_monitor()
@@ -977,13 +977,16 @@ class CartesianGoalNode(Node):
                 # verbose)` -- the group name is required (verified against the
                 # moveit_py binding; calling it with the state alone raises
                 # "incompatible function arguments").
-                return ('goal configuration is in collision (%s)'
-                        % group_name
-                        if scene.is_state_colliding(goal_state, group_name,
-                                                    False) else None)
-        except Exception as exc:  # pragma: no cover - defensive
-            self.get_logger().warn('goal collision check failed: %s' % exc)
-            return None
+                colliding = scene.is_state_colliding(
+                    goal_state, group_name, False)
+        except Exception as exc:  # noqa: BLE001 - surfaced, not swallowed
+            self.get_logger().error(
+                'goal collision check failed: %s' % exc)
+            return None, True
+        if colliding:
+            return ('goal configuration is in collision (%s)'
+                    % group_name), False
+        return None, False
 
     def _plan_request_parameters(self, moveit):
         """Build PlanRequestParameters from the MoveItPy instance.
