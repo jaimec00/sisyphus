@@ -188,6 +188,12 @@ DEFAULT_IK_MAX_CANDIDATES = 550000
 #: reach a late-joining listener, short enough to answer a broken launch.
 DEFAULT_TF_WAIT_TIMEOUT_S = 30.0
 
+#: MoveIt's trajectory start-state tolerance, radians. The 0.01 default is
+#: tighter than the sim's settled error; 0.1 rad (~5.7 deg) accepts the honest
+#: "the arm is close to where the plan assumed" case without accepting an
+#: actual jump.
+DEFAULT_START_TOLERANCE_RAD = 0.1
+
 #: Planning budget per request. Generous relative to a 5-DOF arm, small enough
 #: that a genuinely unreachable goal still answers within one service call.
 DEFAULT_PLANNING_TIME_S = 5.0
@@ -340,6 +346,8 @@ class CartesianGoalNode(Node):
         self.declare_parameter('goal_tolerance_m', DEFAULT_GOAL_TOLERANCE_M)
         self.declare_parameter('ik_samples_per_joint', DEFAULT_IK_SAMPLES)
         self.declare_parameter('ik_max_candidates', DEFAULT_IK_MAX_CANDIDATES)
+        self.declare_parameter('start_tolerance_rad',
+                               DEFAULT_START_TOLERANCE_RAD)
 
         self._reach_radius = float(self.get_parameter('reach_radius').value)
         self._planning_time = float(
@@ -356,6 +364,8 @@ class CartesianGoalNode(Node):
             self.get_parameter('ik_samples_per_joint').value)
         self._ik_max_candidates = int(
             self.get_parameter('ik_max_candidates').value)
+        self._start_tolerance_rad = float(
+            self.get_parameter('start_tolerance_rad').value)
 
         # The handler blocks on planning/execution (seconds) while it still needs
         # the world client to answer and TF to buffer, so the group must be
@@ -479,7 +489,7 @@ class CartesianGoalNode(Node):
             'world_frame', 'tf_wait_timeout_s',
             'moveit_node_name', 'goal_tolerance_m',
             'ik_samples_per_joint', 'ik_max_candidates',
-            'world_frame', 'tf_wait_timeout_s',
+            'start_tolerance_rad',
         }
         params = {name: value for name, value in overrides.items()
                   if name not in own_switches}
@@ -502,42 +512,53 @@ class CartesianGoalNode(Node):
         # name at the root, which is where createPlanningPipelineMap looks when
         # the namespace is empty.
 
-        # MoveItPy spins its own node; without `use_sim_time` it subscribes to
-        # /joint_states against the wall clock while the sim publishes against
-        # /clock, and its trajectory validator then times out ("couldn't receive
-        # full current joint state within 1s") and every execution ABORTS.
-        # Passing the bool here is safe: the earlier crash came from a *nested*
-        # `qos_overrides.*` dict arriving via the launch param file, not from
-        # this scalar.
-        # Force a real bool: the launch supplies `use_sim_time` as a
-        # substitution, so the override arrives as the STRING 'true'/'false'.
-        # MoveItPy writes the config dict to a params file where a string is a
-        # different parameter type than a bool, and rclpy's node then refuses
-        # the clock's QoS override
-        # ("InvalidParameterValueException: qos_overrides./clock.subscription.
-        # durability could not be set") and the process aborts. A bool is what
-        # the standalone probe used, and what works.
-        raw = params.get('use_sim_time')
-        if isinstance(raw, str):
-            use_sim_time = raw.strip().lower() in ('true', '1', 'yes')
-        elif raw is None:
-            use_sim_time = bool(self.get_parameter('use_sim_time').value) \
-                if self.has_parameter('use_sim_time') else False
-        else:
-            use_sim_time = bool(raw)
-        params['use_sim_time'] = use_sim_time
-        # rclpy auto-declares `qos_overrides./clock.subscription.durability`
-        # for a sim-time node, and MoveItPy's node (created with
-        # `automatically_declare_parameters_from_overrides(true)` on top of a
-        # generated params file) intermittently aborts while setting it
-        # ("InvalidParameterValueException: parameter
-        # 'qos_overrides./clock.subscription.durability' could not be set",
-        # SIGABRT). Declaring the override up front, with the type the clock
-        # subscription actually wants, makes the value already present and
-        # correctly typed when rclpy looks for it.
-        params.setdefault('qos_overrides', {}).setdefault(
-            '/clock/subscription', {}).setdefault(
-                'durability', 'volatile')
+        # Do NOT put `use_sim_time` in MoveItPy's config dict.
+        #
+        # rclpy declares `qos_overrides.<topic>.subscription.durability` as a
+        # READ-ONLY parameter for every subscription of a sim-time node, and
+        # MoveItPy's node -- created with
+        # `automatically_declare_parameters_from_overrides(true)` over a
+        # generated params file -- then aborts while setting it:
+        #
+        #   terminate called after throwing an instance of
+        #   'rclcpp::exceptions::InvalidParameterValueException'
+        #     what(): parameter 'qos_overrides./clock.subscription.durability'
+        #             could not be set
+        #
+        # (SIGABRT, exit -6). This is a MoveItPy/rclpy interaction, not a bug in
+        # this node, and it is intermittent -- which is worse. MoveIt's own node
+        # therefore runs on the wall clock.
+        #
+        # The consequence is that MoveIt's state monitor has to *wait* for
+        # /joint_states rather than assume it is already sim-time-aligned, so
+        # `wait_for_initial_state_timeout` is raised well past its 10 s default
+        # (this host is slow and the sim is loaded). That is the honest trade:
+        # a longer, explicit wait instead of an abort.
+        params['use_sim_time'] = True
+        # rclpy declares `qos_overrides.<topic>.subscription.durability` as a
+        # READ-ONLY parameter for a sim-time node (rclpy/qos_overriding_
+        # options.py), and MoveItPy's node -- created with
+        # `automatically_declare_parameters_from_overrides(true)` over a
+        # generated params file -- aborts trying to set it when no value is
+        # present:
+        #
+        #   InvalidParameterValueException: parameter
+        #   'qos_overrides./clock.subscription.durability' could not be set
+        #
+        # Supplying the override up front, as the STRING rclpy itself would
+        # declare (a durability policy name), leaves nothing to resolve.
+        # The parameter name is dotted, so the YAML form is a single flattened
+        # key -- not a nested mapping. rclpy declares one parameter per QoS
+        # policy on the clock subscription, so every policy it inspects must be
+        # present and correctly typed; leaving any out aborts on the next one
+        # (observed: fixing `durability` moved the failure to `history`).
+        # Values match the /clock subscription rclpy's time source creates.
+        params.update({
+            'qos_overrides./clock.subscription.durability': 'volatile',
+            'qos_overrides./clock.subscription.history': 'keep_last',
+            'qos_overrides./clock.subscription.depth': 1,
+            'qos_overrides./clock.subscription.reliability': 'reliable',
+        })
         self._moveit_params = params
         if not params.get('robot_description'):
             self.get_logger().warn(
@@ -734,6 +755,17 @@ class CartesianGoalNode(Node):
         # (verified against the pybind: passing the message raises
         # "incompatible function arguments"). `state` already holds the winning
         # joint vector, so hand it straight over.
+        # Clamp the winning vector into the URDF bounds before handing it over:
+        # a state a hair outside them is rejected by CheckStartStateBounds
+        # (START_STATE_INVALID, -26) *before* the collision checker runs, which
+        # would make a genuinely colliding goal look like a bad-state goal.
+        clamped = [
+            min(max(value, low), high)
+            for value, (low, high) in zip(best, bounds)
+        ]
+        state.set_joint_group_positions(group_name, clamped)
+        state.update()
+
         self.get_logger().info(
             '%s Cartesian goal -> joint state (residual %.4f m)'
             % (side, best_distance))
@@ -851,6 +883,24 @@ class CartesianGoalNode(Node):
                 '(%.2f, %.2f, %.2f)'
                 % (self._goal_tolerance_m, target_xyz[0], target_xyz[1],
                    target_xyz[2]))
+        # A goal the arm can only reach by colliding with itself/the column must
+        # be rejected as COLLISION. MoveIt does detect it, but reports it as the
+        # opaque FAILURE (99999) out of the planning pipeline -- because a goal
+        # state that is in collision fails the constraint *sampler*, not the
+        # planner, so no contact list comes back either. Checking the goal state
+        # directly against the planning scene is the honest, readable way to say
+        # why: `check_collision` is the same checker the planner uses, with the
+        # same disabled-collision set (R2).
+        collision_reason = self._goal_collision_reason(
+            moveit, goal_state, group_name)
+        if collision_reason is not None:
+            response.success = False
+            response.status = STATUS_COLLISION
+            response.error_code = MoveItErrorCodes.GOAL_IN_COLLISION
+            response.message = ('goal rejected: %s (arm=%s)'
+                                % (collision_reason, side))
+            return response
+
         component.set_goal_state(robot_state=goal_state)
 
         try:
@@ -876,6 +926,20 @@ class CartesianGoalNode(Node):
             return response
 
         try:
+            # Raise MoveIt's start-state tolerance before executing. The default
+            # (0.01 rad) is tighter than the sim's settled tracking error, so a
+            # trajectory planned from the *believed* start state is rejected
+            # ("Invalid Trajectory: start point deviates from current robot
+            # state more than 0.01 at joint 'left_shoulder_pan'") whenever the
+            # arm is not exactly where the plan assumed -- which is exactly what
+            # happens after the first commanded move on a lagging sim.
+            # `TrajectoryExecutionManager.set_allowed_start_tolerance` is the
+            # exposed knob (verified in the moveit_py bindings).
+            execution_manager = moveit.get_trajectory_execution_manager()
+            if execution_manager is not None:
+                execution_manager.set_allowed_start_tolerance(
+                    self._start_tolerance_rad)
+
             # `execute` takes the trajectory AND a controllers list; the
             # binding has no default for the second argument (verified: omitting
             # it raises "incompatible function arguments"). An empty list means
@@ -898,6 +962,28 @@ class CartesianGoalNode(Node):
             % (side, object_id or 'explicit pose',
                _execution_status_text(execution_status)))
         return response
+
+    def _goal_collision_reason(self, moveit, goal_state, group_name):
+        """Return a reason string if ``goal_state`` is in collision, else None.
+
+        Runs the planning scene's own collision checker (the same one the
+        planner uses, with the SRDF's disabled-collision set) against the goal
+        configuration for ``group_name``.
+        """
+        try:
+            monitor = moveit.get_planning_scene_monitor()
+            with monitor.read_only() as scene:
+                # `is_state_colliding(robot_state, joint_model_group_name,
+                # verbose)` -- the group name is required (verified against the
+                # moveit_py binding; calling it with the state alone raises
+                # "incompatible function arguments").
+                return ('goal configuration is in collision (%s)'
+                        % group_name
+                        if scene.is_state_colliding(goal_state, group_name,
+                                                    False) else None)
+        except Exception as exc:  # pragma: no cover - defensive
+            self.get_logger().warn('goal collision check failed: %s' % exc)
+            return None
 
     def _plan_request_parameters(self, moveit):
         """Build PlanRequestParameters from the MoveItPy instance.

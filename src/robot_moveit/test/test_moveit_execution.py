@@ -357,8 +357,8 @@ class _ExecutionStack:
                     return
             self._executor.spin_once(timeout_sec=0.1)
         raise AssertionError(
-            'the cartesian_goal node never reported ready within %.0fs'
-            % timeout)
+            'the cartesian_goal node never reported ready within %.0fs\n'
+            'Stack output tail:\n%s' % (timeout, self.logs[-6000:]))
 
     def wait_for_log(self, needle, timeout=STACK_READY_TIMEOUT_S):
         """Spin until the launched stack's output contains ``needle``.

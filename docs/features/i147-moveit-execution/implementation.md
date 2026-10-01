@@ -119,6 +119,13 @@ the arm must adopt — and it matches the Mock's reach model (a sphere).
 at x ≈ 0.38 — a target at (0.45, …) is outside the arm's actual workspace despite
 lying inside the 0.85 m shoulder sphere. Test targets were chosen from this.
 
+**Self-collision is detected by a direct goal-state check** (not by decoding a
+plan error): after the FK search picks a goal configuration, the node runs the
+planning scene's own collision checker on it and reports COLLISION
+(`GOAL_IN_COLLISION`, −12) with the contacting link pair. This is what makes the
+third acceptance criterion honest -- the re-enabled R2 pairs are exactly what
+this check consults.
+
 **Error mapping** (`classify_plan_failure`, pure): START/GOAL_IN_COLLISION
 (-10/-12) → COLLISION; PLANNING_FAILED (-1) *with contacts* → COLLISION; a clean
 -1 (or any other code) → FAILURE. SURFACE from execution → SUCCESS/FAILURE by
@@ -201,8 +208,24 @@ domain `120`. Three tests, all green:
   (translation = last column), not a pose object.
 - `JointModelGroup.active_joint_model_bounds` returns a list of
   single-element lists of `VariableBounds` (read `.min_position`/`.max_position`).
-- `use_sim_time` must reach MoveItPy's node as a **bool** (not the launch's
-  string) or rclpy aborts on the clock's QoS override.
+- `use_sim_time=True` in `config_dict` makes MoveItPy's node abort on
+  `qos_overrides./clock.subscription.<policy>` (rclpy declares those read-only
+  for a sim-time node; `automatically_declare_parameters_from_overrides(true)`
+  cannot set them). Fixed by supplying **all four** flattened overrides in the
+  config dict:
+  `qos_overrides./clock.subscription.{durability,history,depth,reliability}`.
+  (Supplying only one moved the failure to the next policy -- `history` after
+  `durability`.)
+- MoveIt's trajectory start-state tolerance defaults to **0.01 rad**, tighter
+  than the sim's settled tracking error, so a plan drawn from the believed
+  start state is rejected ("Invalid Trajectory: start point deviates from
+  current robot state more than 0.01 at joint …"). Raised to 0.1 rad via
+  `TrajectoryExecutionManager.set_allowed_start_tolerance`.
+- `PlanningScene.is_state_colliding(state)` / `check_collision(state)` (via
+  `moveit.get_planning_scene_monitor().read_only()`) is the direct way to test a
+  goal configuration; MoveIt otherwise reports an in-collision *goal state* as
+  the opaque FAILURE (99999) with no contacts, because it fails the constraint
+  sampler rather than the planner.
 
 `moveit_simple_controller_manager` 2.12.4: `type: FollowJointTrajectory`
 selects `FollowJointTrajectoryControllerHandle`; `getActionName()` =
@@ -249,13 +272,36 @@ Modified:
 - `robot_bringup/test/test_mujoco_launch.py` — 3 passed
 - flake8/pep257/copyright for robot_moveit, robot_moveit_config,
   robot_bringup, robot_moveit_ros_interfaces — green
+- `colcon test` per package: `robot_moveit` 23/0 failures,
+  `robot_moveit_config` 12/0, `robot_moveit_ros_interfaces` 1/0,
+  `robot_bringup` 21/0 (in isolation; one nav launch test is host-load flaky
+  when many sims run concurrently)
 
 The full `pixi run test` suite is the test-runner's job (not run here).
 
 ## Build note
 
 `vcs import src < robot.repos` was needed in this worktree (the sim source was
-absent). The vendored `src/mujoco_ros2_control/` tree is gitignored; its
-`mujoco_ros2_control_examples` sub-package fails to build here (it downloads STLs
-from the network) and was moved aside for a local build only — it is untracked
-and must not appear in the PR.
+absent). The vendored `src/mujoco_ros2_control/` tree is **gitignored**
+(`.gitignore` line 38) and is not part of the PR.
+
+`mujoco_ros2_control_examples` (a sub-package of that vendored tree) downloads
+STL meshes at CMake configure time; on a host without that access it fails the
+build. It was moved aside once during this work (and restored), but in general
+`pixi run build` **does** build it (with a CMake deprecation warning) when the
+network is available. It is untracked either way, so it cannot appear in the PR.
+
+Because the vendored tree is present in this worktree, `ament_flake8` run from a
+first-party package's directory walks up into it and reports its files; this is
+why a raw `python -m flake8` over a package dir shows vendored-file errors. The
+gate (`colcon test`, per-package) runs with the package as its own
+`--packages-select` root and is unaffected — verified: `robot_moveit` 23 tests,
+`robot_moveit_config` 12, `robot_bringup` 21, `robot_moveit_ros_interfaces` 1,
+all 0 failures — the linters in each package pass there.
+
+NOTE (from red team, addressed): `robot_moveit_ros_interfaces` originally shipped
+without a `pytest.ini`, so `colcon test` aborted it on the RoboStack
+`launch_testing`/`launch_ros` plugin incompatibility (`pytest.missing_result`).
+A `pytest.ini` matching its siblings (`addopts = -p no:launch_testing -p
+no:launch_ros`) was added; `colcon test --packages-select
+robot_moveit_ros_interfaces` now reports `100% tests passed out of 1`.
