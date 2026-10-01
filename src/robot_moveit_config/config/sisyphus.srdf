@@ -116,29 +116,21 @@
   <disable_collisions link1="right_gripper_upper_jaw_link" link2="right_gripper_upper_tip_link" reason="Never"/>
   <disable_collisions link1="right_gripper_lower_jaw_link" link2="right_gripper_lower_tip_link" reason="Never"/>
 
-  <!-- Cross-side / body pairs. The two arms are mounted on the same
-       column and can fold into each other and into the column; these
-       pairs are not collision-avoidable goals in PR1 (the arms have no
-       motion yet : PR2 owns reachable-space collision handling), so
-       they are disabled rather than left to reject every plan. -->
+  <!-- Body pairs. Only genuinely-fixed / always-adjacent body pairs stay
+       disabled. The two arms are mounted on the same column and *can* fold into
+       each other and into the column (each arm reaches 0.85 m and the shoulder
+       origins are 0.36 m apart, so the two reach spheres overlap heavily), so
+       the cross-side and column<->arm pairs PR1 disabled pre-emptively are
+       RE-ENABLED here (PR2 / issue #147, R2): those are real collisions a plan
+       must reject, and the neutral pose is empirically collision-free without
+       them. What remains below is only what is rigid by construction:
+         * column_rail_link <-> column_top (Adjacent): the prismatic carriage
+           rides the rail, always in contact, never a plan-avoidable contact.
+         * base_link <-> base_chassis_link (Adjacent): fixed mount.
+         * base_link <-> base_footprint (Never): fixed; the footprint is a
+           virtual frame. -->
   <disable_collisions link1="column_rail_link" link2="column_top" reason="Adjacent"/>
   <disable_collisions link1="base_link" link2="base_chassis_link" reason="Adjacent"/>
   <disable_collisions link1="base_link" link2="base_footprint" reason="Never"/>
-  <disable_collisions link1="left_shoulder_link" link2="right_shoulder_link" reason="Default"/>
-  <disable_collisions link1="left_upper_arm_link" link2="right_upper_arm_link" reason="Default"/>
-  <disable_collisions link1="left_wrist_roll_link" link2="right_wrist_roll_link" reason="Default"/>
-  <disable_collisions link1="left_gripper_base_link" link2="right_gripper_base_link" reason="Default"/>
-  <disable_collisions link1="column_top" link2="left_shoulder_link" reason="Never"/>
-  <disable_collisions link1="column_top" link2="left_upper_arm_link" reason="Never"/>
-  <disable_collisions link1="column_top" link2="left_lower_arm_link" reason="Never"/>
-  <disable_collisions link1="column_top" link2="left_wrist_link" reason="Never"/>
-  <disable_collisions link1="column_top" link2="left_wrist_roll_link" reason="Never"/>
-  <disable_collisions link1="column_top" link2="left_gripper_base_link" reason="Never"/>
-  <disable_collisions link1="column_top" link2="right_shoulder_link" reason="Never"/>
-  <disable_collisions link1="column_top" link2="right_upper_arm_link" reason="Never"/>
-  <disable_collisions link1="column_top" link2="right_lower_arm_link" reason="Never"/>
-  <disable_collisions link1="column_top" link2="right_wrist_link" reason="Never"/>
-  <disable_collisions link1="column_top" link2="right_wrist_roll_link" reason="Never"/>
-  <disable_collisions link1="column_top" link2="right_gripper_base_link" reason="Never"/>
 
 </robot>

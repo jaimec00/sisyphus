@@ -474,16 +474,62 @@ def test_move_group_planner_config_resolves():
             % (NONEXISTENT_PLANNER_CONFIG, value.string_value))
 
 
+#: The pairs PR2/issue #147 R2 re-enabled: the cross-side link pairs and the
+#: column_top<->arm pairs. The neutral-pose check below is exactly the empirical
+#: guard that they did not make the *home* pose itself a self-collision.
+REENABLED_PAIRS = [
+    ('left_shoulder_link', 'right_shoulder_link'),
+    ('left_upper_arm_link', 'right_upper_arm_link'),
+    ('left_wrist_roll_link', 'right_wrist_roll_link'),
+    ('left_gripper_base_link', 'right_gripper_base_link'),
+] + [
+    ('column_top', '%s_%s' % (side, link))
+    for side in ('left', 'right')
+    for link in ('shoulder_link', 'upper_arm_link', 'lower_arm_link',
+                 'wrist_link', 'wrist_roll_link', 'gripper_base_link')
+]
+
+
+def _format_contacts(response):
+    """Render ``response.contacts`` incl. the full contact geometry.
+
+    ``contact_body_1``/``contact_body_2`` alone name the pair; the position and
+    depth say *where* and *how hard*, which is what makes a neutral-pose
+    regression actionable rather than a bare ``valid == False``.
+    """
+    lines = []
+    for contact in response.contacts:
+        position = contact.position
+        normal = contact.normal
+        lines.append(
+            '%s<->%s pos=(%.4f, %.4f, %.4f) normal=(%.4f, %.4f, %.4f) '
+            'depth=%.6f' % (
+                contact.contact_body_1, contact.contact_body_2,
+                position.x, position.y, position.z,
+                normal.x, normal.y, normal.z, contact.depth))
+    return lines
+
+
 def test_move_group_neutral_pose_is_collision_free():
-    """R-fix2: the neutral (all-zeros) arm pose is collision free.
+    """R-fix2 (extended by R2): the neutral (all-zeros) arm pose is collision free.
 
     The red-team's BLOCK 2: the SRDF shipped no ``<disable_collisions>``, so
     MoveIt checked every link pair and found the adjacent links (and one body
     pair) in contact at the neutral pose -- ``CheckStartStateCollision`` then
-    rejected every plan. The fix adds the disable_collisions entries; this
-    asserts ``/check_state_validity`` now reports ``valid=True`` for the
-    all-zeros pose of each arm, and lists the contacts otherwise so a
-    regression is diagnosable (not just "valid == False").
+    rejected every plan. PR1 added the disable_collisions entries; this asserts
+    ``/check_state_validity`` reports ``valid=True`` for the all-zeros pose of
+    each arm.
+
+    **R2 extension:** PR2 re-enabled the 16 pre-emptive pairs (cross-side +
+    column_top<->arm) so a plan that folds the arms together is rejected. That
+    is only safe if the *home* pose is not itself in contact, and the collision
+    meshes are STLs, so link-origin forward kinematics is an approximation. This
+    test is the empirical check for that ruling; on failure it now prints every
+    contact's body pair, position, normal and depth (see ``_format_contacts``),
+    so a regression names the colliding pair and where -- not merely that the
+    pose is invalid. A genuine neutral-pose collision here means the shipped
+    home pose self-collides, which is a design problem above this PR's pay
+    grade, not a test to loosen.
     """
     from moveit_msgs.srv import GetStateValidity
     from moveit_msgs.msg import RobotState
@@ -503,11 +549,11 @@ def test_move_group_neutral_pose_is_collision_free():
             joint_state.position = [0.0] * len(joint_state.name)
             request.robot_state.joint_state = joint_state
             response = probe.call(client, request)
-            contacts = ['%s<->%s' % (c.contact_body_1, c.contact_body_2)
-                        for c in response.contacts]
+            contacts = _format_contacts(response)
             assert response.valid, (
-                'neutral pose of %s is not collision free; contacts: %r'
-                % (group, contacts))
+                'neutral pose of %s is not collision free -- the R2 re-enabled '
+                'pairs must not make the home pose self-collide; contacts '
+                '(%d):\n%s' % (group, len(contacts), '\n'.join(contacts)))
 
 
 def test_move_group_can_plan_for_an_arm():

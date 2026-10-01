@@ -1,0 +1,40 @@
+# A Cartesian goal for one arm (PR2 / issue #147, ruling R5).
+#
+# A target is identified one of two ways, and the request says which: a world
+# object id (resolved through the world service) or an explicit pose. ROS
+# services have no field presence, and a default-constructed Pose is a *valid*
+# pose, so `use_target_pose` is the explicit switch rather than an empty-pose
+# sentinel (see cartesian_goal._target_is_identifiable). When
+# `use_target_pose` is true `target_pose` is read; otherwise `object_id` must be
+# non-empty. Setting both is allowed -- the pose is ignored, not blended.
+
+# World object id to reach for (e.g. `mug_1`). Read when `use_target_pose` is
+# false; must be non-empty then.
+string object_id
+
+# Explicit target pose, in the `world` frame. Read only when
+# `use_target_pose` is true.
+geometry_msgs/Pose target_pose
+
+# True to use `target_pose` instead of resolving `object_id`.
+bool use_target_pose
+
+# Which arm: 'left' or 'right'.
+string arm
+
+---
+# True only on a completed execution (`status == SUCCESS`).
+bool success
+
+# The moveit_msgs/MoveItErrorCodes value that produced this result (1 = SUCCESS;
+# -1 PLANNING_FAILED; -10/-12 start/goal in collision; etc.). For the pre-plan
+# `OUT_OF_REACH` rejection this carries the envelope pre-check's synthetic code.
+int32 error_code
+
+# Outcome class, so a caller can branch without decoding error codes.
+# Defined in the node's status enum:
+#   0 = SUCCESS, 1 = OUT_OF_REACH, 2 = COLLISION, 3 = FAILURE
+uint8 status
+
+# Human-readable detail (which arm, the resolved target, the error class).
+string message

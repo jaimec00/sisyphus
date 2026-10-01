@@ -186,3 +186,68 @@ def test_srdf_names_all_exist_in_the_expanded_urdf():
                 assert joint in joints, joint
     for eef in srdf.end_effectors:
         assert eef.parent_link in links, eef.parent_link
+
+
+#: The 16 pairs PR2 / issue #147 (R2) re-enabled: the cross-side pairs and the
+#: column_top <-> arm pairs. They must NOT appear in the SRDF as
+#: ``disable_collisions`` any more -- a plan that folds the two arms together,
+#: or an arm into the column, must be rejected by the collision checker.
+REENABLED_PAIRS = sorted(
+    [('left_shoulder_link', 'right_shoulder_link'),
+     ('left_upper_arm_link', 'right_upper_arm_link'),
+     ('left_wrist_roll_link', 'right_wrist_roll_link'),
+     ('left_gripper_base_link', 'right_gripper_base_link')]
+    + [('column_top', '%s_%s' % (side, link))
+       for side in SIDES
+       for link in ('shoulder_link', 'upper_arm_link', 'lower_arm_link',
+                    'wrist_link', 'wrist_roll_link', 'gripper_base_link')]
+)
+
+#: The body pairs that MUST stay disabled: rigid by construction, so a contact
+#: between them is an adjacency artefact, never a plan-avoidable collision.
+KEPT_BODY_PAIRS = sorted([
+    ('column_rail_link', 'column_top'),
+    ('base_link', 'base_chassis_link'),
+    ('base_link', 'base_footprint'),
+])
+
+
+def _disabled_pairs(srdf):
+    """Return the SRDF's disable_collisions entries as sorted link pairs."""
+    pairs = []
+    for entry in srdf.disable_collisionss:
+        pairs.append(tuple(sorted((entry.link1, entry.link2))))
+    return pairs
+
+
+def test_srdf_reenabled_collision_pairs_are_not_disabled():
+    """R2 (PR2 / issue #147): the 16 pre-emptive disables are gone.
+
+    PR1 disabled the cross-side and column_top<->arm pairs pre-emptively --
+    its own comment said so ("the arms have no motion yet : PR2 owns
+    reachable-space collision handling"). PR2 gives the arms motion, so that
+    ruling flips: those pairs must be checked. This asserts neither link is
+    disabled in either direction, and that the three genuinely-rigid body pairs
+    *are* still disabled (so the re-enable is scoped, not a wholesale flush of
+    the block).
+
+    Deliberately not asserting the total entry count: that number is a
+    consequence of the per-side chain lists, which have their own tests; the
+    claim under test is *these* pairs and *those* kept pairs.
+    """
+    srdf = _parse_srdf()
+    disabled = _disabled_pairs(srdf)
+
+    for pair in REENABLED_PAIRS:
+        canonical = tuple(sorted(pair))
+        assert canonical not in disabled, (
+            'R2 re-enabled pair %r is still disabled in the SRDF; a plan that '
+            'folds the two arms together (or an arm into the column) would not '
+            'be rejected' % (canonical,))
+
+    for pair in KEPT_BODY_PAIRS:
+        canonical = tuple(sorted(pair))
+        assert canonical in disabled, (
+            'body pair %r must stay disabled (rigid by construction): a '
+            'contact there is an adjacency artefact, not a plan-avoidable '
+            'collision' % (canonical,))

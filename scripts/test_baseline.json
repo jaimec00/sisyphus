@@ -7,8 +7,8 @@
     "robot_bringup": 18,
     "robot_description": 73,
     "robot_mcp": 102,
-    "robot_moveit": 7,
-    "robot_moveit_config": 8,
+    "robot_moveit": 20,
+    "robot_moveit_config": 9,
     "robot_nav": 43,
     "robot_nav_interfaces": 4,
     "robot_perception": 0,
@@ -16,6 +16,7 @@
     "robot_skills": 106,
     "robot_world": 68,
     "robot_world_ros": 11,
-    "robot_world_ros_interfaces": 10
+    "robot_world_ros_interfaces": 10,
+    "robot_moveit_ros_interfaces": 1
   }
 }

@@ -21,12 +21,14 @@ setup(
     maintainer_email='hejaca00@gmail.com',
     description=(
         'MoveIt runtime glue: a planning-scene bridge that feeds world objects'
-        ' from robot_world into the MoveIt planning scene.'),
+        ' from robot_world into the MoveIt planning scene, and a Cartesian-goal'
+        ' service that plans and executes an arm goal through moveit_py.'),
     license='MIT',
     extras_require={'test': ['pytest']},
     entry_points={
         'console_scripts': [
             'planning_scene_bridge = robot_moveit.planning_scene_bridge:main',
+            'cartesian_goal = robot_moveit.cartesian_goal:main',
         ],
     },
 )
