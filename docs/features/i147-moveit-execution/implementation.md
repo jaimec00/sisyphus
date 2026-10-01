@@ -305,3 +305,43 @@ without a `pytest.ini`, so `colcon test` aborted it on the RoboStack
 A `pytest.ini` matching its siblings (`addopts = -p no:launch_testing -p
 no:launch_ros`) was added; `colcon test --packages-select
 robot_moveit_ros_interfaces` now reports `100% tests passed out of 1`.
+
+## Post-red-team resolutions (commit 402e317)
+
+The red-team (`red_team.md`, run against checkpoint `ccff9ae`) raised two
+BLOCKs and four NOTEs. Both BLOCKs are fixed and re-verified:
+
+* **BLOCK-1a** — the two-modes-both-broken `use_sim_time` trap: with it,
+  MoveItPy's node aborted on `qos_overrides./clock.subscription.<policy>`;
+  without it, the trajectory validator timed out ("couldn't receive full
+  current joint state within 1s") and every execution ABORTED. Fixed by
+  supplying **all four** flattened `qos_overrides./clock.subscription.*`
+  overrides in `config_dict`, plus raising MoveIt's allowed start tolerance to
+  0.1 rad. A reachable goal now executes `SUCCEEDED`, and the "not a teleport"
+  assertion passes.
+* **BLOCK-1b** — a self-colliding goal was reported as generic FAILURE
+  (99999, no contacts) because MoveIt fails the *goal constraint sampler*, not
+  the planner. Fixed with a direct goal-state collision check
+  (`PlanningScene.is_state_colliding(goal_state, group)`) before planning;
+  the response is now `status=COLLISION`, `error_code=-12`. Verified: target
+  `(0.05, 0.00, 0.60)` → `success=False, error_code=-12, status=2`.
+* **BLOCK-2** — `robot_moveit_ros_interfaces` shipped without a `pytest.ini`,
+  so `colcon test` on it aborted (`pytest.missing_result`). Added a
+  `pytest.ini` matching its siblings; `colcon test --packages-select
+  robot_moveit_ros_interfaces` → `100% tests passed out of 1`.
+* **NOTE-2/3/4** — the FK residual sits near the 2 cm tolerance (recorded);
+  the build note is corrected above; the historical controller name is kept
+  per R1c (cosmetic).
+* **NOTE-1 (stray probe loops)** — the ad-hoc `/tmp/m2.sh`/`verify.sh` loops
+  were killed; no sim/launch processes are left running.
+
+Final scoped verification on the committed tree (402e317):
+- `python -m pytest` over all touched non-linter tests (robot_moveit ×4 files,
+  robot_moveit_config ×2, robot_moveit_ros_interfaces, robot_bringup mujoco):
+  **33 passed, 0 failed** — includes the 3 e2e tests on domain 120.
+- `colcon test` per package: `robot_moveit` 23/0 failures,
+  `robot_moveit_config` 12/0, `robot_moveit_ros_interfaces` 1/0,
+  `robot_bringup` 21/0 (the nav-launch test is host-load flaky only when many
+  sims run concurrently; it passes in isolation).
+- flake8/pep257/copyright for robot_moveit, robot_moveit_config, robot_bringup:
+  green.
