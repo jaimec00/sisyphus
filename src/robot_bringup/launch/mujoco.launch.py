@@ -321,8 +321,8 @@ def generate_launch_description():
                          ' map derive from.')),
         DeclareLaunchArgument(
             'world_objects', default_value='false',
-            description=('Materialize the world-state file\'s collidable '
-                         'objects + finite support surface into the sim MJCF. '
+            description=('Materialize the collidable objects + finite support '
+                         'surface of the world-state file into the sim MJCF. '
                          'Default false keeps the pre-#150 robot + floor model '
                          '(materializing the shipped seed by default blocks '
                          'navigation -- see the module docstring). Set true to '
