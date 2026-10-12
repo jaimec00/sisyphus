@@ -145,6 +145,67 @@ def test_launch_generates_expected_nodes():
     assert 'controller_manager/spawner' in flat
 
 
+def test_materialized_mjcf_contains_the_world_objects():
+    """The launch's materialize path puts the world objects into the MJCF (#150).
+
+    PR A of #150: the sim's physical world. This is the cheap structural proof
+    -- no ROS graph, no sim -- that ``mujoco.launch.py``'s materialize path
+    reads a world-state file and splices its object bodies into the derived
+    MJCF the sim loads. It drives the launch module's own value-level helper
+    (``_materialize_mjcf_for_state``) against the *shipped seed* so the tested
+    path is the sim path, then greps the materialized model for the seed's
+    object body names AND the finite support surface. The physics proof (rest +
+    contact) lives in robot_description's ``test_world_bodies.py``.
+    """
+    import importlib.util
+    import json
+    import tempfile
+
+    from robot_world import default_seed_document
+
+    path = _launch_path()
+    spec = importlib.util.spec_from_file_location(
+        'robot_bringup_mujoco_launch_scene', path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    document = default_seed_document()
+    assert document.objects, 'the shipped seed has no objects to materialize'
+
+    directory = tempfile.mkdtemp(prefix='i150_world_materialize_')
+    world_state = os.path.join(directory, 'world.json')
+    with open(world_state, 'w') as handle:
+        json.dump(document.to_dict(), handle)
+    mjcf_path = os.path.join(directory, 'derived_scene.xml')
+
+    module._materialize_mjcf_for_state(mjcf_path, world_state)
+    with open(mjcf_path) as handle:
+        text = handle.read()
+
+    # The finite support surface is there ...
+    assert 'name="world_support"' in text, (
+        'the materialized MJCF has no support surface; world objects would '
+        'fall through the sim floor')
+    # ... and so is every seed object body.
+    for obj in document.objects:
+        assert '<body name="%s"' % obj.object_id in text, (
+            'world object %r is missing from the materialized MJCF'
+            % obj.object_id)
+
+    # A missing/unreadable world file must degrade, not crash: the sim still
+    # comes up with the robot + floor only (no exception, no world bodies).
+    missing = os.path.join(directory, 'does_not_exist.json')
+    fallback_path = os.path.join(directory, 'fallback_scene.xml')
+    module._materialize_mjcf_for_state(fallback_path, missing)
+    with open(fallback_path) as handle:
+        fallback_text = handle.read()
+    assert 'name="world_support"' not in fallback_text
+    for obj in document.objects:
+        assert '<body name="%s"' % obj.object_id not in fallback_text
+    # The floor is still there, so the robot is still drivable.
+    assert 'name="floor"' in fallback_text
+
+
 #: The five revolute joints per arm, in the chain's order (PR2 / issue #147).
 ARM_JOINTS = (
     'shoulder_pan', 'shoulder_lift', 'elbow_flex', 'wrist_flex', 'wrist_roll',

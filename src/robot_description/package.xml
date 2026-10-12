@@ -27,6 +27,12 @@
        pixi.toml so the test gate (which invokes the loader) does not depend
        on a transitive closure. -->
   <exec_depend>mujoco</exec_depend>
+  <!-- PR A of #150: world_bodies.py turns a robot_world.WorldDocument into the
+       collidable <body> blocks the sim splices in. robot_world is ROS-free (no
+       rclpy / ament_index) so this keeps the "no ROS import at runtime"
+       invariant (D30); it is the D35 world-state seam, not a second scene
+       source. -->
+  <exec_depend>robot_world</exec_depend>
 
   <!-- The expand/parse gate (test/test_description.py) shells out to the
        xacro and check_urdf CLIs and parses the result with urdf_parser_py,
