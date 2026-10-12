@@ -26,9 +26,22 @@ bodies for its own bookkeeping, these real bodies in the ROS sim.
 An object also has to rest on *something*. The seed's objects sit at counter
 height (``mug_1`` at z=1.15), but the sim has only the drive floor at z=-0.05,
 so a free-jointed object would simply fall. The converter therefore also emits
-a **finite** support surface ("table") whose top is at :data:`SUPPORT_TOP_Z` --
-*finite*, not an infinite plane, because a plane at counter height would
-intersect the robot's column and arms (issue #150 R5).
+**finite** support surfaces ("tables") -- *finite*, not infinite planes, because
+a plane at counter height would intersect the robot's column and arms (issue
+#150 R5).
+
+Two surfaces, derived from the objects (issue #152 R1)
+------------------------------------------------------
+The shipped seed's graspables sit in two clusters at two different heights (the
+kitchen trio ``mug_1``/``plate_1``/``bowl_1`` at z ~1.15, the table pair
+``book_1``/``cup_1`` at z ~0.90), so one surface cannot serve both:
+:func:`derived_support_surfaces` groups the graspable objects by the surface top
+their pose implies (``z - vertical half-extent``) and returns one surface per
+group, and :func:`collidable_world_bodies_xml` emits them as ``world_support_0``,
+``world_support_1``, ... A caller that passes no ``support_surfaces`` still gets
+the single historical surface at :data:`SUPPORT_TOP_Z` (backward compatible).
+The surfaces are placed under the objects, which the seed keeps clear of both
+the navigation corridor and the robot's own footprint -- see issue #152 R2.
 
 Geometry single source of truth (R3)
 ------------------------------------
@@ -70,6 +83,7 @@ __all__ = [
     'DEFAULT_BOX_SIZE',
     'DEFAULT_FRICTION',
     'DEFAULT_MASS',
+    'derived_support_surfaces',
     'PHYSICAL_GEOMS_BY_LABEL',
     'PhysicalGeom',
     'SUPPORT_BODY_NAME',
@@ -116,6 +130,13 @@ SUPPORT_HALF_EXTENT = 1.0
 #: arms, which is exactly why a finite box is used instead of a plane.
 SUPPORT_HALF_THICKNESS = 0.05
 
+#: Decimal places :func:`derived_support_surfaces` rounds a derived surface top
+#: to before grouping (issue #152 R1). The seed's tops are exact (1.10, 0.87),
+#: but a live world's ``z - half`` carries float noise; six decimals is far
+#: finer than any real surface difference and far coarser than that noise, so
+#: objects that *mean* the same surface group together.
+DERIVED_SURFACE_ROUNDING = 6
+
 #: Horizontal centre of the support surface ``(x, y)``, metres (R5: centre is a
 #: converter constant/param).
 #:
@@ -133,7 +154,21 @@ SUPPORT_HALF_THICKNESS = 0.05
 SUPPORT_CENTER = (2.15, 0.0)
 
 #: Name of the support-surface body in the derived MJCF (tests find it by name).
+#: A :func:`derived_support_surfaces` list emits one per entry, suffixed with
+#: its index (``world_support_0``, ``world_support_1``, ...), so the historical
+#: single-surface name stays exactly as it was for the default path.
 SUPPORT_BODY_NAME = 'world_support'
+
+#: Minimum half-extent of a *derived* support surface, metres (issue #152 R1):
+#: a surface narrower than this stops reading as a surface and starts reading as
+#: a pedestal. The derived half-extent never drops below it.
+DERIVED_MIN_HALF_EXTENT = 0.20
+
+#: Margin added to a group's half-span when deriving its surface's half-extent
+#: (issue #152 R1), so every object in the group sits comfortably *inside* the
+#: surface rather than hanging over its edge (an object whose centre is on the
+#: edge is not resting on the surface in any useful sense).
+DERIVED_HALF_EXTENT_MARGIN = 0.15
 
 
 class PhysicalGeom:
@@ -268,7 +303,58 @@ def _quat_attr(object_pose) -> str:
     return _fmt((q.w, q.x, q.y, q.z))
 
 
-def _support_body_xml(support_top_z: float, support_center: tuple) -> str:
+def _vertical_half_extent(geom: PhysicalGeom) -> float:
+    """Return the distance from an object's centre down to its resting face.
+
+    A BOX's vertical half-extent is its z half-size; a CYLINDER (z-aligned in
+    MuJoCo) rests on its flat end, so it is the half-height. Subtracting this
+    from a pose's ``z`` gives the surface top the object is resting on -- the
+    quantity :func:`derived_support_surfaces` groups by.
+    """
+    return geom.dims[2] if geom.kind == BOX else geom.dims[1]
+
+
+def derived_support_surfaces(document: WorldDocument) -> list:
+    """Return the support surfaces a document's graspable objects imply (R1).
+
+    For every **graspable** object, the surface top its pose implies is
+    ``pose.z - vertical half-extent`` (its underside). Objects sharing a top
+    (grouped exactly, to :data:`DERIVED_SURFACE_ROUNDING` decimals -- the seed
+    is exact, a tolerance covers a live world with rounding noise) share one
+    surface: the group's mean ``(x, y)`` centre and a half-extent of
+    :data:`DERIVED_HALF_EXTENT_MARGIN` beyond the group's half-span, never less
+    than :data:`DERIVED_MIN_HALF_EXTENT`.
+
+    Non-graspable objects contribute **no** surface: they are static obstacles,
+    not resting places (a sofa is not a table). The result is a list of
+    ``(top_z, center_x, center_y, half_extent)`` tuples in **ascending top_z**
+    order, ready for :func:`collidable_world_bodies_xml`'s ``support_surfaces``
+    keyword.
+    """
+    groups: dict = {}
+    for obj in document.objects:
+        if not obj.graspable:
+            continue
+        half = _vertical_half_extent(physical_geom_for_label(obj.label))
+        top_z = round(obj.pose.position.z - half, DERIVED_SURFACE_ROUNDING)
+        groups.setdefault(top_z, []).append(obj)
+
+    surfaces = []
+    for top_z in sorted(groups):
+        members = groups[top_z]
+        cx = sum(o.pose.position.x for o in members) / len(members)
+        cy = sum(o.pose.position.y for o in members) / len(members)
+        half_span = max(max(abs(o.pose.position.x - cx),
+                            abs(o.pose.position.y - cy)) for o in members)
+        half_extent = max(DERIVED_MIN_HALF_EXTENT,
+                          half_span + DERIVED_HALF_EXTENT_MARGIN)
+        surfaces.append((top_z, cx, cy, half_extent))
+    return surfaces
+
+
+def _support_body_xml(support_top_z: float, support_center: tuple,
+                      *, half_extent: float = SUPPORT_HALF_EXTENT,
+                      name: str = SUPPORT_BODY_NAME) -> str:
     """Return the finite support-surface ``<body>`` block (R5).
 
     A *static* body (no joint, no inertial) whose single collidable box has its
@@ -276,15 +362,20 @@ def _support_body_xml(support_top_z: float, support_center: tuple) -> str:
     that, so an object placed with its bottom at ``support_top_z`` rests on the
     top face. It is a finite box, not a plane, so it cannot extend to infinity
     and intersect the robot's column or arms -- and it is offset horizontally
-    to :data:`SUPPORT_CENTER` (see there) so its *footprint* is clear of the
-    mast too.
+    to ``support_center`` (the default :data:`SUPPORT_CENTER`) so its *footprint*
+    is clear of the mast too.
+
+    ``half_extent``/``name`` parameterize a :func:`derived_support_surfaces`
+    entry (issue #152 R1) while the default call keeps the historical single
+    surface exactly as it was (half-extent :data:`SUPPORT_HALF_EXTENT`, name
+    :data:`SUPPORT_BODY_NAME`).
     """
     cx, cy = support_center
     center_z = support_top_z - SUPPORT_HALF_THICKNESS
     return '\n'.join([
-        f'<body name="{SUPPORT_BODY_NAME}" pos="{_fmt((cx, cy, center_z))}">',
-        (f'  <geom name="{SUPPORT_BODY_NAME}_geom" type="box" '
-         f'size="{_fmt((SUPPORT_HALF_EXTENT, SUPPORT_HALF_EXTENT, SUPPORT_HALF_THICKNESS))}" '
+        f'<body name="{name}" pos="{_fmt((cx, cy, center_z))}">',
+        (f'  <geom name="{name}_geom" type="box" '
+         f'size="{_fmt((half_extent, half_extent, SUPPORT_HALF_THICKNESS))}" '
          f'friction="{_fmt(DEFAULT_FRICTION)}"/>'),
         '</body>',
     ])
@@ -319,20 +410,33 @@ def _object_body_xml(obj: WorldObject) -> str:
 
 def collidable_world_bodies_xml(
         document: WorldDocument, *, support_top_z: float = SUPPORT_TOP_Z,
-        support_center: tuple = SUPPORT_CENTER) -> str:
+        support_center: tuple = SUPPORT_CENTER,
+        support_surfaces=None) -> str:
     """Return the ``<body>`` fragment for a world document's collidable scene.
 
     The fragment is passed to
     :func:`robot_description.mjcf_model.write_mjcf_model`'s ``world_bodies``
     keyword, which splices it into the worldbody *after* the floor, so the sim
-    gets the drive floor **and** this support surface + these objects.
+    gets the drive floor **and** these support surface(s) + these objects.
 
-    Order is deterministic: the support surface first, then every object in
+    Order is deterministic: the support surface(s) first, then every object in
     ``document.objects`` order. ``support_top_z`` and ``support_center`` are
     keywords (R5) so a test can place the surface to match its own seeded
     object without touching a module constant -- and so a different scene can
     put the surface where its objects are. ``support_center`` must clear the
     robot's column mast (see :data:`SUPPORT_CENTER`); the default does.
+
+    ``support_surfaces`` (issue #152 R1) selects how many surfaces are emitted:
+
+    * ``None`` (the default) keeps the historical **single** surface at
+      ``support_top_z``/``support_center`` (half-extent
+      :data:`SUPPORT_HALF_EXTENT`), so a caller that does not ask for derived
+      surfaces gets byte-for-byte the previous fragment.
+    * a sequence of ``(top_z, center_x, center_y, half_extent)`` tuples (as
+      :func:`derived_support_surfaces` returns) emits one **static** surface
+      body per entry -- ``world_support_0``, ``world_support_1``, ... in order.
+      The ``support_top_z``/``support_center`` keywords are then ignored: the
+      caller has placed every surface itself.
 
     The fragment is *not* indented here -- ``mjcf_model._insert_world_bodies``
     re-indents it one level when it splices it in (the same contract
@@ -340,6 +444,13 @@ def collidable_world_bodies_xml(
     surface: the surface is part of "the physical world", and a scene with
     no objects still needs a place for one to be put.
     """
-    blocks = [_support_body_xml(support_top_z, support_center)]
+    if support_surfaces is None:
+        blocks = [_support_body_xml(support_top_z, support_center)]
+    else:
+        blocks = [
+            _support_body_xml(top_z, (cx, cy), half_extent=half_extent,
+                              name=f'{SUPPORT_BODY_NAME}_{index}')
+            for index, (top_z, cx, cy, half_extent) in enumerate(support_surfaces)
+        ]
     blocks.extend(_object_body_xml(obj) for obj in document.objects)
     return '\n'.join(blocks)

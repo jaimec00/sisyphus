@@ -43,21 +43,18 @@ and the whole ``controllers.yaml`` is passed as a simulator NODE parameter so
 the controller `type` declarations + CM ``update_rate`` land on the embedded
 CM (R-PR8b-11/14).
 
-Physical world (issue #150, PR A) — **opt-in via ``world_objects``** (default
-``false``).  ``world_objects:=true`` splices the world-state file's collidable
-objects + finite support surface into the derived MJCF, so the sim's physical
-world matches the scene MoveIt plans against.  The default keeps the pre-#150
-model (robot + floor only).  Rationale: the currently shipped seed is
-*physically incoherent* — it places static objects (the ``counter_1`` box at
-z 0.40-1.30 and the support surface at z 1.00-1.10) right at the navigation
-locations near the kitchen ``(2.15, 0)``, so materializing them by default
-collides with the robot's arms/column as the base drives from the charger
-``(0, 0)`` to kitchen ``(2, 0)`` and blocks navigation (the regression this
-default avoids).  Fixing the seed geometry is a known follow-up; once it is
-incoherent no longer, PR B/C can flip the default / wire the pick-and-place
-path to pass ``world_objects:=true``.  The materialization therefore runs
-lazily inside an :class:`OpaqueFunction` (below), reading the launch
-configuration, rather than at description-build time.
+Physical world (issue #150, PR A) — **on by default** (issue #152).
+``world_objects:=false`` keeps the pre-#150 model (robot + floor only).
+The default materializes the world-state file's collidable objects plus the
+finite support surface(s) they rest on (:func:`robot_description.world_bodies.
+derived_support_surfaces`), so the sim's physical world matches the scene MoveIt
+plans against.  Issue #152 made the shipped seed *physically coherent*: every
+graspable object's underside sits exactly on a derived surface, and every
+physical body stays clear of the charger->kitchen navigation corridor band
+(|y| <= 0.30), so materializing the world no longer blocks navigation.  A
+scene that is not coherent can still be run with ``world_objects:=false``.
+The materialization runs lazily inside an :class:`OpaqueFunction` (below),
+reading the launch configuration, rather than at description-build time.
 """
 import json
 import os
@@ -138,6 +135,13 @@ def _world_bodies_xml(world_state_path):
     and the brain use, then materialized by
     :func:`robot_description.world_bodies.collidable_world_bodies_xml`.
 
+    The support surfaces are **derived from the document** (issue #152 R1,
+    :func:`robot_description.world_bodies.derived_support_surfaces`): one per
+    distinct graspable-object resting height, placed under the objects that
+    imply it, rather than the single fixed surface of #150.  A world with the
+    kitchen trio at z~1.15 and the table pair at z~0.90 needs two surfaces, and
+    deriving them keeps the surfaces under whatever scene the file describes.
+
     A missing, unreadable or malformed world file is **not** fatal here: the
     sim still comes up with the robot + floor (the pre-#150 model), because a
     scene-option failure must not take down the whole bringup -- and this runs
@@ -146,7 +150,8 @@ def _world_bodies_xml(world_state_path):
     logged; the world service's own launch still fails loudly on a world file
     it cannot read, which is the right place for that error.
     """
-    from robot_description.world_bodies import collidable_world_bodies_xml
+    from robot_description.world_bodies import (collidable_world_bodies_xml,
+                                                derived_support_surfaces)
     from robot_world import WorldDocument
     try:
         with open(world_state_path) as handle:
@@ -156,7 +161,8 @@ def _world_bodies_xml(world_state_path):
               'read as a world document (%s); the sim comes up with the robot '
               '+ floor only.' % (world_state_path, exc))
         return ''
-    return collidable_world_bodies_xml(document)
+    return collidable_world_bodies_xml(
+        document, support_surfaces=derived_support_surfaces(document))
 
 
 def _materialize_mjcf_for_state(mjcf_path, world_state_path):
@@ -190,11 +196,11 @@ def _materialize_world_objects(context, *args, **kwargs):
     first executable action so the file exists before the sim plugin loads its
     ``robot_model_path``.
 
-    ``world_objects:='true'`` materializes the collidable physical world (robot
-    + floor + support surface + world objects); anything else (the default
-    ``'false'``) materializes robot + floor only -- the pre-#150 behaviour that
-    keeps navigation working (see the module docstring for why the shipped seed
-    cannot be materialized by default yet).
+    ``world_objects`` is on by default (issue #152): the collidable physical
+    world (robot + floor + derived support surfaces + world objects) matches the
+    scene MoveIt plans against, and the shipped seed is coherent enough that
+    this does not block navigation. ``world_objects:=false`` restores the
+    pre-#150 robot + floor model for a scene that is not coherent.
 
     The ``mjcf_path`` / ``world_state_path`` launch configurations are read
     here as resolved strings; a user override of either now takes effect for
@@ -203,12 +209,13 @@ def _materialize_world_objects(context, *args, **kwargs):
     """
     world_state_path = context.launch_configurations['world_state_path']
     mjcf_path = context.launch_configurations['mjcf_path']
-    enabled = context.launch_configurations.get('world_objects', 'false')
+    enabled = context.launch_configurations.get('world_objects', 'true')
     if enabled.lower() in ('true', '1', 'yes'):
         _materialize_mjcf_for_state(mjcf_path, world_state_path)
     else:
-        # Robot + floor only (the pre-#150 default): skip the world-state read
-        # entirely so the incoherent seed cannot collide with the base.
+        # Robot + floor only (the pre-#150 model): skip the world-state read
+        # entirely so a deliberately incoherent scene cannot collide with the
+        # base.
         from robot_description.mjcf_model import write_mjcf_model
         write_mjcf_model(mjcf_path, world_bodies='')
     return []
@@ -320,14 +327,14 @@ def generate_launch_description():
             description=('Live world-state file the world service and the Nav2'
                          ' map derive from.')),
         DeclareLaunchArgument(
-            'world_objects', default_value='false',
-            description=('Materialize the collidable objects + finite support '
-                         'surface of the world-state file into the sim MJCF. '
-                         'Default false keeps the pre-#150 robot + floor model '
-                         '(materializing the shipped seed by default blocks '
-                         'navigation -- see the module docstring). Set true to '
-                         'give the sim the same physical world MoveIt plans '
-                         'against (pick-and-place).')),
+            'world_objects', default_value='true',
+            description=('Materialize the collidable objects + derived finite '
+                         'support surfaces of the world-state file into the sim '
+                         'MJCF. Default true: the sim physical world matches '
+                         'the scene MoveIt plans against, and the shipped seed '
+                         'is coherent (every object rests; nothing blocks the '
+                         'navigation corridor). Set false for a scene that is '
+                         'not coherent (robot + floor only).')),
         # FIRST executable action: derive the MJCF (gated on world_objects) so
         # the file exists when the sim plugin loads ``robot_model_path``.
         OpaqueFunction(function=_materialize_world_objects),
