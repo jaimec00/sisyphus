@@ -143,21 +143,22 @@ def _world_bodies_xml(world_state_path):
     return collidable_world_bodies_xml(document)
 
 
-def _materialize_mjcf(mjcf_path):
-    """Write the derived MJCF (robot + floor + collidable world) to ``mjcf_path``."""
-    from robot_description.mjcf_model import write_mjcf_model
-    return write_mjcf_model(mjcf_path, world_bodies=_world_bodies_xml(
-        LaunchConfiguration('world_state_path')))
-
-
 def _materialize_mjcf_for_state(mjcf_path, world_state_path):
-    """Materialize the derived MJCF for an explicit world-state file path.
+    """Materialize the derived MJCF (robot + floor + collidable world) to a path.
 
-    The value-level twin of :func:`_materialize_mjcf` (which resolves the path
-    through a :class:`LaunchConfiguration`): used by the structural test, which
-    has no launch context to substitute the argument in. Both share
-    :func:`_world_bodies_xml`, so the sim path and the tested path cannot
-    drift.
+    Reads the world-state file at ``world_state_path`` and splices its
+    collidable world bodies into the derived model. Every failure to read/parse
+    the world file degrades to robot + floor (see :func:`_world_bodies_xml`),
+    so this never raises and the sim always has a loadable model.
+
+    The caller passes a concrete path string, not a
+    :class:`~launch.substitutions.LaunchConfiguration`: the model is
+    materialized at *description-build* time (before the launch context exists,
+    so a substitution cannot be performed yet), which is why
+    ``generate_launch_description`` calls this with the ``world_state_path``
+    argument's default value. A user override of ``world_state_path`` still
+    reaches the world service at runtime; only the sim model's scene is fixed
+    at build time, exactly as it was for the robot + floor before this PR.
     """
     from robot_description.mjcf_model import write_mjcf_model
     return write_mjcf_model(mjcf_path,
@@ -201,18 +202,19 @@ def generate_launch_description():
     """Build the LaunchDescription for the MuJoCo sim bringup (dfki-ric)."""
     use_sim_time = LaunchConfiguration('use_sim_time')
     mjcf_path = LaunchConfiguration('mjcf_path')
-    world_state_path = LaunchConfiguration('world_state_path')
     controllers_file = PathJoinSubstitution(
         [FindPackageShare('robot_bringup'),
          'params', 'controllers.yaml'])
 
     # Materialize the derived MJCF now, at description build time (guaranteed
     # to run before any node starts), so the file exists when the sim plugin
-    # loads its ``robot_model_path`` param. Default path; an explicit
-    # ``mjcf_path`` argument still takes precedence at substitution time below.
-    # The world-state path is resolved from the launch argument, so the
-    # materialized model carries the collidable world objects (#150, PR A).
-    _materialize_mjcf_for_state(DEFAULT_MJCF, world_state_path)
+    # loads its ``robot_model_path`` param. The default path and the default
+    # world-state path are used: the model is built before the launch context
+    # exists, so a ``mjcf_path``/``world_state_path`` override cannot be
+    # substituted here. An explicit ``mjcf_path`` argument still takes
+    # precedence at substitution time below (for the plugin's param); the
+    # world service reads its own ``world_state_path`` at runtime.
+    _materialize_mjcf_for_state(DEFAULT_MJCF, DEFAULT_WORLD_STATE)
     robot_description = ParameterValue(
         Command(['xacro ', _robot_description_xacro()]),
         value_type=str)
