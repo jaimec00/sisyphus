@@ -91,6 +91,29 @@ Context map: `docs/features/i150-physical-world/context.md`.
   the label→shape table (scene_geometry, robot_backends, world_bodies) — dedup
   is the follow-up R1 already names.
 
+## Regression + resolution (manager, post-test-runner)
+
+- **REGRESSION (VERIFIED):** materializing the shipped seed's physical objects
+  breaks `robot_bringup.test_pr3_navigate` (Nav2 base drive to kitchen). On
+  origin/main (i149 worktree, has mujoco_ros2_control + old launch) it PASSES
+  (1 passed); in this worktree it FAILS with `NavigateToLocation('kitchen') …
+  the semantic goal did not finish in time`. Root cause (probed in MuJoCo): the
+  static `counter_1` box (z 0.40–1.30) and the finite support surface
+  (z 1.00–1.10), both near the kitchen at (2.15, 0), collide with the robot's
+  arms/column when the base drives charger(0,0)→kitchen(2,0). This is the seed's
+  physical incoherence (objects AT navigation locations) — R8's follow-up, not
+  this PR's job to fix.
+
+- **R9 (RESOLUTION):** world-object materialization is **opt-in** behind a
+  `world_objects` launch argument (default `false`). Default `false` preserves
+  the pre-#150 sim (robot + floor only) so navigation stays green;
+  `world_objects:=true` materializes the collidable world (support surface +
+  objects) for the pick-and-place path. The materialization is deferred to an
+  OpaqueFunction (it previously ran at description-build time, before the launch
+  context, so a LaunchConfiguration could not be read). The converter + physics
+  (the actual acceptance) is unaffected and fully tested in-process; PR B/C
+  enables `world_objects:=true` after the seed is fixed.
+
 ## Falsifiable claims for red-team (disprove empirically — run, don't reason)
 1. The converter output compiles in the FULL derived model (rim rollers + implicit
    integrator) and a seeded graspable object settles to its seed pose (center z
