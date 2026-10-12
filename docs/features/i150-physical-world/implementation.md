@@ -88,10 +88,21 @@ counts). The physics tests (in-process MuJoCo, the sim's own materialize path):
 (a) graspable block is a free joint + inertial + default-contype geom, no
 `contype="0"`/`gravcomp`; (b) the derived inertia matches the hand-computed
 solid-shape formula; (c) a seeded object **rests at its seed pose** (center z
-within 1 cm, x/y within 1 cm, no NaN) after 20 000 steps; (d) an `xfrc_applied`
+within 1 mm, x/y within 1 mm, no NaN) after 20 000 steps; (d) an `xfrc_applied`
 push moves it (real contact response); (e) the surface is a finite box with its
 top at `SUPPORT_TOP_Z` and clear of the mast; (f) geometry mirrors
 `scene_geometry` for every shared label.
+
+**Red-team fix pass (BLOCK-1 + NOTE-1).** (d) alone did not prove contact:
+`xfrc_applied` is a direct DOF force, applied even to a collision-inert body, so
+the push passed on a `contype=0` ghost that free-falls through the surface. It
+now also asserts the object's geom forms a resting contact pair with
+`world_support_geom` in `data.contact[:data.ncon]` — VERIFIED sensitive: present
+on the real model, absent (`ncon=0`, object at z≈−77) with `contype="0"`
+injected. The push is kept, honestly labelled as proving only movability. NOTE-1:
+the rest-test tolerance was tightened 1e-2 → **1e-3** (x/y `atol` and z), so a
+~5 mm fall-through can no longer slip through; real margin is ~2e-5 m, and 3
+consecutive full-file runs stayed green at 1e-3 (no relaxation needed).
 
 ## Challenges / follow-ups for the manager
 

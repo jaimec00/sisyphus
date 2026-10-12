@@ -195,17 +195,27 @@ def test_seeded_object_rests_at_its_seed_pose():
     seed = np.array([obj.pose.position.x, obj.pose.position.y, obj.pose.position.z])
     assert not np.isnan(settled).any(), settled
     # x/y unchanged (the object did not slide off the surface) ...
-    np.testing.assert_allclose(settled[:2], seed[:2], atol=1e-2)
+    np.testing.assert_allclose(settled[:2], seed[:2], atol=1e-3)
     # ... and the center stayed at the seed height (bottom on the surface).
-    assert abs(settled[2] - seed[2]) < 1e-2, (settled[2], seed[2])
+    # 1e-3 leaves ~50x margin over the VERIFIED ~2e-5 m real settle error,
+    # while catching a ~5 mm fall-through the old 1e-2 bound let slip.
+    assert abs(settled[2] - seed[2]) < 1e-3, (settled[2], seed[2])
 
 
 def test_applied_perturbation_moves_the_object():
-    """A real contact/force response proves contype/conaffinity are enabled (R4).
+    """Proves the object forms a real resting contact, and is a movable body.
 
-    A ghost body (contype/conaffinity 0) would ignore ``xfrc_applied`` entirely;
-    a physical one accelerates. This is the empirical check that the object is
-    not merely *present* but *collidable*.
+    Two independent checks:
+
+    * **Contact pair (the real proof, R4/R5).** After settling, some contact in
+      ``data.contact[:data.ncon]`` must pair the object's geom with the support
+      surface's geom. ``xfrc_applied`` is a direct DOF force applied regardless
+      of contype/conaffinity, so the push below alone would pass on a
+      collision-inert ghost body (contype=0) that free-falls through the
+      surface. The contact-pair assertion is what proves the object's geom is
+      genuinely collidable and resting on the surface.
+    * **Applied perturbation moves it (movability only).** A push moves the free
+      body, proving it is not welded/static — not that it collides.
     """
     obj = _seed_object('mug')
     path, _ = _materialize(_seed_document(obj))
@@ -214,6 +224,19 @@ def test_applied_perturbation_moves_the_object():
     for _ in range(2000):
         mujoco.mj_step(model, data)
     body_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, b'obj_1')
+
+    # The object's geom and the support surface's geom must form a resting
+    # contact pair (a ghost body would form none).
+    obj_gid = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_GEOM, b'obj_1_geom')
+    support_gid = mujoco.mj_name2id(
+        model, mujoco.mjtObj.mjOBJ_GEOM, b'world_support_geom')
+    assert obj_gid >= 0 and support_gid >= 0
+    pairs = [frozenset((int(c.geom1), int(c.geom2)))
+             for c in data.contact[:data.ncon]]
+    assert frozenset((obj_gid, support_gid)) in pairs, (
+        'object is not in resting contact with the support surface; the geom '
+        'has contype/conaffinity disabled (or it fell through): %r' % (pairs,))
+
     before = data.xpos[body_id].copy()
     data.xfrc_applied[body_id][0] = 20.0
     for _ in range(200):
