@@ -62,8 +62,8 @@
       "label": "mug",
       "pose": {
         "position": {
-          "x": 2.0,
-          "y": -0.55,
+          "x": 2.15,
+          "y": 0.45,
           "z": 1.15
         },
         "orientation": {
@@ -81,8 +81,8 @@
       "label": "plate",
       "pose": {
         "position": {
-          "x": 2.16,
-          "y": -0.55,
+          "x": 2.0,
+          "y": -0.48,
           "z": 1.105
         },
         "orientation": {
@@ -100,8 +100,8 @@
       "label": "bowl",
       "pose": {
         "position": {
-          "x": 2.0,
-          "y": -0.7,
+          "x": 2.25,
+          "y": -0.44,
           "z": 1.125
         },
         "orientation": {
@@ -119,8 +119,8 @@
       "label": "counter",
       "pose": {
         "position": {
-          "x": 2.6,
-          "y": 0.7,
+          "x": 2.15,
+          "y": 0.47,
           "z": 0.4
         },
         "orientation": {
@@ -138,9 +138,9 @@
       "label": "book",
       "pose": {
         "position": {
-          "x": 0.2,
+          "x": 0.1,
           "y": 2.0,
-          "z": 0.885
+          "z": 0.9
         },
         "orientation": {
           "x": 0.0,
@@ -157,8 +157,8 @@
       "label": "cup",
       "pose": {
         "position": {
-          "x": 0.34,
-          "y": 2.0,
+          "x": 0.2,
+          "y": 2.2,
           "z": 0.915
         },
         "orientation": {

@@ -30,18 +30,21 @@ so a free-jointed object would simply fall. The converter therefore also emits
 a plane at counter height would intersect the robot's column and arms (issue
 #150 R5).
 
-Two surfaces, derived from the objects (issue #152 R1)
-------------------------------------------------------
-The shipped seed's graspables sit in two clusters at two different heights (the
-kitchen trio ``mug_1``/``plate_1``/``bowl_1`` at z ~1.15, the table pair
-``book_1``/``cup_1`` at z ~0.90), so one surface cannot serve both:
-:func:`derived_support_surfaces` groups the graspable objects by the surface top
-their pose implies (``z - vertical half-extent``) and returns one surface per
-group, and :func:`collidable_world_bodies_xml` emits them as ``world_support_0``,
+One surface per graspable object (issue #152 R1')
+--------------------------------------------------
+The shipped seed's objects rest on several different tops (the kitchen trio
+``mug_1``/``plate_1``/``bowl_1`` at z ~1.10, the table pair ``book_1``/``cup_1``
+at z ~0.87), so one surface cannot serve them all: the kitchen trio even
+*straddles* the navigation corridor (``mug_1`` on the left arm's side, ``plate_1``
+and ``bowl_1`` on the right's), so a single surface spanning them would cross
+y=0 and re-block the charger->kitchen drive. :func:`derived_support_surfaces`
+therefore returns **one pad per graspable object** -- centred under that object,
+top at the underside its pose implies (``z - vertical half-extent``) -- and
+:func:`collidable_world_bodies_xml` emits them as ``world_support_0``,
 ``world_support_1``, ... A caller that passes no ``support_surfaces`` still gets
 the single historical surface at :data:`SUPPORT_TOP_Z` (backward compatible).
-The surfaces are placed under the objects, which the seed keeps clear of both
-the navigation corridor and the robot's own footprint -- see issue #152 R2.
+Each pad is kept clear of the navigation corridor and of the robot's own
+footprint by the seed that places the objects (issue #152 R2).
 
 Geometry single source of truth (R3)
 ------------------------------------
@@ -130,13 +133,6 @@ SUPPORT_HALF_EXTENT = 1.0
 #: arms, which is exactly why a finite box is used instead of a plane.
 SUPPORT_HALF_THICKNESS = 0.05
 
-#: Decimal places :func:`derived_support_surfaces` rounds a derived surface top
-#: to before grouping (issue #152 R1). The seed's tops are exact (1.10, 0.87),
-#: but a live world's ``z - half`` carries float noise; six decimals is far
-#: finer than any real surface difference and far coarser than that noise, so
-#: objects that *mean* the same surface group together.
-DERIVED_SURFACE_ROUNDING = 6
-
 #: Horizontal centre of the support surface ``(x, y)``, metres (R5: centre is a
 #: converter constant/param).
 #:
@@ -148,9 +144,10 @@ DERIVED_SURFACE_ROUNDING = 6
 #: edge; a box centred on the origin still covers it). VERIFIED: a free object
 #: placed on an origin-centred surface in the full model (robot + rollers +
 #: implicit integrator) is ejected at ~120 m/s by the mast contact. So the
-#: surface is offset clear of the mast, under the shipped seed's graspable
-#: kitchen objects (``mug_1`` at (2.1, 0.1, 1.15)) -- which is also the cluster
-#: :data:`SUPPORT_TOP_Z` was chosen for (R5).
+#: surface is offset clear of the mast, under the kitchen cluster
+#: :data:`SUPPORT_TOP_Z` was chosen for (R5).  (The derived per-object pads of
+#: issue #152 R1' place themselves under their objects instead, so this default
+#: only serves the historical single-surface path.)
 SUPPORT_CENTER = (2.15, 0.0)
 
 #: Name of the support-surface body in the derived MJCF (tests find it by name).
@@ -159,16 +156,16 @@ SUPPORT_CENTER = (2.15, 0.0)
 #: single-surface name stays exactly as it was for the default path.
 SUPPORT_BODY_NAME = 'world_support'
 
-#: Minimum half-extent of a *derived* support surface, metres (issue #152 R1):
-#: a surface narrower than this stops reading as a surface and starts reading as
-#: a pedestal. The derived half-extent never drops below it.
-DERIVED_MIN_HALF_EXTENT = 0.20
+#: Minimum half-extent of a *derived* support pad, metres (issue #152 R1'): a pad
+#: narrower than this stops reading as a surface and starts reading as a
+#: pedestal. The derived half-extent never drops below it.
+DERIVED_MIN_HALF_EXTENT = 0.12
 
-#: Margin added to a group's half-span when deriving its surface's half-extent
-#: (issue #152 R1), so every object in the group sits comfortably *inside* the
-#: surface rather than hanging over its edge (an object whose centre is on the
-#: edge is not resting on the surface in any useful sense).
-DERIVED_HALF_EXTENT_MARGIN = 0.15
+#: Margin added to an object's footprint half-extent when deriving its pad's
+#: half-extent (issue #152 R1'), so the object sits comfortably *inside* its pad
+#: rather than hanging over the edge (an object whose centre is on the edge is
+#: not resting on the pad in any useful sense).
+DERIVED_HALF_EXTENT_MARGIN = 0.03
 
 
 class PhysicalGeom:
@@ -315,40 +312,46 @@ def _vertical_half_extent(geom: PhysicalGeom) -> float:
 
 
 def derived_support_surfaces(document: WorldDocument) -> list:
-    """Return the support surfaces a document's graspable objects imply (R1).
+    """Return the support pads a document's graspable objects imply (R1').
 
-    For every **graspable** object, the surface top its pose implies is
-    ``pose.z - vertical half-extent`` (its underside). Objects sharing a top
-    (grouped exactly, to :data:`DERIVED_SURFACE_ROUNDING` decimals -- the seed
-    is exact, a tolerance covers a live world with rounding noise) share one
-    surface: the group's mean ``(x, y)`` centre and a half-extent of
-    :data:`DERIVED_HALF_EXTENT_MARGIN` beyond the group's half-span, never less
-    than :data:`DERIVED_MIN_HALF_EXTENT`.
+    **One pad per graspable object** (no grouping): the pad's top is the surface
+    top the object's pose implies -- ``pose.z - vertical half-extent``, its
+    underside -- and its centre is the object's own ``(x, y)``, so the object
+    rests on *its own* pad. The half-extent is the object's horizontal footprint
+    (BOX: the larger of its x/y half-sizes; CYLINDER: its radius) plus
+    :data:`DERIVED_HALF_EXTENT_MARGIN`, never less than
+    :data:`DERIVED_MIN_HALF_EXTENT`.
 
-    Non-graspable objects contribute **no** surface: they are static obstacles,
-    not resting places (a sofa is not a table). The result is a list of
-    ``(top_z, center_x, center_y, half_extent)`` tuples in **ascending top_z**
-    order, ready for :func:`collidable_world_bodies_xml`'s ``support_surfaces``
-    keyword.
+    Per-object pads (rather than one pad per resting height, issue #152 R1) are
+    what let a cluster of objects that must *straddle* the navigation corridor
+    rest correctly while every pad stays off it: two objects at one counter
+    height on opposite sides of ``y = 0`` get two pads, neither crossing the
+    corridor, where a single grouped surface necessarily would.
+
+    Non-graspable objects contribute **no** pad: they are static obstacles, not
+    resting places (a sofa is not a table, and the kitchen ``counter`` is not a
+    shelf). The result is a list of ``(top_z, center_x, center_y, half_extent)``
+    tuples in **ascending top_z** order (document order within a tie), ready for
+    :func:`collidable_world_bodies_xml`'s ``support_surfaces`` keyword.
     """
-    groups: dict = {}
+    surfaces = []
     for obj in document.objects:
         if not obj.graspable:
             continue
-        half = _vertical_half_extent(physical_geom_for_label(obj.label))
-        top_z = round(obj.pose.position.z - half, DERIVED_SURFACE_ROUNDING)
-        groups.setdefault(top_z, []).append(obj)
-
-    surfaces = []
-    for top_z in sorted(groups):
-        members = groups[top_z]
-        cx = sum(o.pose.position.x for o in members) / len(members)
-        cy = sum(o.pose.position.y for o in members) / len(members)
-        half_span = max(max(abs(o.pose.position.x - cx),
-                            abs(o.pose.position.y - cy)) for o in members)
-        half_extent = max(DERIVED_MIN_HALF_EXTENT,
-                          half_span + DERIVED_HALF_EXTENT_MARGIN)
-        surfaces.append((top_z, cx, cy, half_extent))
+        geom = physical_geom_for_label(obj.label)
+        position = obj.pose.position
+        if geom.kind == BOX:
+            footprint_half = max(geom.dims[0], geom.dims[1])
+        else:
+            footprint_half = geom.dims[0]
+        surfaces.append((
+            position.z - _vertical_half_extent(geom),
+            position.x,
+            position.y,
+            max(DERIVED_MIN_HALF_EXTENT,
+                footprint_half + DERIVED_HALF_EXTENT_MARGIN),
+        ))
+    surfaces.sort(key=lambda surface: surface[0])
     return surfaces
 
 

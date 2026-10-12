@@ -135,12 +135,14 @@ def _world_bodies_xml(world_state_path):
     and the brain use, then materialized by
     :func:`robot_description.world_bodies.collidable_world_bodies_xml`.
 
-    The support surfaces are **derived from the document** (issue #152 R1,
+    The support pads are **derived from the document** (issue #152 R1',
     :func:`robot_description.world_bodies.derived_support_surfaces`): one per
-    distinct graspable-object resting height, placed under the objects that
-    imply it, rather than the single fixed surface of #150.  A world with the
-    kitchen trio at z~1.15 and the table pair at z~0.90 needs two surfaces, and
-    deriving them keeps the surfaces under whatever scene the file describes.
+    graspable object, centred under it, rather than the single fixed surface of
+    #150.  A world whose objects rest at different heights (the seed's kitchen
+    trio at z~1.10, its table pair at z~0.87), and whose kitchen trio straddles
+    the navigation corridor, needs one pad per object -- a single grouped
+    surface would either miss an object or span ``y = 0`` and block the drive.
+    Deriving them keeps the pads under whatever scene the file describes.
 
     A missing, unreadable or malformed world file is **not** fatal here: the
     sim still comes up with the robot + floor (the pre-#150 model), because a

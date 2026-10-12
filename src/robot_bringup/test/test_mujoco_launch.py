@@ -182,9 +182,9 @@ def test_materialized_mjcf_contains_the_world_objects():
     with open(mjcf_path) as handle:
         text = handle.read()
 
-    # The finite support surface is there ... (one per graspable resting
-    # height -- issue #152 derives them, so the shipped seed's two clusters
-    # mean world_support_0/world_support_1, not the pre-#152 single surface).
+    # The finite support pads are there ... (one per graspable object -- issue
+    # #152 derives them, so the shipped seed's five graspables mean
+    # world_support_0..4, not the pre-#152 single surface).
     assert 'name="world_support_0"' in text, (
         'the materialized MJCF has no support surface; world objects would '
         'fall through the sim floor')
@@ -271,7 +271,7 @@ def test_world_objects_defaults_to_true():
     with open(mjcf_path) as handle:
         text = handle.read()
     assert 'name="world_support_0"' in text, (
-        'the default path did not materialize the derived support surfaces')
+        'the default path did not materialize the derived support pads')
     assert '<body name="mug_1"' in text, (
         'the default path did not materialize the shipped seed objects')
 

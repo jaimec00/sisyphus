@@ -34,20 +34,22 @@ EXPECTED_LOCATIONS = {
 
 #: object_id -> (label, x, y, z, graspable), in the order the seed lists them.
 #:
-#: These are the *physically coherent* re-place (issue #152): every graspable
-#: object's underside sits exactly on a support surface the sim derives from
-#: its own pose (the kitchen trio on a top at z=1.10, the table pair on one at
-#: z=0.87), and both clusters are clear of the charger->kitchen corridor band
-#: (|y| <= 0.30) so materializing the world does not block navigation. The
-#: graspables still sit inside the real 5-DOF arm's reachable workspace, and the
-#: table pair inside the Mock's 1.0 m table window (PR4 / #149 R6).
+#: These are the *physically coherent* re-place (issue #152, manager ruling #2):
+#: every graspable object's underside sits exactly on its own support pad the
+#: sim derives from its pose (the kitchen trio on pads of top z=1.10, the table
+#: pair on pad tops 0.885 / 0.87), and every object and pad is clear of both the
+#: mast (``|y| > 0.03``) and the arm band (``|y| > 0.294`` at z 0.94..1.106)
+#: along the charger->kitchen corridor, so materializing the world does not
+#: block navigation. The graspables still sit inside the real 5-DOF arm's
+#: reachable workspace (left arm reaches the ``+y`` objects, right the ``-y``
+#: ones) and inside the Mock's 1.0 m table window (PR4 / #149 R6).
 EXPECTED_OBJECTS = (
-    ('mug_1', 'mug', 2.00, -0.55, 1.150, True),
-    ('plate_1', 'plate', 2.16, -0.55, 1.105, True),
-    ('bowl_1', 'bowl', 2.00, -0.70, 1.125, True),
-    ('counter_1', 'counter', 2.60, 0.70, 0.400, False),
-    ('book_1', 'book', 0.20, 2.00, 0.885, True),
-    ('cup_1', 'cup', 0.34, 2.00, 0.915, True),
+    ('mug_1', 'mug', 2.15, 0.45, 1.150, True),
+    ('plate_1', 'plate', 2.00, -0.48, 1.105, True),
+    ('bowl_1', 'bowl', 2.25, -0.44, 1.125, True),
+    ('counter_1', 'counter', 2.15, 0.47, 0.400, False),
+    ('book_1', 'book', 0.10, 2.00, 0.900, True),
+    ('cup_1', 'cup', 0.20, 2.20, 0.915, True),
     ('sofa_1', 'sofa', -2.00, 1.60, 0.40, False),
 )
 

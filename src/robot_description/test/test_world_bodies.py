@@ -36,12 +36,13 @@ The geometry mirror of ``robot_moveit.scene_geometry`` is asserted too, because
 the sim and the planning scene must agree on every object or the plan collides
 against a different world than the one it executes in.
 
-Issue #152 adds two surfaces and the derived-surface path: the shipped seed's
-graspables sit at two different heights, so ``derived_support_surfaces`` groups
-them by the surface top their pose implies and the converter emits one
-``world_support_N`` per group. The claims here extend to that path -- the
-*shipped seed* (not a synthetic one-object scene) settles with every graspable
-at its seed pose, in resting contact with one of the derived surfaces.
+Issue #152 adds the derived-pad path: ``derived_support_surfaces`` returns
+**one pad per graspable object** (the shipped seed's objects rest at several
+different tops, and the kitchen trio straddles the corridor, so one surface
+cannot serve them), and the converter emits one ``world_support_N`` per pad.
+The claims here extend to that path -- the *shipped seed* (not a synthetic
+one-object scene) settles with every graspable at its seed pose, in resting
+contact with one of the derived pads.
 """
 
 import math
@@ -116,11 +117,12 @@ def _materialize(document):
 #: and the same budget the context map's probe used (VERIFIED).
 SETTLE_STEPS = 20000
 
-#: The two resting heights the shipped seed derives (issue #152 R1): the table
-#: pair's (``book_1``/``cup_1``) and the kitchen trio's
-#: (``mug_1``/``plate_1``/``bowl_1``). Spelled out so a seed move that changes a
-#: resting height fails here rather than inside a 40 s settle run.
-SEED_SUPPORT_TOPS = (0.87, 1.10)
+#: The resting heights the shipped seed derives (issue #152 R1'), in ascending
+#: order, one pad per graspable: ``cup_1`` (top 0.87), ``book_1`` (0.885), then
+#: the kitchen trio (``mug_1``/``plate_1``/``bowl_1``, all 1.10). Spelled out so
+#: a seed move that changes a resting height fails here rather than inside a
+#: 40 s settle run.
+SEED_SUPPORT_TOPS = (0.87, 0.885, 1.10, 1.10, 1.10)
 
 
 def _resting_half(obj):
@@ -408,32 +410,31 @@ def test_quaternion_is_reordered_to_mujoco_wxyz():
                                (half, 0.0, 0.0, half), atol=1e-9)
 
 
-def test_derived_support_surfaces_group_graspables_by_resting_height():
-    """The seed derives one surface per graspable resting height (issue #152 R1).
+def test_derived_support_surfaces_are_one_pad_per_graspable_object():
+    """The seed derives one pad per graspable, under that object (issue #152 R1').
 
-    The kitchen trio (``mug_1``/``plate_1``/``bowl_1``) all rest at z=1.10 and
-    the table pair (``book_1``/``cup_1``) at z=0.87, so the seed needs exactly
-    two surfaces, emitted in ascending top order. Every surface must cover every
-    object of its group -- an object whose centre is off the surface is not
-    resting on it -- and never be narrower than the derived minimum.
+    Five graspables, five pads, emitted in ascending top order: the table pair's
+    (``cup_1`` top 0.87, ``book_1`` 0.885) first, then the kitchen trio's
+    (``mug_1``/``plate_1``/``bowl_1``, all 1.10 -- three pads, not one).  Each
+    pad must be centred on its own object, top at that object's underside, never
+    narrower than the derived minimum, and wide enough to hold the object.
     """
     document = default_seed_document()
     surfaces = derived_support_surfaces(document)
+    graspables = [obj for obj in document.objects if obj.graspable]
 
     assert [round(top_z, 6) for top_z, _, _, _ in surfaces] == \
         list(SEED_SUPPORT_TOPS)
-    for top_z, cx, cy, half_extent in surfaces:
-        assert half_extent >= DERIVED_MIN_HALF_EXTENT, (top_z, half_extent)
-        members = [
-            obj for obj in document.objects
-            if obj.graspable
-            and round(obj.pose.position.z - _resting_half(obj), 6)
-            == round(top_z, 6)
-        ]
-        assert members, 'no graspable rests at derived top z=%r' % (top_z,)
-        for obj in members:
-            assert abs(obj.pose.position.x - cx) <= half_extent, obj.object_id
-            assert abs(obj.pose.position.y - cy) <= half_extent, obj.object_id
+    assert len(surfaces) == len(graspables), (surfaces, graspables)
+    for obj in graspables:
+        geom = physical_geom_for_label(obj.label)
+        position = obj.pose.position
+        matching = [s for s in surfaces if s[1] == position.x and s[2] == position.y]
+        assert matching, 'no pad centred under %s' % (obj.object_id,)
+        (top_z, _, _, half_extent), = matching
+        assert math.isclose(top_z, position.z - _resting_half(obj)), obj.object_id
+        assert half_extent >= DERIVED_MIN_HALF_EXTENT, (obj.object_id, half_extent)
+        assert half_extent > geom.dims[0], obj.object_id
 
 
 def test_derived_support_surfaces_ignore_non_graspable_furniture():
@@ -447,19 +448,36 @@ def test_derived_support_surfaces_ignore_non_graspable_furniture():
     assert derived_support_surfaces(document) == []
 
 
-def test_derived_surface_is_the_group_span_plus_a_margin_with_a_floor():
-    """A lone object gets the floored surface; a spread group gets span+margin.
+def test_derived_surface_is_the_footprint_plus_a_margin_with_a_floor():
+    """A pad is its object's footprint plus the margin, floored at the minimum.
 
-    The half-extent formula is R1's: ``max(MIN, half_span + MARGIN)``. A single
-    object has half-span 0, so it must come out at the floor; three objects
-    spread over a known span must come out at that span's half plus the margin.
+    The half-extent formula is R1's: ``max(MIN, footprint_half + MARGIN)``,
+    where the footprint half is a BOX's larger x/y half-size and a CYLINDER's
+    radius.  A mug (radius 0.04) is under the floor, so it comes out at the
+    floor; a plate (radius 0.12) and a book (half 0.10) are over it, so they
+    come out at footprint + margin.  The pad is centred on the object.
     """
-    lone = _seed_document(_seed_object('mug'))
-    (top_z, cx, cy, half_extent), = derived_support_surfaces(lone)
-    assert math.isclose(half_extent, DERIVED_MIN_HALF_EXTENT)
-    # The lone object's own centre is the surface centre (its half-span is 0).
-    assert math.isclose(cx, SUPPORT_CENTER[0]) and math.isclose(cy, SUPPORT_CENTER[1])
+    for label in ('mug', 'cup', 'bowl'):
+        lone = _seed_document(_seed_object(label))
+        (top_z, cx, cy, half_extent), = derived_support_surfaces(lone)
+        assert math.isclose(half_extent, DERIVED_MIN_HALF_EXTENT), label
+        # The lone object's own centre is the pad centre.
+        assert math.isclose(cx, SUPPORT_CENTER[0]) and math.isclose(cy, SUPPORT_CENTER[1])
 
+    for label, footprint_half in (('plate', 0.12), ('book', 0.10)):
+        lone = _seed_document(_seed_object(label))
+        (_, cx, cy, half_extent), = derived_support_surfaces(lone)
+        assert math.isclose(half_extent, footprint_half + DERIVED_HALF_EXTENT_MARGIN), label
+        assert math.isclose(cx, SUPPORT_CENTER[0]) and math.isclose(cy, SUPPORT_CENTER[1])
+
+
+def test_two_objects_at_one_height_get_two_pads_not_one_span():
+    """Per-object pads: two objects at one height derive two pads (R1').
+
+    This is the shape the shipped seed needs: two objects at the same resting
+    height on opposite sides of ``y = 0`` must each get their own pad, rather
+    than one grouped surface spanning the gap (which would cross the corridor).
+    """
     spread = WorldDocument(
         locations={'charger': Pose.from_xyz(0.0, 0.0, 0.0)},
         start_location='charger',
@@ -469,10 +487,13 @@ def test_derived_surface_is_the_group_span_plus_a_margin_with_a_floor():
             for i in range(3)
         ),
     )
-    (_, cx, cy, half_extent), = derived_support_surfaces(spread)
-    assert math.isclose(cx, 2.3)
-    assert math.isclose(half_extent, 0.3 + DERIVED_HALF_EXTENT_MARGIN)
-    assert math.isclose(cy, 3.0)
+    surfaces = derived_support_surfaces(spread)
+    assert len(surfaces) == 3, surfaces
+    assert [round(top_z, 6) for top_z, _, _, _ in surfaces] == [1.10, 1.10, 1.10]
+    assert [cx for _, cx, _, _ in surfaces] == [2.0, 2.3, 2.6]
+    for _, _, cy, half_extent in surfaces:
+        assert math.isclose(cy, 3.0)
+        assert math.isclose(half_extent, DERIVED_MIN_HALF_EXTENT)
 
 
 def test_default_converter_path_still_emits_the_single_named_surface():
@@ -487,11 +508,11 @@ def test_default_converter_path_still_emits_the_single_named_surface():
 
 
 def test_the_shipped_seed_rests_at_its_seed_pose_on_derived_surfaces():
-    """Every shipped graspable settles at its seed pose on a derived surface.
+    """Every shipped graspable settles at its seed pose on a derived pad.
 
     The acceptance-1 gate for issue #152: the *shipped* seed -- not a synthetic
     one-object scene -- materialized through the sim's own path
-    (``write_mjcf_model`` + derived surfaces) and settled for
+    (``write_mjcf_model`` + derived pads) and settled for
     :data:`SETTLE_STEPS`. Every graspable must stay within 1 mm of its seed pose
     (no ejection, no fall-through, no drift, no NaN) **and** its geom must form
     a resting contact with one of the derived ``world_support_*`` geoms, which
