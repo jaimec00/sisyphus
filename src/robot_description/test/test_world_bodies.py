@@ -35,6 +35,13 @@ model (mujoco 3.12, implicit integrator — the sim's own):
 The geometry mirror of ``robot_moveit.scene_geometry`` is asserted too, because
 the sim and the planning scene must agree on every object or the plan collides
 against a different world than the one it executes in.
+
+Issue #152 adds two surfaces and the derived-surface path: the shipped seed's
+graspables sit at two different heights, so ``derived_support_surfaces`` groups
+them by the surface top their pose implies and the converter emits one
+``world_support_N`` per group. The claims here extend to that path -- the
+*shipped seed* (not a synthetic one-object scene) settles with every graspable
+at its seed pose, in resting contact with one of the derived surfaces.
 """
 
 import math
@@ -48,15 +55,19 @@ from robot_description.mjcf_model import write_mjcf_model
 from robot_description.world_bodies import (
     collidable_world_bodies_xml,
     DEFAULT_BOX_SIZE,
+    DERIVED_HALF_EXTENT_MARGIN,
+    DERIVED_MIN_HALF_EXTENT,
+    derived_support_surfaces,
     physical_geom_for_label,
     PHYSICAL_GEOMS_BY_LABEL,
+    SUPPORT_BODY_NAME,
     SUPPORT_CENTER,
     SUPPORT_HALF_EXTENT,
     SUPPORT_HALF_THICKNESS,
     SUPPORT_TOP_Z,
 )
 from robot_skills import Point, Pose
-from robot_world import WorldDocument, WorldObject
+from robot_world import default_seed_document, WorldDocument, WorldObject
 
 
 def _seed_object(label, *, x=None, y=None, z=None, graspable=True,
@@ -104,6 +115,18 @@ def _materialize(document):
 #: is 40 s — far longer than the ~ms a resting cylinder takes to come to rest,
 #: and the same budget the context map's probe used (VERIFIED).
 SETTLE_STEPS = 20000
+
+#: The two resting heights the shipped seed derives (issue #152 R1): the table
+#: pair's (``book_1``/``cup_1``) and the kitchen trio's
+#: (``mug_1``/``plate_1``/``bowl_1``). Spelled out so a seed move that changes a
+#: resting height fails here rather than inside a 40 s settle run.
+SEED_SUPPORT_TOPS = (0.87, 1.10)
+
+
+def _resting_half(obj):
+    """Return the distance from an object's centre down to its resting face."""
+    geom = physical_geom_for_label(obj.label)
+    return geom.dims[2] if geom.kind == 'box' else geom.dims[1]
 
 
 def test_graspable_object_xml_is_physically_real():
@@ -383,3 +406,135 @@ def test_quaternion_is_reordered_to_mujoco_wxyz():
     # body_quat is MuJoCo's (w, x, y, z).
     np.testing.assert_allclose(model.body_quat[bid],
                                (half, 0.0, 0.0, half), atol=1e-9)
+
+
+def test_derived_support_surfaces_group_graspables_by_resting_height():
+    """The seed derives one surface per graspable resting height (issue #152 R1).
+
+    The kitchen trio (``mug_1``/``plate_1``/``bowl_1``) all rest at z=1.10 and
+    the table pair (``book_1``/``cup_1``) at z=0.87, so the seed needs exactly
+    two surfaces, emitted in ascending top order. Every surface must cover every
+    object of its group -- an object whose centre is off the surface is not
+    resting on it -- and never be narrower than the derived minimum.
+    """
+    document = default_seed_document()
+    surfaces = derived_support_surfaces(document)
+
+    assert [round(top_z, 6) for top_z, _, _, _ in surfaces] == \
+        list(SEED_SUPPORT_TOPS)
+    for top_z, cx, cy, half_extent in surfaces:
+        assert half_extent >= DERIVED_MIN_HALF_EXTENT, (top_z, half_extent)
+        members = [
+            obj for obj in document.objects
+            if obj.graspable
+            and round(obj.pose.position.z - _resting_half(obj), 6)
+            == round(top_z, 6)
+        ]
+        assert members, 'no graspable rests at derived top z=%r' % (top_z,)
+        for obj in members:
+            assert abs(obj.pose.position.x - cx) <= half_extent, obj.object_id
+            assert abs(obj.pose.position.y - cy) <= half_extent, obj.object_id
+
+
+def test_derived_support_surfaces_ignore_non_graspable_furniture():
+    """Only graspables rest on surfaces: furniture is an obstacle, not a place.
+
+    A document whose only object is the non-graspable sofa derives no surface
+    at all (issue #152 R1) -- a surface under a sofa would be a place the sim
+    invents out of thin air.
+    """
+    document = _seed_document(_seed_object('sofa', graspable=False))
+    assert derived_support_surfaces(document) == []
+
+
+def test_derived_surface_is_the_group_span_plus_a_margin_with_a_floor():
+    """A lone object gets the floored surface; a spread group gets span+margin.
+
+    The half-extent formula is R1's: ``max(MIN, half_span + MARGIN)``. A single
+    object has half-span 0, so it must come out at the floor; three objects
+    spread over a known span must come out at that span's half plus the margin.
+    """
+    lone = _seed_document(_seed_object('mug'))
+    (top_z, cx, cy, half_extent), = derived_support_surfaces(lone)
+    assert math.isclose(half_extent, DERIVED_MIN_HALF_EXTENT)
+    # The lone object's own centre is the surface centre (its half-span is 0).
+    assert math.isclose(cx, SUPPORT_CENTER[0]) and math.isclose(cy, SUPPORT_CENTER[1])
+
+    spread = WorldDocument(
+        locations={'charger': Pose.from_xyz(0.0, 0.0, 0.0)},
+        start_location='charger',
+        objects=tuple(
+            WorldObject(object_id='mug_%d' % i, label='mug',
+                        pose=Pose(position=Point(2.0 + 0.3 * i, 3.0, 1.15)))
+            for i in range(3)
+        ),
+    )
+    (_, cx, cy, half_extent), = derived_support_surfaces(spread)
+    assert math.isclose(cx, 2.3)
+    assert math.isclose(half_extent, 0.3 + DERIVED_HALF_EXTENT_MARGIN)
+    assert math.isclose(cy, 3.0)
+
+
+def test_default_converter_path_still_emits_the_single_named_surface():
+    """``support_surfaces=None`` keeps the historical ``world_support`` (R1).
+
+    Backward compatibility: a caller that does not ask for derived surfaces
+    gets exactly one surface, under the name every pre-#152 test greps for.
+    """
+    xml = collidable_world_bodies_xml(default_seed_document())
+    assert 'name="%s"' % SUPPORT_BODY_NAME in xml
+    assert 'name="%s_0"' % SUPPORT_BODY_NAME not in xml
+
+
+def test_the_shipped_seed_rests_at_its_seed_pose_on_derived_surfaces():
+    """Every shipped graspable settles at its seed pose on a derived surface.
+
+    The acceptance-1 gate for issue #152: the *shipped* seed -- not a synthetic
+    one-object scene -- materialized through the sim's own path
+    (``write_mjcf_model`` + derived surfaces) and settled for
+    :data:`SETTLE_STEPS`. Every graspable must stay within 1 mm of its seed pose
+    (no ejection, no fall-through, no drift, no NaN) **and** its geom must form
+    a resting contact with one of the derived ``world_support_*`` geoms, which
+    is what proves it is resting rather than hovering.
+    """
+    document = default_seed_document()
+    surfaces = derived_support_surfaces(document)
+    path = pathlib.Path(tempfile.mkdtemp(prefix='i152_seed_')) / 'scene.xml'
+    write_mjcf_model(str(path), world_bodies=collidable_world_bodies_xml(
+        document, support_surfaces=surfaces))
+    model = mujoco.MjModel.from_xml_path(str(path))
+    data = mujoco.MjData(model)
+    for _ in range(SETTLE_STEPS):
+        mujoco.mj_step(model, data)
+
+    support_geoms = {
+        g for g in range(model.ngeom)
+        if (mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_GEOM, g) or '')
+        .startswith(SUPPORT_BODY_NAME)
+    }
+    assert len(support_geoms) == len(surfaces), (
+        'expected one collidable geom per derived surface: %r' % (support_geoms,))
+    pairs = [frozenset((int(c.geom1), int(c.geom2)))
+             for c in data.contact[:data.ncon]]
+
+    graspables = [obj for obj in document.objects if obj.graspable]
+    assert graspables, 'the shipped seed should hold graspable objects'
+    for obj in graspables:
+        body_id = mujoco.mj_name2id(
+            model, mujoco.mjtObj.mjOBJ_BODY, obj.object_id.encode())
+        assert body_id >= 0, obj.object_id
+        settled = data.xpos[body_id].copy()
+        seed = np.array([obj.pose.position.x, obj.pose.position.y,
+                         obj.pose.position.z])
+        assert not np.isnan(settled).any(), (obj.object_id, settled)
+        # 1e-3 leaves ~50x margin over the ~2e-5 m real settle error while
+        # still catching a millimetre-scale fall-through or slide.
+        np.testing.assert_allclose(settled, seed, atol=1e-3,
+                                   err_msg=obj.object_id)
+        geom_id = mujoco.mj_name2id(
+            model, mujoco.mjtObj.mjOBJ_GEOM, (obj.object_id + '_geom').encode())
+        assert geom_id >= 0, obj.object_id
+        assert any(geom_id in pair and (pair - {geom_id}) & support_geoms
+                   for pair in pairs), (
+            '%s is not in resting contact with a derived support surface: %r'
+            % (obj.object_id, pairs))

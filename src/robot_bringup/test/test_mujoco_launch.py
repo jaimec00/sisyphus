@@ -182,8 +182,10 @@ def test_materialized_mjcf_contains_the_world_objects():
     with open(mjcf_path) as handle:
         text = handle.read()
 
-    # The finite support surface is there ...
-    assert 'name="world_support"' in text, (
+    # The finite support surface is there ... (one per graspable resting
+    # height -- issue #152 derives them, so the shipped seed's two clusters
+    # mean world_support_0/world_support_1, not the pre-#152 single surface).
+    assert 'name="world_support_0"' in text, (
         'the materialized MJCF has no support surface; world objects would '
         'fall through the sim floor')
     # ... and so is every seed object body.
@@ -199,7 +201,7 @@ def test_materialized_mjcf_contains_the_world_objects():
     module._materialize_mjcf_for_state(fallback_path, missing)
     with open(fallback_path) as handle:
         fallback_text = handle.read()
-    assert 'name="world_support"' not in fallback_text
+    assert 'name="world_support' not in fallback_text
     for obj in document.objects:
         assert '<body name="%s"' % obj.object_id not in fallback_text
     # The floor is still there, so the robot is still drivable.
@@ -210,6 +212,68 @@ def test_materialized_mjcf_contains_the_world_objects():
 ARM_JOINTS = (
     'shoulder_pan', 'shoulder_lift', 'elbow_flex', 'wrist_flex', 'wrist_roll',
 )
+
+
+def _load_launch_module(tag):
+    """Import the installed ``mujoco.launch.py`` under a private module name."""
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(tag, _launch_path())
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _declared_default(description, name):
+    """Return the declared string default of a launch argument, or ``None``.
+
+    The pinned launch version normalizes ``default_value`` to a list of
+    substitutions; a plain string comes back through ``TextSubstitution.text``.
+    """
+    from launch.actions import DeclareLaunchArgument
+    for action in description.entities:
+        if isinstance(action, DeclareLaunchArgument) and action.name == name:
+            return ''.join(getattr(sub, 'text', str(sub))
+                           for sub in action.default_value)
+    return None
+
+
+def test_world_objects_defaults_to_true():
+    """The physical world is **on by default** (issue #152, acceptance 3).
+
+    PR A (#150) gated the collidable world behind ``world_objects:=true``
+    because the shipped seed was physically incoherent -- materializing it
+    blocked the charger->kitchen path. Issue #152 fixed the seed, so the
+    default flips back. This pins both halves of that claim: the *declared*
+    default value, and the in-code fallback the OpaqueFunction uses when the
+    key is absent from the resolved configuration (which is the default path).
+    """
+    import json
+    import tempfile
+
+    from robot_world import default_seed_document
+
+    module = _load_launch_module('robot_bringup_mujoco_world_default')
+    description = module.generate_launch_description()
+    assert _declared_default(description, 'world_objects') == 'true', (
+        'world_objects must default to true once the seed is coherent')
+
+    # The value-level fallback: a resolved context WITHOUT a world_objects key
+    # (a bare launch) must materialize the world, not the bare robot + floor.
+    directory = tempfile.mkdtemp(prefix='i152_world_default_')
+    world_state = os.path.join(directory, 'world.json')
+    with open(world_state, 'w') as handle:
+        json.dump(default_seed_document().to_dict(), handle)
+    mjcf_path = os.path.join(directory, 'derived_scene.xml')
+    context = type('Context', (), {
+        'launch_configurations': {'mjcf_path': mjcf_path,
+                                  'world_state_path': world_state}})()
+    module._materialize_world_objects(context)
+    with open(mjcf_path) as handle:
+        text = handle.read()
+    assert 'name="world_support_0"' in text, (
+        'the default path did not materialize the derived support surfaces')
+    assert '<body name="mug_1"' in text, (
+        'the default path did not materialize the shipped seed objects')
 
 
 def test_controllers_yaml_declares_position_and_velocity_groups():
