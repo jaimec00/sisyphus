@@ -72,6 +72,25 @@ Context map: `docs/features/i150-physical-world/context.md`.
   incoherence (mug center inside the counter box, etc.) is a follow-up; PR A only
   guarantees the *test's* seeded object rests.
 
+## Ruling amendment (post-implementer)
+
+- **R5a (support centre — AMENDED):** the implementer VERIFIED that R5's finite
+  box centred on the robot origin at `SUPPORT_TOP_Z` **does** pierce the column
+  mast (a 0.06 m capsule on `base_link` spanning world z 0.115→1.445), exactly
+  as a plane would — finiteness bounds the edge, not the footprint. An object
+  on an origin-centred surface is ejected at ~120 m/s in the full model.
+  **Accepted fix:** `SUPPORT_CENTER = (2.15, 0.0)` (offset clear of the mast,
+  under the shipped seed's kitchen cluster), still a keyword parameter. The
+  tests assert the footprint does not cover the origin and has no robot contact
+  at home. This is the correct reading of R5; no further change needed.
+
+- **Follow-ups (NOTE, not blockers — will file on the issue after PR):** (a) the
+  shipped seed's physical incoherence (mug/plate/bowl centres inside the static
+  counter box; book/cup off the 2 m surface) is now a live symptom once objects
+  are physical — out of scope for PR A but a real follow-up; (b) three copies of
+  the label→shape table (scene_geometry, robot_backends, world_bodies) — dedup
+  is the follow-up R1 already names.
+
 ## Falsifiable claims for red-team (disprove empirically — run, don't reason)
 1. The converter output compiles in the FULL derived model (rim rollers + implicit
    integrator) and a seeded graspable object settles to its seed pose (center z
