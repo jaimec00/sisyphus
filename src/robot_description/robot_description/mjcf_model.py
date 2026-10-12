@@ -580,7 +580,7 @@ def _inject_integrator(merged: str) -> str:
 
 
 def write_mjcf_model(path: str, *, base_free_joint: bool = True,
-                     floor: bool = True) -> str:
+                     floor: bool = True, world_bodies: str = '') -> str:
     """Materialize the derived MJCF to ``path`` for the sim to load.
 
     The ``mujoco_ros2_control`` system interface loads the sim model from a
@@ -604,12 +604,23 @@ def write_mjcf_model(path: str, *, base_free_joint: bool = True,
     (:func:`load_mjcf_model_with_scene`) is unaffected: it passes its own
     ``base_free_joint``/``world_bodies`` explicitly and never routes through
     here.
+
+    ``world_bodies`` (issue #150, PR A) carries extra static/free ``<body>``
+    blocks -- the world document materialized by
+    :func:`robot_description.world_bodies.collidable_world_bodies_xml` -- and is
+    appended to the worldbody *after* :data:`FLOOR_BODIES`, so the sim keeps the
+    drive floor AND gains the support surface + scene objects.  The default ''
+    leaves the floor-only model byte-identical (the sim path stays callable
+    without a world).
     """
     out = Path(path).expanduser().resolve()
     out.parent.mkdir(parents=True, exist_ok=True)
+    world = FLOOR_BODIES if floor else ''
+    if world_bodies and world_bodies.strip():
+        world = (world + _NL + world_bodies) if world else world_bodies
     merged = _build_merged_mjcf(
         _package_dir(),
-        world_bodies=FLOOR_BODIES if floor else '',
+        world_bodies=world,
         base_free_joint=base_free_joint,
     )
     if base_free_joint:

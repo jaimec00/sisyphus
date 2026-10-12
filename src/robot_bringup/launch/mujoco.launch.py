@@ -43,6 +43,7 @@ and the whole ``controllers.yaml`` is passed as a simulator NODE parameter so
 the controller `type` declarations + CM ``update_rate`` land on the embedded
 CM (R-PR8b-11/14).
 """
+import json
 import os
 
 from ament_index_python.packages import get_package_share_directory
@@ -64,6 +65,8 @@ DEFAULT_MJCF = os.path.join(os.path.expanduser('~'), '.ros',
                             'sisyphus_derived_scene.xml')
 #: The live world-state file the world service (and the Nav2 map derived from
 #: it) read; matches world.launch.py's default so the bringup's pieces agree.
+#: It is also, since issue #150 (PR A), the source of the sim's *collidable*
+#: world objects: a missing/unreadable file falls back to robot + floor only.
 DEFAULT_WORLD_STATE = os.path.join(os.path.expanduser('~'), '.ros',
                                    'sisyphus_world.json')
 
@@ -108,10 +111,57 @@ def _robot_description_xacro():
         'urdf', 'robot.urdf.xacro')
 
 
+def _world_bodies_xml(world_state_path):
+    """Read the world file and return its collidable world-body ``<body>`` blocks.
+
+    The sim's physical world (issue #150, PR A): the objects the MoveIt planning
+    scene collides against must actually exist in MuJoCo, complete with mass,
+    inertia and contacts, or a pick-and-place plan manoeuvres an empty room.
+    The world-state file is the single source of truth (D23/D35), so it is
+    parsed with the same :class:`robot_world.WorldDocument` the world service
+    and the brain use, then materialized by
+    :func:`robot_description.world_bodies.collidable_world_bodies_xml`.
+
+    A missing, unreadable or malformed world file is **not** fatal here: the
+    sim still comes up with the robot + floor (the pre-#150 model), because a
+    scene-option failure must not take down the whole bringup -- and this runs
+    inside ``generate_launch_description`` (description-build time), where an
+    exception aborts the launch before any node starts. The fallback is
+    logged; the world service's own launch still fails loudly on a world file
+    it cannot read, which is the right place for that error.
+    """
+    from robot_description.world_bodies import collidable_world_bodies_xml
+    from robot_world import WorldDocument
+    try:
+        with open(world_state_path) as handle:
+            document = WorldDocument.from_dict(json.load(handle))
+    except Exception as exc:  # noqa: BLE001 - any failure must degrade, not crash
+        print('[mujoco.launch] no collidable world objects: %s could not be '
+              'read as a world document (%s); the sim comes up with the robot '
+              '+ floor only.' % (world_state_path, exc))
+        return ''
+    return collidable_world_bodies_xml(document)
+
+
 def _materialize_mjcf(mjcf_path):
-    """Write the derived MJCF to ``mjcf_path`` using the installed loader."""
+    """Write the derived MJCF (robot + floor + collidable world) to ``mjcf_path``."""
     from robot_description.mjcf_model import write_mjcf_model
-    return write_mjcf_model(mjcf_path)
+    return write_mjcf_model(mjcf_path, world_bodies=_world_bodies_xml(
+        LaunchConfiguration('world_state_path')))
+
+
+def _materialize_mjcf_for_state(mjcf_path, world_state_path):
+    """Materialize the derived MJCF for an explicit world-state file path.
+
+    The value-level twin of :func:`_materialize_mjcf` (which resolves the path
+    through a :class:`LaunchConfiguration`): used by the structural test, which
+    has no launch context to substitute the argument in. Both share
+    :func:`_world_bodies_xml`, so the sim path and the tested path cannot
+    drift.
+    """
+    from robot_description.mjcf_model import write_mjcf_model
+    return write_mjcf_model(mjcf_path,
+                            world_bodies=_world_bodies_xml(world_state_path))
 
 
 def _spawner(*names, params_file=None):
@@ -151,6 +201,7 @@ def generate_launch_description():
     """Build the LaunchDescription for the MuJoCo sim bringup (dfki-ric)."""
     use_sim_time = LaunchConfiguration('use_sim_time')
     mjcf_path = LaunchConfiguration('mjcf_path')
+    world_state_path = LaunchConfiguration('world_state_path')
     controllers_file = PathJoinSubstitution(
         [FindPackageShare('robot_bringup'),
          'params', 'controllers.yaml'])
@@ -159,7 +210,9 @@ def generate_launch_description():
     # to run before any node starts), so the file exists when the sim plugin
     # loads its ``robot_model_path`` param. Default path; an explicit
     # ``mjcf_path`` argument still takes precedence at substitution time below.
-    _materialize_mjcf(DEFAULT_MJCF)
+    # The world-state path is resolved from the launch argument, so the
+    # materialized model carries the collidable world objects (#150, PR A).
+    _materialize_mjcf_for_state(DEFAULT_MJCF, world_state_path)
     robot_description = ParameterValue(
         Command(['xacro ', _robot_description_xacro()]),
         value_type=str)
