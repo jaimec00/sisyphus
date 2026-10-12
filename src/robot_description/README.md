@@ -34,6 +34,16 @@ Layout — everything here is installed to `share/robot_description/`:
 - `meshes/` — visual/collision geometry, still empty: the base is primitives
   only, and per D29 the first real mesh set (and the `os.walk` install rewrite
   D27 deferred) arrives with the arms.
+- `robot_description/world_bodies.py` — materializes a `robot_world`
+  `WorldDocument` as *collidable* MuJoCo `<body>` blocks (issue #150, PR A):
+  graspable objects become free-jointed bodies with mass + shape-derived inertia
+  + a colliding geom, non-graspable ones static bodies, plus a finite box
+  support surface. `mjcf_model.write_mjcf_model(..., world_bodies=...)` splices
+  its output after the floor, so the sim gets a physical world. Geometry mirrors
+  `robot_moveit.scene_geometry` (full extents → MuJoCo half-extents). The
+  support surface is offset clear of the robot's column mast (see
+  `SUPPORT_CENTER`): a surface centred on the origin would pierce the mast,
+  which spans the surface's height.
 
 Expand it by hand with:
 
@@ -74,8 +84,8 @@ every height on this robot is derived from — so what PR3.5/PR4 mount there doe
 not start inside it.
 Extend `EXPECTED_LINKS` and `FILE_BEARING_TAGS` as the description grows —
 both are module-level constants for that reason.
-Status: package + gate + mobile base + column; arms, grippers, head camera and
-MJCF still to come. See
+Status: package + gate + mobile base + column + MJCF derivation; arms,
+grippers, head camera and MJCF still to come. See
 `docs/design/PROJECT.md` for the architecture and `docs/design/decisions.md`
 D26/D27/D29/D31 for the hardware lineage, the packaging call, the base and the
 column.
