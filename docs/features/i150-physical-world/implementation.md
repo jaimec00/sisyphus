@@ -29,12 +29,57 @@ plus a finite support surface for them to rest on.
   parses `WorldDocument.from_dict(json.loads(...))`, calls the converter, and
   materializes `DEFAULT_MJCF` with the result (R6). A missing/unreadable/
   malformed world file degrades to robot + floor only (never crashes
-  description-build).
+  description-build). **Since the regression fix below, this is gated on the
+  `world_objects` launch argument (default `false`): the default materializes
+  robot + floor only, `world_objects:=true` materializes the collidable world.**
+  Materialization is deferred to an `OpaqueFunction` (`_materialize_world_objects`)
+  so it can read the resolved `world_objects`/`mjcf_path`/`world_state_path`
+  values; the value-level helpers `_world_bodies_xml` /
+  `_materialize_mjcf_for_state` are kept intact for the structural test.
 - **NEW** `src/robot_description/test/test_world_bodies.py` — 10 in-process
   physics tests (R7).
 - `src/robot_bringup/test/test_mujoco_launch.py` — one added structural test
   that the materialize path produces the world bodies (R7).
 - `scripts/test_baseline.json` — auto-raised by `pixi run test`.
+
+## Regression fix — `world_objects` opt-in default (manager-verified regression)
+
+Materializing the world objects by **default** broke
+`robot_bringup.test.test_pr3_navigate::test_navigate_to_location_drives_the_base_and_updates_the_world`:
+`NavigateToLocation('kitchen')` reported *"the semantic goal did not finish in
+time"*. On `origin/main` (old launch, no world materialization) it passed.
+
+**Root cause:** the shipped seed is *physically incoherent* — it places static
+objects **at the navigation locations**. Near the kitchen the static `counter_1`
+box (z 0.40–1.30) and the finite support surface (z 1.00–1.10) sit at
+`(2.15, 0)`, so when the base drives from the charger `(0, 0)` to kitchen
+`(2, 0)` they collide with the robot's arms/column and block navigation. The
+seed geometry is a **known follow-up (R8)**, not this PR's job to fix.
+
+**Fix (in-scope, `robot_bringup` only):** gate the materialization behind
+`DeclareLaunchArgument('world_objects', default_value='false')`:
+
+- default `false` → `write_mjcf_model(mjcf_path, world_bodies='')`, i.e. the
+  pre-#150 robot + floor model that keeps navigation working;
+- `world_objects:=true` → the collidable world (robot + floor + support surface
+  + objects), for the pick-and-place path.
+
+Because the old code materialized at **description-build time** (before the
+launch context / `LaunchConfiguration` existed), the materialization moved into
+an `OpaqueFunction` (`_materialize_world_objects`) declared as the first
+executable action; it reads the resolved
+`world_objects`/`mjcf_path`/`world_state_path`. A side benefit: a
+`mjcf_path`/`world_state_path` override now actually applies to the sim model
+(it previously could not). The value-level helpers `_world_bodies_xml` and
+`_materialize_mjcf_for_state` are unchanged, so the structural test
+(`test_materialized_mjcf_contains_the_world_objects`), which drives
+`_materialize_mjcf_for_state` directly, still finds the world bodies.
+
+**Verification (this pass):** `test_pr3_navigate` **passes** (1 passed, 41.27 s);
+the structural world-object test **passes**; `robot_description`
+`test_world_bodies.py` **passes** (10 passed); `pixi run build` clean.
+Once the seed geometry is made coherent (R8 follow-up), PR B/C can wire the
+pick-and-place path to pass `world_objects:=true` (or flip the default).
 
 ## Design
 

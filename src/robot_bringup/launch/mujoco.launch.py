@@ -42,6 +42,22 @@ mujoco_ros2_control_plugin.cpp), so the spawners target ``/controller_manager``;
 and the whole ``controllers.yaml`` is passed as a simulator NODE parameter so
 the controller `type` declarations + CM ``update_rate`` land on the embedded
 CM (R-PR8b-11/14).
+
+Physical world (issue #150, PR A) — **opt-in via ``world_objects``** (default
+``false``).  ``world_objects:=true`` splices the world-state file's collidable
+objects + finite support surface into the derived MJCF, so the sim's physical
+world matches the scene MoveIt plans against.  The default keeps the pre-#150
+model (robot + floor only).  Rationale: the currently shipped seed is
+*physically incoherent* — it places static objects (the ``counter_1`` box at
+z 0.40-1.30 and the support surface at z 1.00-1.10) right at the navigation
+locations near the kitchen ``(2.15, 0)``, so materializing them by default
+collides with the robot's arms/column as the base drives from the charger
+``(0, 0)`` to kitchen ``(2, 0)`` and blocks navigation (the regression this
+default avoids).  Fixing the seed geometry is a known follow-up; once it is
+incoherent no longer, PR B/C can flip the default / wire the pick-and-place
+path to pass ``world_objects:=true``.  The materialization therefore runs
+lazily inside an :class:`OpaqueFunction` (below), reading the launch
+configuration, rather than at description-build time.
 """
 import json
 import os
@@ -49,7 +65,7 @@ import os
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
 from launch.actions import (DeclareLaunchArgument, IncludeLaunchDescription,
-                            LogInfo, RegisterEventHandler,
+                            LogInfo, OpaqueFunction, RegisterEventHandler,
                             SetEnvironmentVariable, Shutdown)
 from launch.conditions import IfCondition
 from launch.event_handlers import OnProcessStart
@@ -151,18 +167,51 @@ def _materialize_mjcf_for_state(mjcf_path, world_state_path):
     the world file degrades to robot + floor (see :func:`_world_bodies_xml`),
     so this never raises and the sim always has a loadable model.
 
-    The caller passes a concrete path string, not a
-    :class:`~launch.substitutions.LaunchConfiguration`: the model is
-    materialized at *description-build* time (before the launch context exists,
-    so a substitution cannot be performed yet), which is why
-    ``generate_launch_description`` calls this with the ``world_state_path``
-    argument's default value. A user override of ``world_state_path`` still
-    reaches the world service at runtime; only the sim model's scene is fixed
-    at build time, exactly as it was for the robot + floor before this PR.
+    The caller passes concrete path strings, not
+    :class:`~launch.substitutions.LaunchConfiguration` values: the model is
+    materialized by :func:`_materialize_world_objects` inside an
+    :class:`OpaqueFunction`, where the launch configuration has already been
+    resolved to strings.  ``_materialize_world_objects`` passes ``world_bodies``
+    through when ``world_objects:=true`` and an empty fragment when it is
+    ``false`` (the default), producing the pre-#150 robot + floor model.
     """
     from robot_description.mjcf_model import write_mjcf_model
     return write_mjcf_model(mjcf_path,
                             world_bodies=_world_bodies_xml(world_state_path))
+
+
+def _materialize_world_objects(context, *args, **kwargs):
+    """Materialize the derived MJCF, gated on the ``world_objects`` argument.
+
+    Runs as an :class:`OpaqueFunction` so it executes at *launch* time, after
+    the launch context has resolved every argument -- unlike the old
+    description-build-time call, which could not see ``world_objects``.  This
+    is the single place the sim's MJCF is derived, and it is declared as the
+    first executable action so the file exists before the sim plugin loads its
+    ``robot_model_path``.
+
+    ``world_objects:='true'`` materializes the collidable physical world (robot
+    + floor + support surface + world objects); anything else (the default
+    ``'false'``) materializes robot + floor only -- the pre-#150 behaviour that
+    keeps navigation working (see the module docstring for why the shipped seed
+    cannot be materialized by default yet).
+
+    The ``mjcf_path`` / ``world_state_path`` launch configurations are read
+    here as resolved strings; a user override of either now takes effect for
+    the sim model too (it previously could not, since the model was built
+    before the context existed).
+    """
+    world_state_path = context.launch_configurations['world_state_path']
+    mjcf_path = context.launch_configurations['mjcf_path']
+    enabled = context.launch_configurations.get('world_objects', 'false')
+    if enabled.lower() in ('true', '1', 'yes'):
+        _materialize_mjcf_for_state(mjcf_path, world_state_path)
+    else:
+        # Robot + floor only (the pre-#150 default): skip the world-state read
+        # entirely so the incoherent seed cannot collide with the base.
+        from robot_description.mjcf_model import write_mjcf_model
+        write_mjcf_model(mjcf_path, world_bodies='')
+    return []
 
 
 def _spawner(*names, params_file=None):
@@ -206,15 +255,11 @@ def generate_launch_description():
         [FindPackageShare('robot_bringup'),
          'params', 'controllers.yaml'])
 
-    # Materialize the derived MJCF now, at description build time (guaranteed
-    # to run before any node starts), so the file exists when the sim plugin
-    # loads its ``robot_model_path`` param. The default path and the default
-    # world-state path are used: the model is built before the launch context
-    # exists, so a ``mjcf_path``/``world_state_path`` override cannot be
-    # substituted here. An explicit ``mjcf_path`` argument still takes
-    # precedence at substitution time below (for the plugin's param); the
-    # world service reads its own ``world_state_path`` at runtime.
-    _materialize_mjcf_for_state(DEFAULT_MJCF, DEFAULT_WORLD_STATE)
+    # The derived MJCF is materialized by ``_materialize_world_objects`` (an
+    # OpaqueFunction, below), NOT here: the world-object splice is gated on the
+    # ``world_objects`` launch argument, which does not exist at
+    # description-build time. Deferring to an OpaqueFunction lets it read the
+    # resolved ``world_objects``/``mjcf_path``/``world_state_path`` values.
     robot_description = ParameterValue(
         Command(['xacro ', _robot_description_xacro()]),
         value_type=str)
@@ -274,6 +319,18 @@ def generate_launch_description():
             'world_state_path', default_value=DEFAULT_WORLD_STATE,
             description=('Live world-state file the world service and the Nav2'
                          ' map derive from.')),
+        DeclareLaunchArgument(
+            'world_objects', default_value='false',
+            description=('Materialize the world-state file\'s collidable '
+                         'objects + finite support surface into the sim MJCF. '
+                         'Default false keeps the pre-#150 robot + floor model '
+                         '(materializing the shipped seed by default blocks '
+                         'navigation -- see the module docstring). Set true to '
+                         'give the sim the same physical world MoveIt plans '
+                         'against (pick-and-place).')),
+        # FIRST executable action: derive the MJCF (gated on world_objects) so
+        # the file exists when the sim plugin loads ``robot_model_path``.
+        OpaqueFunction(function=_materialize_world_objects),
         Node(
             package='robot_state_publisher',
             executable='robot_state_publisher',
