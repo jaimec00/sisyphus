@@ -151,30 +151,51 @@ is 0.13 m from the cup's axis vs its 0.035 m radius).
 `(1.100, 2.15, 0.45, 0.12)`, `(1.100, 2.00, −0.48, 0.15)`,
 `(1.100, 2.25, −0.44, 0.12)`.
 
-**Test results (`pixi run test`, this host; `colcon test` per package):**
+**Test results (final `pixi run test` full run, this host; the suite takes
+~22 min because `robot_moveit`'s stack tests wait their 420 s readiness
+timeout):**
 
-* `robot_backends` 116 / **0 failed** — all six previously-red tests pass,
-  without touching the package.
-* `robot_description` 95 / 0 (was 94; the two derivation tests became three),
-  `robot_world` 71 / 0, `robot_skills` 109 / 0, `robot_safety` 179 / 0,
-  `robot_moveit_config` 12 / 0, `robot_world_ros` 14 / 0, `robot_perception`
-  3 / 0.
-* `robot_mcp` 105 total, **3 failed** — see the blocking finding.
-* Pre-existing environment failures, unrelated to this seed (both root causes
-  are the absent `mujoco_ros2_control`: `ros2 pkg prefix mujoco_ros2_control` →
-  "Package not found" on this host): `robot_nav` 1
+* `robot_backends` 116 / **0 failures** — all six previously-red tests pass,
+  without touching the package (baseline +0).
+* `robot_description` 95 / 0 (was 94; the two derivation tests became three;
+  baseline +9), `robot_world` 71 / 0, `robot_skills` 109 / 0, `robot_safety`
+  179 / 0, `robot_moveit_config` 12 / 0, `robot_world_ros` 14 / 0,
+  `robot_perception` 3 / 0, the two `*_interfaces` packages 4 / 0 and 10 / 0,
+  `_workspace_tooling` 199 / 0.
+* `robot_mcp` 105 total, **3 failures** — see the blocking finding.
+
+**Environment-only failures (identical root cause: this worktree has no
+`mujoco_ros2_control`; `ros2 pkg prefix mujoco_ros2_control` → "Package not
+found"):**
+
+* `robot_bringup` 1 failure (`test_nav_localization_under_launch`: "TF tree did
+  not connect within 60s") + **9 skips** (every one skips with "mujoco_ros2_control
+  … is not installed").  The 9 skips drop the package's non-linter count to 11,
+  below `scripts/test_baseline.json`'s floor of 19 — cut on a host that *has*
+  the sim — so `check_test_integrity` reports `below-baseline` and the audit
+  fails.  Deliberately **not** re-cut with `ALLOW_TEST_DECREASE=1`: the loss is
+  the missing dependency, not a removed test.
+* `robot_nav` 1 failure (`ModuleNotFoundError: No module named
+  'mujoco_ros2_control'`); `robot_moveit` 3 errors (its three composed-stack
+  tests, each waiting the 420 s stack-readiness timeout before erroring);
+  `robot_brain` 2 failures (installed OpenClaw 2026.10.2 rejects the shipped
+  config fragment).
+
+So `pixi run test` cannot go green on this host in any worktree, and the run
+prints "not updating the test-count baseline: this run is not otherwise green".
+The first implementer's escalation already recorded that `mujoco_ros2_control`
+is genuinely absent here.
+* Pre-existing environment failures, unrelated to this seed — the single root
+  cause is the absent `mujoco_ros2_control` (`ros2 pkg prefix
+  mujoco_ros2_control` → "Package not found" on this host): `robot_nav` 1
   (`ModuleNotFoundError: mujoco_ros2_control`), `robot_bringup` 1
-  (`test_nav_localization` TF-tree timeout, 9 skips), `robot_brain` 2 (the
-  installed OpenClaw 2026.10.2 rejects the shipped config fragment).
-  `robot_moveit`'s composed-stack test (`test_moveit_execution.py`) **hangs**
-  for the same reason — it launches the sim + move_group stack, which cannot
-  come up without that package — so `pixi run test` does not reach its final
-  summary on this host; its other 17 tests pass when run from the package
-  directory (`test_cartesian_goal`, `test_world_to_scene`,
-  `test_planning_scene_bridge_e2e`, copyright, flake8, pep257). The first
-  implementer's escalation already recorded that `mujoco_ros2_control` is
-  genuinely absent here (`test_pr3_navigate`, `test_nav_localization`,
-  `test_moveit_execution` cannot run on this host in any worktree).
+  (`test_nav_localization` TF-tree timeout) + 9 skips (which also trip the
+  test-count audit as `below-baseline`), `robot_moveit` 3 errors (its stack
+  tests), and `robot_brain` 2 (installed OpenClaw 2026.10.2 rejects the config
+  fragment).  The first implementer's escalation already recorded that
+  `mujoco_ros2_control` is genuinely absent here (`test_pr3_navigate`,
+  `test_nav_localization`, `test_moveit_execution` cannot run on this host in
+  any worktree).
 
 ## Blocking finding — the 3 remaining `robot_mcp` failures are infeasible
 
@@ -267,6 +288,12 @@ keeps the acceptance criterion and the three failures are reported.
 
 ## Notes / follow-ups
 
+* `scripts/test_baseline.json` was **not** bumped: the ratchet is written by a
+  *green* full run and this host cannot complete one (the `robot_moveit`
+  composed-stack test hangs without `mujoco_ros2_control`).  The existing floors
+  (83/113/102 for `robot_description`/`robot_backends`/`robot_mcp`) are below
+  the actual counts, so nothing fails the ratchet; a host that can finish the
+  suite will raise them automatically.  No floor was lowered.
 * `robot_backends/mock_world.py`'s docstring still quotes the pre-#152
   counter/table poses, and `robot_mcp/test/test_mcp_mujoco_parity.py:208`
   `_COUNTER_DROP = (2.15, 0.00, 0.95)` is a raw, seed-independent literal (it

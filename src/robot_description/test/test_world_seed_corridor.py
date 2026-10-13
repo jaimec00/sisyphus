@@ -113,7 +113,7 @@ def test_the_shipped_seed_has_no_corridor_blocker():
 
     Issue #152 acceptance: with the world materialized, navigation stays green,
     and this is the geometry that makes it so -- every physical body that
-    overlaps the corridor's x-range misses both the mast and the arm envelopes.
+    overlaps the corridor's x-range misses all of :data:`ROBOT_ENVELOPES`.
     """
     blocking = _blockers(default_seed_document())
     assert not blocking, (
