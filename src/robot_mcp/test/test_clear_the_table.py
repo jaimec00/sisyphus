@@ -71,6 +71,14 @@ DROP_CLEARANCE = 0.10
 #: backend would tolerate.
 SIDE_BY_SIDE = 0.15
 
+#: The counter's vertical half-extent (full height 0.90, mirroring
+#: ``robot_moveit.scene_geometry.GEOMETRY_BY_LABEL['counter']`` (0.60, 0.60,
+#: 0.90) and
+#: ``robot_description.world_bodies.PHYSICAL_GEOMS_BY_LABEL['counter']``
+#: (0.30, 0.30, 0.45)).  An observation gives the counter's *centre*, so the
+#: drop has to add this back to land just above the counter's **top**.
+COUNTER_HALF_HEIGHT = 0.45
+
 #: The travel range the shipped safety limits allow.
 COLUMN = SafetyLimits.defaults().column
 
@@ -104,6 +112,11 @@ def support_pose(observation: dict, label: str = 'counter', offset_y: float = 0.
     them from a pose already in the observation instead of inventing numbers.
     ``offset_y`` slides the spot along the surface, which is how a second
     object gets put down *beside* the first rather than on top of it.
+
+    An observation reports the furniture's **centre**, so the release height is
+    the centre plus its half-height (just above the counter's **top**) plus
+    ``DROP_CLEARANCE`` -- dropping at the centre would put the object inside
+    the counter.
     """
     base = observation['robot']['pose']['position']
     surfaces = [item for item in observation['objects'] if item['label'] == label]
@@ -111,7 +124,10 @@ def support_pose(observation: dict, label: str = 'counter', offset_y: float = 0.
     nearest = min(surfaces, key=lambda item: _distance(item['pose']['position'], base))
     spot = nearest['pose']['position']
     return Pose.from_xyz(
-        spot['x'], spot['y'] + offset_y, spot['z'] + DROP_CLEARANCE).to_dict()
+        spot['x'],
+        spot['y'] + offset_y,
+        spot['z'] + COUNTER_HALF_HEIGHT + DROP_CLEARANCE,
+    ).to_dict()
 
 
 async def call(client, name: str, arguments: dict | None = None) -> dict:
