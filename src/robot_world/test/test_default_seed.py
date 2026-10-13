@@ -34,17 +34,22 @@ EXPECTED_LOCATIONS = {
 
 #: object_id -> (label, x, y, z, graspable), in the order the seed lists them.
 #:
-#: These are the PR4 re-place (status.md R6): the graspable objects sit inside
-#: the real 5-DOF arm's reachable workspace (a thin z-band above the shoulder),
-#: not at the old table/counter surfaces, which the arm cannot reach at the
-#: seed column height.
+#: These are the *physically coherent* re-place (issue #152, manager ruling #2):
+#: every graspable object's underside sits exactly on its own support pad the
+#: sim derives from its pose (the kitchen trio on pads of top z=1.10, the table
+#: pair on pad tops 0.885 / 0.87), and every object and pad is clear of both the
+#: mast (``|y| > 0.03``) and the arm band (``|y| > 0.294`` at z 0.94..1.106)
+#: along the charger->kitchen corridor, so materializing the world does not
+#: block navigation. The graspables still sit inside the real 5-DOF arm's
+#: reachable workspace (left arm reaches the ``+y`` objects, right the ``-y``
+#: ones) and inside the Mock's 1.0 m table window (PR4 / #149 R6).
 EXPECTED_OBJECTS = (
-    ('mug_1', 'mug', 2.10, 0.10, 1.15, True),
-    ('plate_1', 'plate', 2.10, -0.10, 1.15, True),
-    ('bowl_1', 'bowl', 2.20, 0.00, 1.15, True),
-    ('counter_1', 'counter', 2.15, 0.00, 0.85, False),
-    ('book_1', 'book', 0.10, 2.00, 0.90, True),
-    ('cup_1', 'cup', 0.15, 2.00, 0.90, True),
+    ('mug_1', 'mug', 2.15, 0.45, 1.150, True),
+    ('plate_1', 'plate', 2.00, -0.48, 1.105, True),
+    ('bowl_1', 'bowl', 2.25, -0.44, 1.125, True),
+    ('counter_1', 'counter', 2.15, 0.47, 0.400, False),
+    ('book_1', 'book', 0.10, 2.00, 0.900, True),
+    ('cup_1', 'cup', 0.20, 2.20, 0.915, True),
     ('sofa_1', 'sofa', -2.00, 1.60, 0.40, False),
 )
 

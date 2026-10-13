@@ -47,6 +47,49 @@ def backend(request):
     return request.param()
 
 
+#: Why the three chore tests below cannot pass on their ``[mujoco]`` run yet.
+#: The coherent (off-corridor) counter sits at ``(2.15, 0.47, 0.40)``; the
+#: chore drops each object at counter-centre ``y + SIDE_BY_SIDE * k`` ->
+#: ``y = 0.47 / 0.62``, past the left arm's reach (``~0.44`` at ``x = 2.15``).
+#: Redesigning the chore's placement is PR-C, tracked in
+#: ``jaimec00/sisyphus#154``.
+UNREACHABLE_CHORE_XFAIL_REASON = (
+    'The coherent counter is off-corridor (2.15, 0.47, 0.40); the chore drops '
+    'at counter-centre y + SIDE_BY_SIDE*k -> y=0.47/0.62, beyond the left '
+    "arm's reach (~0.44 at x=2.15). Placement redesign is PR-C: "
+    'jaimec00/sisyphus#154.')
+
+
+@pytest.fixture(autouse=True)
+def _xfail_the_mujoco_chore(request):
+    """Strictly xfail the marked chore tests' ``[mujoco]`` parameterisation.
+
+    ``backend`` is a *shared* two-parameter fixture: the other tests in this
+    module pass on MuJoCo, so the fixture parameter cannot be marked (that
+    would xfail-strict those passing tests).  Instead the three chore tests
+    carry ``@pytest.mark.xfail_unreachable_chore``, and this autouse fixture
+    adds the strict xfail **only** to a marked node running the MuJoCo backend.
+
+    ``raises=(AssertionError, ExceptionGroup)`` keeps the expectation precise.
+    The chore drops past the left arm's reach, so the marked run fails on a
+    plain assertion -- but an assertion raised *inside* ``connected(...)``'s
+    ``async with`` (which wraps the body in a task group) surfaces as an
+    ``ExceptionGroup`` at the context exit, so both forms are accepted.  A
+    bare exception that is neither still reports as a real failure rather than
+    being hidden.
+    """
+    if request.node.get_closest_marker('xfail_unreachable_chore') is None:
+        return
+    if 'backend' not in request.fixturenames:
+        return
+    if not isinstance(request.getfixturevalue('backend'), MuJoCoBackend):
+        return
+    request.node.add_marker(pytest.mark.xfail(
+        strict=True,
+        raises=(AssertionError, ExceptionGroup),
+        reason=UNREACHABLE_CHORE_XFAIL_REASON))
+
+
 #: Where the chore happens, and where the clutter goes.  Both are names the
 #: agent reads out of ``known_locations``; only the choice between them is a
 #: decision, which is exactly the decision the LLM would be making.
@@ -70,6 +113,14 @@ DROP_CLEARANCE = 0.10
 #: "work" -- and would be neither what the prompt teaches nor what a Sim
 #: backend would tolerate.
 SIDE_BY_SIDE = 0.15
+
+#: The counter's vertical half-extent (full height 0.90, mirroring
+#: ``robot_moveit.scene_geometry.GEOMETRY_BY_LABEL['counter']`` (0.60, 0.60,
+#: 0.90) and
+#: ``robot_description.world_bodies.PHYSICAL_GEOMS_BY_LABEL['counter']``
+#: (0.30, 0.30, 0.45)).  An observation gives the counter's *centre*, so the
+#: drop has to add this back to land just above the counter's **top**.
+COUNTER_HALF_HEIGHT = 0.45
 
 #: The travel range the shipped safety limits allow.
 COLUMN = SafetyLimits.defaults().column
@@ -104,6 +155,11 @@ def support_pose(observation: dict, label: str = 'counter', offset_y: float = 0.
     them from a pose already in the observation instead of inventing numbers.
     ``offset_y`` slides the spot along the surface, which is how a second
     object gets put down *beside* the first rather than on top of it.
+
+    An observation reports the furniture's **centre**, so the release height is
+    the centre plus its half-height (just above the counter's **top**) plus
+    ``DROP_CLEARANCE`` -- dropping at the centre would put the object inside
+    the counter.
     """
     base = observation['robot']['pose']['position']
     surfaces = [item for item in observation['objects'] if item['label'] == label]
@@ -111,7 +167,10 @@ def support_pose(observation: dict, label: str = 'counter', offset_y: float = 0.
     nearest = min(surfaces, key=lambda item: _distance(item['pose']['position'], base))
     spot = nearest['pose']['position']
     return Pose.from_xyz(
-        spot['x'], spot['y'] + offset_y, spot['z'] + DROP_CLEARANCE).to_dict()
+        spot['x'],
+        spot['y'] + offset_y,
+        spot['z'] + COUNTER_HALF_HEIGHT + DROP_CLEARANCE,
+    ).to_dict()
 
 
 async def call(client, name: str, arguments: dict | None = None) -> dict:
@@ -158,6 +217,7 @@ async def clear_the_table(client, place_pose=None) -> dict[str, dict]:
     raise AssertionError(f'the loop did not terminate in {MAX_STEPS} rounds: {put_away}')
 
 
+@pytest.mark.xfail_unreachable_chore
 async def test_clear_the_table_end_to_end_over_mcp(backend):
     """The milestone: perceive, then navigate/grasp/place until nothing is left.
 
@@ -216,6 +276,7 @@ async def test_every_step_of_the_run_is_readable_back_as_a_skill_result(backend)
     assert rebuilt.to_dict() == grasped
 
 
+@pytest.mark.xfail_unreachable_chore
 async def test_a_place_from_too_far_away_is_a_refusal_the_loop_recovers_from(backend):
     """The mistake an agent actually makes: place before walking over.
 
@@ -249,6 +310,7 @@ async def test_a_place_from_too_far_away_is_a_refusal_the_loop_recovers_from(bac
     assert placed['observation']['objects'] != refused['observation']['objects']
 
 
+@pytest.mark.xfail_unreachable_chore
 async def test_the_default_server_clamps_a_column_command_mid_run(backend):
     """Safety is in the milestone path, with nothing injected to put it there.
 

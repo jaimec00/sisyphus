@@ -35,6 +35,14 @@ model (mujoco 3.12, implicit integrator — the sim's own):
 The geometry mirror of ``robot_moveit.scene_geometry`` is asserted too, because
 the sim and the planning scene must agree on every object or the plan collides
 against a different world than the one it executes in.
+
+Issue #152 adds the derived-pad path: ``derived_support_surfaces`` returns
+**one pad per graspable object** (the shipped seed's objects rest at several
+different tops, and the kitchen trio straddles the corridor, so one surface
+cannot serve them), and the converter emits one ``world_support_N`` per pad.
+The claims here extend to that path -- the *shipped seed* (not a synthetic
+one-object scene) settles with every graspable at its seed pose, in resting
+contact with one of the derived pads.
 """
 
 import math
@@ -48,15 +56,19 @@ from robot_description.mjcf_model import write_mjcf_model
 from robot_description.world_bodies import (
     collidable_world_bodies_xml,
     DEFAULT_BOX_SIZE,
+    DERIVED_HALF_EXTENT_MARGIN,
+    DERIVED_MIN_HALF_EXTENT,
+    derived_support_surfaces,
     physical_geom_for_label,
     PHYSICAL_GEOMS_BY_LABEL,
+    SUPPORT_BODY_NAME,
     SUPPORT_CENTER,
     SUPPORT_HALF_EXTENT,
     SUPPORT_HALF_THICKNESS,
     SUPPORT_TOP_Z,
 )
 from robot_skills import Point, Pose
-from robot_world import WorldDocument, WorldObject
+from robot_world import default_seed_document, WorldDocument, WorldObject
 
 
 def _seed_object(label, *, x=None, y=None, z=None, graspable=True,
@@ -104,6 +116,19 @@ def _materialize(document):
 #: is 40 s — far longer than the ~ms a resting cylinder takes to come to rest,
 #: and the same budget the context map's probe used (VERIFIED).
 SETTLE_STEPS = 20000
+
+#: The resting heights the shipped seed derives (issue #152 R1'), in ascending
+#: order, one pad per graspable: ``cup_1`` (top 0.87), ``book_1`` (0.885), then
+#: the kitchen trio (``mug_1``/``plate_1``/``bowl_1``, all 1.10). Spelled out so
+#: a seed move that changes a resting height fails here rather than inside a
+#: 40 s settle run.
+SEED_SUPPORT_TOPS = (0.87, 0.885, 1.10, 1.10, 1.10)
+
+
+def _resting_half(obj):
+    """Return the distance from an object's centre down to its resting face."""
+    geom = physical_geom_for_label(obj.label)
+    return geom.dims[2] if geom.kind == 'box' else geom.dims[1]
 
 
 def test_graspable_object_xml_is_physically_real():
@@ -383,3 +408,154 @@ def test_quaternion_is_reordered_to_mujoco_wxyz():
     # body_quat is MuJoCo's (w, x, y, z).
     np.testing.assert_allclose(model.body_quat[bid],
                                (half, 0.0, 0.0, half), atol=1e-9)
+
+
+def test_derived_support_surfaces_are_one_pad_per_graspable_object():
+    """The seed derives one pad per graspable, under that object (issue #152 R1').
+
+    Five graspables, five pads, emitted in ascending top order: the table pair's
+    (``cup_1`` top 0.87, ``book_1`` 0.885) first, then the kitchen trio's
+    (``mug_1``/``plate_1``/``bowl_1``, all 1.10 -- three pads, not one).  Each
+    pad must be centred on its own object, top at that object's underside, never
+    narrower than the derived minimum, and wide enough to hold the object.
+    """
+    document = default_seed_document()
+    surfaces = derived_support_surfaces(document)
+    graspables = [obj for obj in document.objects if obj.graspable]
+
+    assert [round(top_z, 6) for top_z, _, _, _ in surfaces] == \
+        list(SEED_SUPPORT_TOPS)
+    assert len(surfaces) == len(graspables), (surfaces, graspables)
+    for obj in graspables:
+        geom = physical_geom_for_label(obj.label)
+        position = obj.pose.position
+        matching = [s for s in surfaces if s[1] == position.x and s[2] == position.y]
+        assert matching, 'no pad centred under %s' % (obj.object_id,)
+        (top_z, _, _, half_extent), = matching
+        assert math.isclose(top_z, position.z - _resting_half(obj)), obj.object_id
+        assert half_extent >= DERIVED_MIN_HALF_EXTENT, (obj.object_id, half_extent)
+        assert half_extent > geom.dims[0], obj.object_id
+
+
+def test_derived_support_surfaces_ignore_non_graspable_furniture():
+    """Only graspables rest on surfaces: furniture is an obstacle, not a place.
+
+    A document whose only object is the non-graspable sofa derives no surface
+    at all (issue #152 R1) -- a surface under a sofa would be a place the sim
+    invents out of thin air.
+    """
+    document = _seed_document(_seed_object('sofa', graspable=False))
+    assert derived_support_surfaces(document) == []
+
+
+def test_derived_surface_is_the_footprint_plus_a_margin_with_a_floor():
+    """A pad is its object's footprint plus the margin, floored at the minimum.
+
+    The half-extent formula is R1's: ``max(MIN, footprint_half + MARGIN)``,
+    where the footprint half is a BOX's larger x/y half-size and a CYLINDER's
+    radius.  A mug (radius 0.04) is under the floor, so it comes out at the
+    floor; a plate (radius 0.12) and a book (half 0.10) are over it, so they
+    come out at footprint + margin.  The pad is centred on the object.
+    """
+    for label in ('mug', 'cup', 'bowl'):
+        lone = _seed_document(_seed_object(label))
+        (top_z, cx, cy, half_extent), = derived_support_surfaces(lone)
+        assert math.isclose(half_extent, DERIVED_MIN_HALF_EXTENT), label
+        # The lone object's own centre is the pad centre.
+        assert math.isclose(cx, SUPPORT_CENTER[0]) and math.isclose(cy, SUPPORT_CENTER[1])
+
+    for label, footprint_half in (('plate', 0.12), ('book', 0.10)):
+        lone = _seed_document(_seed_object(label))
+        (_, cx, cy, half_extent), = derived_support_surfaces(lone)
+        assert math.isclose(half_extent, footprint_half + DERIVED_HALF_EXTENT_MARGIN), label
+        assert math.isclose(cx, SUPPORT_CENTER[0]) and math.isclose(cy, SUPPORT_CENTER[1])
+
+
+def test_two_objects_at_one_height_get_two_pads_not_one_span():
+    """Per-object pads: two objects at one height derive two pads (R1').
+
+    This is the shape the shipped seed needs: two objects at the same resting
+    height on opposite sides of ``y = 0`` must each get their own pad, rather
+    than one grouped surface spanning the gap (which would cross the corridor).
+    """
+    spread = WorldDocument(
+        locations={'charger': Pose.from_xyz(0.0, 0.0, 0.0)},
+        start_location='charger',
+        objects=tuple(
+            WorldObject(object_id='mug_%d' % i, label='mug',
+                        pose=Pose(position=Point(2.0 + 0.3 * i, 3.0, 1.15)))
+            for i in range(3)
+        ),
+    )
+    surfaces = derived_support_surfaces(spread)
+    assert len(surfaces) == 3, surfaces
+    assert [round(top_z, 6) for top_z, _, _, _ in surfaces] == [1.10, 1.10, 1.10]
+    assert [cx for _, cx, _, _ in surfaces] == [2.0, 2.3, 2.6]
+    for _, _, cy, half_extent in surfaces:
+        assert math.isclose(cy, 3.0)
+        assert math.isclose(half_extent, DERIVED_MIN_HALF_EXTENT)
+
+
+def test_default_converter_path_still_emits_the_single_named_surface():
+    """``support_surfaces=None`` keeps the historical ``world_support`` (R1).
+
+    Backward compatibility: a caller that does not ask for derived surfaces
+    gets exactly one surface, under the name every pre-#152 test greps for.
+    """
+    xml = collidable_world_bodies_xml(default_seed_document())
+    assert 'name="%s"' % SUPPORT_BODY_NAME in xml
+    assert 'name="%s_0"' % SUPPORT_BODY_NAME not in xml
+
+
+def test_the_shipped_seed_rests_at_its_seed_pose_on_derived_surfaces():
+    """Every shipped graspable settles at its seed pose on a derived pad.
+
+    The acceptance-1 gate for issue #152: the *shipped* seed -- not a synthetic
+    one-object scene -- materialized through the sim's own path
+    (``write_mjcf_model`` + derived pads) and settled for
+    :data:`SETTLE_STEPS`. Every graspable must stay within 1 mm of its seed pose
+    (no ejection, no fall-through, no drift, no NaN) **and** its geom must form
+    a resting contact with one of the derived ``world_support_*`` geoms, which
+    is what proves it is resting rather than hovering.
+    """
+    document = default_seed_document()
+    surfaces = derived_support_surfaces(document)
+    path = pathlib.Path(tempfile.mkdtemp(prefix='i152_seed_')) / 'scene.xml'
+    write_mjcf_model(str(path), world_bodies=collidable_world_bodies_xml(
+        document, support_surfaces=surfaces))
+    model = mujoco.MjModel.from_xml_path(str(path))
+    data = mujoco.MjData(model)
+    for _ in range(SETTLE_STEPS):
+        mujoco.mj_step(model, data)
+
+    support_geoms = {
+        g for g in range(model.ngeom)
+        if (mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_GEOM, g) or '')
+        .startswith(SUPPORT_BODY_NAME)
+    }
+    assert len(support_geoms) == len(surfaces), (
+        'expected one collidable geom per derived surface: %r' % (support_geoms,))
+    pairs = [frozenset((int(c.geom1), int(c.geom2)))
+             for c in data.contact[:data.ncon]]
+
+    graspables = [obj for obj in document.objects if obj.graspable]
+    assert graspables, 'the shipped seed should hold graspable objects'
+    for obj in graspables:
+        body_id = mujoco.mj_name2id(
+            model, mujoco.mjtObj.mjOBJ_BODY, obj.object_id.encode())
+        assert body_id >= 0, obj.object_id
+        settled = data.xpos[body_id].copy()
+        seed = np.array([obj.pose.position.x, obj.pose.position.y,
+                         obj.pose.position.z])
+        assert not np.isnan(settled).any(), (obj.object_id, settled)
+        # 1e-3 leaves ~50x margin over the ~2e-5 m real settle error while
+        # still catching a millimetre-scale fall-through or slide.
+        np.testing.assert_allclose(settled, seed, atol=1e-3,
+                                   err_msg=obj.object_id)
+        geom_id = mujoco.mj_name2id(
+            model, mujoco.mjtObj.mjOBJ_GEOM, (obj.object_id + '_geom').encode())
+        assert geom_id >= 0, obj.object_id
+        assert any(geom_id in pair and (pair - {geom_id}) & support_geoms
+                   for pair in pairs), (
+            '%s is not in resting contact with a derived support surface: %r'
+            % (obj.object_id, pairs))
