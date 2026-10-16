@@ -2280,6 +2280,79 @@ def test_so101_gripper_mirror_is_a_mimic_of_the_driven_joint(parsed_model, expan
                 side, joint, multiplier))
 
 
+def test_so101_gripper_mirror_limits_are_the_negation_of_the_driven(parsed_model):
+    """The mirror jaw's declared limits are the driven jaw's, reflected through zero.
+
+    Issue #156 (R-M2): a ``<mimic multiplier="-1">`` follower's reachable set is
+    the driven joint's range negated. The mirror used to declare the *driven*
+    joint's own ``[-1.5, 0]``, so the dfki-ric plugin -- which computes
+    ``mirror_cmd = driven_cmd * -1`` and then clamps to the mirror's URDF
+    limits -- clamped every "open" command (driven -1.5 -> mirror +1.5) back to
+    0. The mirror therefore could never open. This asserts the value contract,
+    which no test did before (the sibling test above assert only that the mimic
+    *tag* exists, not what range the mirror may reach).
+
+    ``q=0`` is the closed pose (the grasp reference == ``home_gripper_offset``
+    at zero, asserted below), so the driven joint opens toward -1.5 and the
+    mirror must open toward +1.5. The endpoints are asserted both as literals
+    (the shipped aperture, pinned by ``robot_backends``' semantic-endpoint
+    tests, which are out of this change's scope) and as the exact negation, so
+    the relationship and the number are both pinned.
+    """
+    for side in ARMS:
+        driven = parsed_model.joint_map['%s_gripper' % side].limit
+        mirror = parsed_model.joint_map['%s_gripper_mirror' % side].limit
+        assert (driven.lower, driven.upper) == (-1.5, 0.0), (
+            '%s_gripper limits drifted from the shipped [-1.5, 0]: %r'
+            % (side, (driven.lower, driven.upper)))
+        assert mirror.lower == -driven.upper, (
+            '%s_gripper_mirror.lower must negate the driven upper bound: %r vs %r'
+            % (side, mirror.lower, -driven.upper))
+        assert mirror.upper == -driven.lower, (
+            '%s_gripper_mirror.upper must negate the driven lower bound: %r vs %r'
+            % (side, mirror.upper, -driven.lower))
+        assert (mirror.lower, mirror.upper) == (0.0, 1.5), (
+            '%s_gripper_mirror must open toward +1.5 (the negation of the '
+            'driven [-1.5, 0]), not %r' % (side, (mirror.lower, mirror.upper)))
+        # Same actuator contract: a -1 mimic is the same mechanism on both jaws.
+        assert mirror.effort == driven.effort and mirror.velocity == driven.velocity, (
+            '%s_gripper_mirror effort/velocity must match the driven joint: '
+            'mirror=(%r, %r) driven=(%r, %r)' % (
+                side, mirror.effort, mirror.velocity,
+                driven.effort, driven.velocity))
+
+
+def test_so101_gripper_jaws_carry_the_joint_damping_the_sim_needs(parsed_model):
+    """All four jaw joints declare the joint-level damping the sim's timestep needs.
+
+    Issue #156 (R-M1): the jaw links' inertia is ~2e-5 kg*m^2 and the sim drives
+    them with a pure-P ``<position kp="100">`` actuator at dt = 0.002 s (500
+    Hz), so the jaw DOF was an undamped, numerically unstable oscillator: from
+    ``qpos0=0`` with ``ctrl=0`` it diverged within ~25 steps and jammed on jaw
+    self-contact at +0.39/-0.49 rad -- outside the declared range -- which is
+    why no jaw tracked a command and MoveIt refused every plan. The chosen fix
+    is a joint-level viscous damping (`dof_damping`, from URDF ``<dynamics
+    damping>``) on *all four* jaw joints (driven + mirror, both sides) so left
+    and right stay symmetric; kp stays 100 and no actuator ``dampratio``/``kv``
+    is used (a non-zero ``biasprm[2]`` would make the joint uncommandable to
+    dfki-ric). This asserts the term is declared and positive; the value and the
+    sweep that chose it are in the feature's ``implementation.md``.
+    """
+    for side in ARMS:
+        for name in GRIPPER_JAW_JOINTS:
+            joint = parsed_model.joint_map['%s_%s' % (side, name)]
+            damping = joint.dynamics.damping if joint.dynamics else None
+            assert damping, (
+                '%s_%s must declare a positive <dynamics damping> (the '
+                'joint-level term that stabilises the jaw DOF at dt=0.002 s); '
+                'found %r' % (side, name, damping))
+    # Left and right must be identical (the arms are a mirrored macro pair).
+    for name in GRIPPER_JAW_JOINTS:
+        assert (parsed_model.joint_map['left_%s' % name].dynamics.damping
+                == parsed_model.joint_map['right_%s' % name].dynamics.damping), (
+            'left/right %s damping drifted apart' % name)
+
+
 def test_so101_gripper_grasp_reference_matches_home_gripper_offset(parsed_model):
     """At the zero pose, the grasp midpoint equals ``home_gripper_offset`` from the shoulder.
 
