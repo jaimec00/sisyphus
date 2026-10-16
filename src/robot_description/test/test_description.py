@@ -2297,7 +2297,10 @@ def test_so101_gripper_mirror_limits_are_the_negation_of_the_driven(parsed_model
     mirror must open toward +1.5. The endpoints are asserted both as literals
     (the shipped aperture, pinned by ``robot_backends``' semantic-endpoint
     tests, which are out of this change's scope) and as the exact negation, so
-    the relationship and the number are both pinned.
+    the relationship and the number are both pinned. The negation is the
+    ``mimic offset == 0`` case only: a future ``<mimic offset="c">`` would
+    make the mirror's reach ``[c-upper, c-lower]`` and this contract must be
+    revisited.
     """
     for side in ARMS:
         driven = parsed_model.joint_map['%s_gripper' % side].limit
@@ -2325,9 +2328,10 @@ def test_so101_gripper_mirror_limits_are_the_negation_of_the_driven(parsed_model
 def test_so101_gripper_jaws_carry_the_joint_damping_the_sim_needs(parsed_model):
     """All four jaw joints declare the joint-level damping the sim's timestep needs.
 
-    Issue #156 (R-M1): the jaw links' inertia is ~2e-5 kg*m^2 and the sim drives
-    them with a pure-P ``<position kp="100">`` actuator at dt = 0.002 s (500
-    Hz), so the jaw DOF was an undamped, numerically unstable oscillator: from
+    Issue #156 (R-M1): the jaw DOF's effective inertia is ~1.2e-4 kg*m^2 and
+    the sim drives it with a pure-P ``<position kp="100">`` actuator at
+    dt = 0.002 s (500 Hz), so the jaw DOF was an undamped, numerically unstable
+    oscillator: from
     ``qpos0=0`` with ``ctrl=0`` it diverged within ~25 steps and jammed on jaw
     self-contact at +0.39/-0.49 rad -- outside the declared range -- which is
     why no jaw tracked a command and MoveIt refused every plan. The chosen fix

@@ -218,7 +218,10 @@ def test_jaw_joint_ranges_are_mirror_negations_in_the_derived_model():
     entirely, so the mirror is a plain limited hinge here), and the dfki-ric
     plugin clamps the mirror command to that range. Before the fix the mirror
     carried the driven joint's ``[-1.5, 0]`` and an "open" command (mirror +1.5)
-    was clamped back to 0, so the jaw never opened.
+    was clamped back to 0, so the jaw never opened. The negation is the
+    ``mimic offset == 0`` case only: a future ``<mimic offset="c">`` would
+    move the mirror's reach to ``[c-upper, c-lower]`` and this contract must be
+    revisited.
     """
     model = load_mjcf_model()
     for side in ('left', 'right'):
@@ -233,8 +236,9 @@ def test_jaw_joints_carry_the_stabilising_joint_damping():
     """Every derived jaw joint carries the joint-level damping the fix added.
 
     Issue #156 (R-M1): the jaw DOF was an undamped, numerically unstable pure-P
-    oscillator at dt = 0.002 s (jaw inertia ~2e-5 kg*m^2, ``<position kp=100>``),
-    so it diverged from ``qpos0=0`` within ~25 steps and jammed on self-contact.
+    oscillator at dt = 0.002 s (effective jaw-DOF inertia ~1.2e-4 kg*m^2,
+    ``<position kp=100>``), so it diverged from ``qpos0=0`` within ~25 steps and
+    jammed on self-contact.
     The chosen joint-level term is ``dof_damping`` (URDF ``<dynamics damping>``)
     on all four jaw joints. Also asserts the actuator side of the contract: the
     jaw DOF stays a POSITION actuator with kp = 100 (dfki-ric classifies it as
