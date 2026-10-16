@@ -40,14 +40,17 @@ EXPECTED_LOCATIONS = {
 #: pair on pad tops 0.885 / 0.87), and every object and pad is clear of both the
 #: mast (``|y| > 0.03``) and the arm band (``|y| > 0.294`` at z 0.94..1.106)
 #: along the charger->kitchen corridor, so materializing the world does not
-#: block navigation. The graspables still sit inside the real 5-DOF arm's
+#: block navigation. Issue #158 tightened that: every such body now also clears
+#: its envelope, and the kitchen goal ``(2.0, 0)``, by ``CORRIDOR_MARGIN``
+#: (0.10 m) so the plant's ~0.045 m lateral drift cannot drive the base into
+#: the counter. The graspables still sit inside the real 5-DOF arm's
 #: reachable workspace (left arm reaches the ``+y`` objects, right the ``-y``
 #: ones) and inside the Mock's 1.0 m table window (PR4 / #149 R6).
 EXPECTED_OBJECTS = (
-    ('mug_1', 'mug', 2.15, 0.45, 1.150, True),
-    ('plate_1', 'plate', 2.00, -0.48, 1.105, True),
-    ('bowl_1', 'bowl', 2.25, -0.44, 1.125, True),
-    ('counter_1', 'counter', 2.15, 0.47, 0.400, False),
+    ('mug_1', 'mug', 2.15, 0.535, 1.150, True),
+    ('plate_1', 'plate', 2.00, -0.565, 1.105, True),
+    ('bowl_1', 'bowl', 2.25, -0.535, 1.125, True),
+    ('counter_1', 'counter', 2.15, 0.62, 0.400, False),
     ('book_1', 'book', 0.10, 2.00, 0.900, True),
     ('cup_1', 'cup', 0.20, 2.20, 0.915, True),
     ('sofa_1', 'sofa', -2.00, 1.60, 0.40, False),
