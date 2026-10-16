@@ -65,10 +65,37 @@ POSITION_CONTROLLER = 'arm_gripper_position_controller'
 #: uses. Measured behaviour on this host: the joint is heavily damped, so the
 #: command must be a large fraction of its 0-1.2 m travel and the assertion is
 #: "moved appreciably", not "converged" (its MJCF position actuator reaches
-#: only part of a step under the bringup's load). ``left_gripper`` was tried and
-#: rejected: it saturates after ~0.01 of a step (see the probe recorded in the
-#: feature's implementation.md), so it cannot exercise a 0.15 move at all.
+#: only part of a step under the bringup's load).
+#:
+#: ``left_gripper`` was originally tried and rejected here: with the then-shipped
+#: undamped kp=100 jaw actuator (issue #156) it saturated after ~0.01 of a step
+#: and ignored the command, so it could not exercise a move at all. That finding
+#: is now HISTORY -- #156 added the joint-level damping the jaw DOF needed and
+#: the driven jaws track their full [-1.5, 0] range in the sim; the dedicated
+#: jaw-tracking smoke is ``test_gripper_jaws_track_a_full_range_command`` below.
+#: ``column_lift`` stays this smoke's joint because this test's claim is "a joint
+#: command moves the sim state through the ros2_control stack", not the jaw
+#: contract.
 SMOKE_JOINT = 'column_lift'
+
+#: The four jaw joints: both driven jaws and their mirror followers.
+JAW_JOINTS = ('left_gripper', 'left_gripper_mirror',
+              'right_gripper', 'right_gripper_mirror')
+#: The two joints the sim's ``arm_gripper_position_controller`` commands.
+DRIVEN_JAW_JOINTS = ('left_gripper', 'right_gripper')
+#: The commandable jaw endpoints (rad): q=0 is closed (the fingertips meet), the
+#: driven jaws open toward -1.5 and the -1 mimics toward +1.5.
+JAW_CLOSED = 0.0
+JAW_OPEN = -1.5
+#: Tracking tolerance for the jaw smoke (rad). The actuator is a stiff kp=100
+#: position loop and the shipped joint damping settles it in ~0.25 s of sim time
+#: with no overshoot past the declared limit (see the feature's
+#: ``implementation.md``), so this is a measurement tolerance (100 Hz control
+#: discretisation), not slack for a stuck joint.
+JAW_TRACK_TOL = 0.05
+#: Monotonicity tolerance (rad): a leg may not reverse by more than this. The
+#: measured reversal is ~1e-5 rad, so any real jam/ring is caught.
+JAW_MONOTONIC_TOL = 1e-2
 
 
 def _require_tool(name):
@@ -545,5 +572,224 @@ def test_joint_command_moves_sim_state():
             # rclpy.shutdown() is deferred (see PR8a test comment): spinning it
             # down mid-thread aborts under this pytest host; the process exits
             # immediately after, so the cost is nil.
+    finally:
+        _terminate_group(process, group)
+
+
+def _jaw_limits():
+    """Return ``{joint: (lower, upper)}`` for the jaw joints, off the shipped URDF.
+
+    The URDF is the single source of truth for the jaw contract -- it is the
+    declaration the dfki-ric plugin clamps the mirror command to -- so reading
+    it here asserts the *declared* limits rather than restating literals that
+    could drift. Expands the same top-level xacro through the ``xacro`` CLI the
+    launch uses (no ROS runtime, no extra dependency).
+    """
+    import xml.etree.ElementTree as ElementTree
+    from ament_index_python.packages import get_package_share_directory
+    urdf = subprocess.check_output(
+        [_require_tool('xacro'),
+         os.path.join(get_package_share_directory('robot_description'), 'urdf',
+                      'robot.urdf.xacro')], text=True)
+    limits = {}
+    for joint in ElementTree.fromstring(urdf).findall('joint'):
+        name = joint.get('name')
+        if name in JAW_JOINTS:
+            limit = joint.find('limit')
+            limits[name] = (float(limit.get('lower')), float(limit.get('upper')))
+    assert set(limits) == set(JAW_JOINTS), (
+        'the shipped URDF is missing jaw joint(s): %r' % (set(JAW_JOINTS) - set(limits)))
+    return limits
+
+
+def test_gripper_jaws_track_a_full_range_command():
+    """End-to-end: the driven jaws track a full-range command, monotone, no jam.
+
+    Issue #156's acceptance. The jaw DOF used to be an undamped, numerically
+    unstable kp=100 position loop at dt=0.002 s: from the closed pose it
+    diverged within ~25 steps, jammed on jaw self-contact *outside* the declared
+    range (measured +0.39 / -0.49 rad instead of [-1.5, 0]) and ignored every
+    command -- which is why the sibling smoke above had to use ``column_lift``
+    and why MoveIt refused every plan with ``START_STATE_IN_COLLISION``.
+
+    This launches the real bringup and drives the two driven jaws through their
+    whole range via the shipped ``arm_gripper_position_controller`` --
+    closed -> open -> closed -> open -- asserting, from ``/joint_states``:
+
+    * the jaws TRACK: each leg settles within ``JAW_TRACK_TOL`` of its target
+      (a jammed jaw settles at a wrong value and never arrives);
+    * the motion is MONOTONE in each leg (no reversal beyond
+      ``JAW_MONOTONIC_TOL``) and passes through interior values (a real sweep,
+      not a single leap);
+    * every sample stays INSIDE the declared limits read off the shipped URDF,
+      for all four jaw joints (the old jam lived *outside* them);
+    * the mirror jaw follows as the TRUE NEGATION of the driven one
+      (``mirror == -driven``), the contract the -1 ``<mimic>`` and the mirror's
+      negated declared range exist to keep.
+    """
+    if not _have_package('mujoco_ros2_control'):
+        pytest.skip(
+            'mujoco_ros2_control (dfki-ric, source-build via robot.repos, D33) '
+            'is not installed; the full-sim jaw-tracking smoke needs it live. '
+            'Build it with: `vcs import src < robot.repos && pixi run build`.')
+    import rclpy
+    from controller_manager_msgs.srv import ListControllers
+    from rclpy.node import Node
+    from sensor_msgs.msg import JointState
+    from std_msgs.msg import Float64MultiArray
+
+    limits = _jaw_limits()
+    env = dict(os.environ, ROS_DOMAIN_ID=MUJOCO_DOMAIN_ID)
+    process, group, output, reader = _spawn_launch(env)
+    try:
+        os.environ['ROS_DOMAIN_ID'] = str(MUJOCO_DOMAIN_ID)
+        _ctx = rclpy.Context()
+        rclpy.init(context=_ctx)
+        node = Node('mujoco_jaw_probe', context=_ctx)
+        executor = None
+        try:
+            executor = rclpy.executors.SingleThreadedExecutor(context=_ctx)
+            executor.add_node(node)
+
+            cli = node.create_client(
+                ListControllers, '/controller_manager/list_controllers')
+
+            def _service_ready():
+                executor.spin_once(timeout_sec=0.1)
+                return cli.service_is_ready()
+            _wait_until(_service_ready, LAUNCH_READY_TIMEOUT_S,
+                        'controller_manager list_controllers never became '
+                        'available')
+
+            def _position_active():
+                executor.spin_once(timeout_sec=0.1)
+                if not cli.service_is_ready():
+                    return False
+                fut = cli.call_async(ListControllers.Request())
+                executor.spin_until_future_complete(fut, timeout_sec=2)
+                return any(
+                    c.name == POSITION_CONTROLLER and c.state == 'active'
+                    for c in fut.result().controller) if fut.done() else False
+            _wait_until(_position_active, CONTROLLER_ACTIVE_TIMEOUT_S,
+                        'position controller never became active')
+
+            # -- record /joint_states (jaw joints only): the monotonicity and
+            #    limit assertions need the *transient*, not just the endpoint.
+            samples = []
+
+            def _on_joint_state(msg):
+                values = dict(zip(msg.name, msg.position))
+                if all(j in values for j in JAW_JOINTS):
+                    samples.append({j: values[j] for j in JAW_JOINTS})
+
+            node.create_subscription(JointState, '/joint_states',
+                                     _on_joint_state, 200)
+
+            def _have_jaws():
+                executor.spin_once(timeout_sec=0.1)
+                return bool(samples)
+            _wait_until(_have_jaws, JOINT_MOVE_TIMEOUT_S,
+                        '/joint_states never reported all four jaw joints')
+
+            joints = _position_controller_joint_order()
+            jaw_index = {j: joints.index(j) for j in DRIVEN_JAW_JOINTS}
+            cmd_pub = node.create_publisher(
+                Float64MultiArray,
+                '/%s/commands' % POSITION_CONTROLLER, 10)
+            _wait_until(lambda: cmd_pub.get_subscription_count() > 0, 30.0,
+                        'no subscriber appeared for the %s command topic'
+                        % POSITION_CONTROLLER)
+
+            def _publish(target):
+                cmd = Float64MultiArray()
+                cmd.data = [0.0] * len(joints)
+                for joint, index in jaw_index.items():
+                    cmd.data[index] = target
+                cmd_pub.publish(cmd)
+
+            def _settle(target, timeout_s=JOINT_MOVE_TIMEOUT_S):
+                """Publish ``target`` until both driven jaws arrive; return the segment."""
+                start = len(samples)
+                deadline = time.monotonic() + timeout_s
+                while time.monotonic() < deadline:
+                    # Keep commanding: a JointGroupPositionController holds the
+                    # last command, but re-publishing is robust to the first
+                    # command landing before the controller's first update tick.
+                    _publish(target)
+                    executor.spin_once(timeout_sec=0.02)
+                    if samples and all(
+                            abs(samples[-1][j] - target) < JAW_TRACK_TOL
+                            for j in DRIVEN_JAW_JOINTS):
+                        return samples[start:]
+                last = samples[-1] if samples else None
+                raise AssertionError(
+                    'driven jaws never reached %+.3f rad within %.0fs; last '
+                    '/joint_states=%r. Stack output tail:\n%s'
+                    % (target, timeout_s, last, ''.join(output)[-2000:]))
+
+            # -- sweep the whole aperture: open -> closed -> open (the jaws rest
+            #    closed, so the first leg is a real move).
+            for leg, target in enumerate((JAW_OPEN, JAW_CLOSED, JAW_OPEN)):
+                segment = _settle(target)
+                assert segment, 'leg %d recorded no /joint_states samples' % leg
+                first = segment[0]
+                # Direction of the leg, from where it started.
+                descending = target < first['right_gripper']
+                for snapshot in segment:
+                    for joint in JAW_JOINTS:
+                        lower, upper = limits[joint]
+                        assert lower - 1e-3 <= snapshot[joint] <= upper + 1e-3, (
+                            'leg %d: %s=%+.4f is outside its declared limits '
+                            '[%.3f, %.3f] -- the old jam lived out here'
+                            % (leg, joint, snapshot[joint], lower, upper))
+                    # The mirror is the driven jaw's exact negation.
+                    for side in ('left', 'right'):
+                        driven = snapshot['%s_gripper' % side]
+                        mirror = snapshot['%s_gripper_mirror' % side]
+                        assert abs(mirror + driven) < JAW_MONOTONIC_TOL, (
+                            'leg %d: %s_gripper_mirror=%+.4f is not the '
+                            'negation of %s_gripper=%+.4f'
+                            % (leg, side, mirror, side, driven))
+                # Monotone in the leg's direction, and no dead-stick: the jaw
+                # must pass through interior values, not jump to the endpoint.
+                previous = segment[0]
+                for snapshot in segment[1:]:
+                    for joint in DRIVEN_JAW_JOINTS:
+                        delta = snapshot[joint] - previous[joint]
+                        if descending:
+                            assert delta <= JAW_MONOTONIC_TOL, (
+                                'leg %d: %s reversed while opening (%+.4f -> '
+                                '%+.4f)' % (leg, joint, previous[joint],
+                                            snapshot[joint]))
+                        else:
+                            assert delta >= -JAW_MONOTONIC_TOL, (
+                                'leg %d: %s reversed while closing (%+.4f -> '
+                                '%+.4f)' % (leg, joint, previous[joint],
+                                            snapshot[joint]))
+                    previous = snapshot
+                final = segment[-1]
+                for joint in DRIVEN_JAW_JOINTS:
+                    assert abs(final[joint] - target) < JAW_TRACK_TOL, (
+                        'leg %d: %s settled at %+.4f, %.4f rad from the target '
+                        '%+.3f (a jammed jaw stops short)'
+                        % (leg, joint, final[joint],
+                           abs(final[joint] - target), target))
+                lo = min(s['right_gripper'] for s in segment)
+                hi = max(s['right_gripper'] for s in segment)
+                margin = 0.02
+                assert hi - lo > 4 * margin, (
+                    'leg %d swept only %.4f rad of the commanded %.4f: the joint '
+                    'barely moved' % (leg, hi - lo, abs(target - first['right_gripper'])))
+                assert any(lo + margin < s['right_gripper'] < hi - margin
+                           for s in segment), (
+                    'leg %d swept from %+.4f to %+.4f with no interior sample: '
+                    'the joint jumped, it did not track' % (leg, first['right_gripper'],
+                                                            final['right_gripper']))
+        finally:
+            if executor is not None:
+                executor.shutdown()
+            node.destroy_node()
+            _ctx.try_shutdown()
+            # rclpy.shutdown() is deferred (same reason as the sibling smoke).
     finally:
         _terminate_group(process, group)

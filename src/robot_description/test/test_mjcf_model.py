@@ -207,3 +207,58 @@ def test_head_camera_declared():
     assert model.nsensor >= 1
     # No camera element: ncam == 0 keeps the headless sim EGL-free (R-PR8b).
     assert model.ncam == 0
+
+
+def test_jaw_joint_ranges_are_mirror_negations_in_the_derived_model():
+    """The derived MJCF carries the negated mirror-jaw range, not the driven one.
+
+    Issue #156 (R-M2). The URDF is the single source of truth, so the fix landed
+    in ``gripper.xacro``; this asserts it *survives derivation* -- the MuJoCo URDF
+    importer copies a joint's declared ``range`` verbatim (it drops ``<mimic>``
+    entirely, so the mirror is a plain limited hinge here), and the dfki-ric
+    plugin clamps the mirror command to that range. Before the fix the mirror
+    carried the driven joint's ``[-1.5, 0]`` and an "open" command (mirror +1.5)
+    was clamped back to 0, so the jaw never opened. The negation is the
+    ``mimic offset == 0`` case only: a future ``<mimic offset="c">`` would
+    move the mirror's reach to ``[c-upper, c-lower]`` and this contract must be
+    revisited.
+    """
+    model = load_mjcf_model()
+    for side in ('left', 'right'):
+        driven = model.jnt_range[model.joint('%s_gripper' % side).id]
+        mirror = model.jnt_range[model.joint('%s_gripper_mirror' % side).id]
+        np.testing.assert_allclose(driven, (-1.5, 0.0), atol=1e-12)
+        np.testing.assert_allclose(mirror, (0.0, 1.5), atol=1e-12)
+        np.testing.assert_allclose(mirror, (-driven[1], -driven[0]), atol=1e-12)
+
+
+def test_jaw_joints_carry_the_stabilising_joint_damping():
+    """Every derived jaw joint carries the joint-level damping the fix added.
+
+    Issue #156 (R-M1): the jaw DOF was an undamped, numerically unstable pure-P
+    oscillator at dt = 0.002 s (effective jaw-DOF inertia ~1.2e-4 kg*m^2,
+    ``<position kp=100>``), so it diverged from ``qpos0=0`` within ~25 steps and
+    jammed on self-contact.
+    The chosen joint-level term is ``dof_damping`` (URDF ``<dynamics damping>``)
+    on all four jaw joints. Also asserts the actuator side of the contract: the
+    jaw DOF stays a POSITION actuator with kp = 100 (dfki-ric classifies it as
+    POSITION only while ``biasprm[2] == 0``, so no ``dampratio``/``kv`` may be
+    used, and the jaws must stay stiff for real grasping).
+    """
+    model = load_mjcf_model()
+    for side in ('left', 'right'):
+        for name in ('%s_gripper' % side, '%s_gripper_mirror' % side):
+            dof = model.joint(name).dofadr[0]
+            assert model.dof_damping[dof] > 0.0, (
+                '%s has no joint damping (%r); the jaw DOF is unstable at '
+                'dt=0.002 s without it' % (name, model.dof_damping[dof]))
+            actuator = model.actuator(name)
+            assert actuator.gainprm[0] == -actuator.biasprm[1], (
+                '%s is no longer a POSITION actuator (gainprm[0]=%r, biasprm[1]=%r)'
+                % (name, actuator.gainprm[0], actuator.biasprm[1]))
+            assert actuator.biasprm[2] == 0.0, (
+                '%s has a velocity bias term (biasprm[2]=%r): dfki-ric would '
+                'stop classifying it POSITION' % (name, actuator.biasprm[2]))
+    # Left and right are the same mechanism (mirrored macro), so the term agrees.
+    assert (model.dof_damping[model.joint('left_gripper').dofadr[0]]
+            == model.dof_damping[model.joint('right_gripper').dofadr[0]])
