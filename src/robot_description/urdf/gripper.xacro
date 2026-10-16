@@ -122,25 +122,39 @@
   <xacro:property name="gripper_joint_velocity" value="3.5"/>
   <xacro:property name="gripper_joint_lower" value="-1.5"/>
   <xacro:property name="gripper_joint_upper" value="0.0"/>
-  <!-- Joint-level viscous damping (issue #156, R-M1). The jaw links' inertia
-       is ~2e-5 kg*m^2; the sim's <position kp="100"> actuator is a pure P loop
-       with no velocity term, so at dt=0.002 s (500 Hz) the jaw DOF was an
-       UNSTABLE, undamped high-frequency oscillator: from qpos0=0 with ctrl=0
+  <!-- Joint-level viscous damping (issue #156, R-M1/R-M2). The jaw DOF's
+       EFFECTIVE inertia is I_eff ~= 1.18e-4 kg*m^2 (measured, mj_fullM at
+       qpos0): dominated not by the jaw link's own rotational inertia but by
+       the parallel-axis term of the 0.01 kg fingertip box 0.106 m off the axis
+       (1.13e-4), which a link-inertia-only estimate drops. The sim's
+       <position kp="100"> actuator is a pure P loop with no velocity term, so
+       at dt=0.002 s (500 Hz) the jaw DOF was an UNSTABLE, undamped
+       high-frequency oscillator: undamped omega = sqrt(kp/I) ~= 921 rad/s
+       (omega*dt ~= 1.84, only ~3.4 steps/period), and from qpos0=0 with ctrl=0
        it diverged within ~25 steps and jammed on jaw self-contact at
        +0.39/-0.49 rad, outside the declared [-1.5, 0] range and the reason
        MoveIt refused every plan (START_STATE_IN_COLLISION). Measured
        (drivable model, dt=0.002 s, full-range step command) the damped joint
-       is stable and monotone: 0.2 rad overshoot 4.2 mrad, 0.3 -> 0.7 mrad,
-       0.5 -> 1e-5 rad with 0 reverse steps; the sweep and the rejected
+       is stable and monotone: d=0.2 overshoots the declared limit by 5 mrad,
+       d=0.3 by 0.8 mrad, while d=0.5 and d=0.9 stay inside it (<=4e-5 rad)
+       with <=7e-6 rad maximum reverse step; the sweep and the rejected
        `armature` alternative are in the feature's implementation.md. This
-       value is ~5.5x the joint's critical damping (2*sqrt(kp*I) ~= 0.09
-       N*m*s/rad), chosen with margin rather than at the stability edge. It is
-       a JOINT term (MuJoCo `dof_damping`, via URDF <dynamics damping>), NOT an
-       actuator `dampratio`/`kv`: dfki-ric classifies a <position> actuator as
-       POSITION only while biasprm[2] == 0, so an actuator-level velocity gain
-       would make the jaw uncommandable. kp stays 100 (the jaws must stay
-       stiff enough to hold a grasp, #155). -->
-  <xacro:property name="gripper_joint_damping" value="0.5"/>
+       value is ~4.1x the joint's critical damping (2*sqrt(kp*I) ~= 0.217
+       N*m*s/rad), chosen with margin rather than at the stability edge. `d` is
+       ALSO calibrated against the servo's own declared limits: with the
+       actuator force clamped to +/-gripper_joint_effort and the damping torque
+       -d*qdot, the slew's terminal speed is v_terminal = effort/d, so
+       d = effort/velocity = 3.0/3.5 ~= 0.857 is the speed-matched value for
+       the declared 3.5 rad/s limit; 0.9 is that value rounded up, and it keeps
+       the MEASURED peak (3.34 rad/s) below the declared limit (the exact 0.857
+       measures 3.505 rad/s over the 4-step startup transient). A sim that
+       slews a jaw faster than its declared velocity would be internally
+       inconsistent. It is a JOINT term (MuJoCo `dof_damping`, via URDF
+       <dynamics damping>), NOT an actuator `dampratio`/`kv`: dfki-ric
+       classifies a <position> actuator as POSITION only while biasprm[2] == 0,
+       so an actuator-level velocity gain would make the jaw uncommandable. kp
+       stays 100 (the jaws must stay stiff enough to hold a grasp, #155). -->
+  <xacro:property name="gripper_joint_damping" value="0.9"/>
   <!-- The mirror jaw's declared limits are the EXACT NEGATION of the driven
        jaw's (issue #156, R-M2). The mirror is a `<mimic multiplier="-1">`
        follower, so its reachable set is the driven joint's range reflected
@@ -149,7 +163,10 @@
        command (driven -1.5 -> mirror +1.5) fall outside the mirror's declared
        range; the dfki-ric plugin then clamps the mirror command to 0
        (mujoco_system.cpp position branch), so the mirror never opened. Written
-       as `0 - <driven bound>` so the two can never drift apart. -->
+       as `0 - <driven bound>` so the two can never drift apart. NOTE: this
+       negation is the *offset == 0* case: it holds only while the driven
+       joint's `<mimic>` carries no `offset`; a future `<mimic offset="c">`
+       makes the mirror's reach [c-upper, c-lower] and must revisit this. -->
   <xacro:property name="gripper_mirror_lower" value="${0.0 - gripper_joint_upper}"/>
   <xacro:property name="gripper_mirror_upper" value="${0.0 - gripper_joint_lower}"/>
 
@@ -258,7 +275,8 @@
          plane (z -> -z); <mimic multiplier="-1"> makes it follow the driven
          joint with equal-and-opposite rotation. Its <limit> is the negation of
          the driven joint's (gripper_mirror_lower/upper above), so the -1 mimic
-         never commands it out of range (issue #156, R-M2). -->
+         never commands it out of range (issue #156, R-M2). The negation is the
+         `mimic offset == 0` case only; revisit it if an `offset` is added. -->
     <joint name="${name}_gripper_mirror" type="revolute">
       <parent link="${name}_gripper_base_link"/>
       <child link="${name}_gripper_lower_jaw_link"/>
