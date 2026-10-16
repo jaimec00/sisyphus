@@ -20,9 +20,12 @@ own body at the seed's column height (0.30) occupies three envelopes there
 A physical body whose footprint enters any of those envelopes over that stretch
 fights the robot and breaks navigation -- the regression that forced PR A's
 ``world_objects`` opt-out. The seed therefore has to keep every object and every
-derived support pad outside all of them, and -- since issue #158 -- outside them
-by :data:`CORRIDOR_MARGIN`, so the plant's own lateral drift cannot push the
-base into a body the ideal path would have missed.
+derived support pad outside all of them, and -- since issue #158 -- outside the
+**base** and **mast** bands by :data:`CORRIDOR_MARGIN`, so the plant's own
+lateral drift cannot push the base into a body the ideal path would have missed.
+The **arm** band is checked at its exact envelope (:data:`ROBOT_ENVELOPES`): the
+graspables must stay inside the 5-DOF arm's reach, and their measured IK
+ceilings leave no room for an outward margin there (issue #158 M10/M13).
 
 This file is the **fast, geometric** guard for that invariant (issue #152
 R2/R8): it needs no MuJoCo and no sim, so it always runs, and it holds the
@@ -45,12 +48,13 @@ from robot_world import default_seed_document, WorldDocument, WorldObject
 
 #: The clearance the robot needs *beyond* its own envelope, in metres (issue
 #: #158).  The nav stack does not track the corridor centreline exactly: with
-#: the world materialized the base was measured to drift ``dy ~= 0.045``
-#: laterally, and ``counter_1``'s 0.020 m centreline clearance turned that drift
-#: into a hard stop 0.264 m short of the kitchen goal.  A margin of at least
-#: twice that measured tracking error keeps every body clear of the *observed*
-#: drift, not merely of the ideal path, so a seed edit that re-tightens the
-#: corridor fails here instead of in a six-minute end-to-end run.
+#: the world materialized the base drifts laterally, and ``counter_1``'s 0.020 m
+#: centreline clearance turned that drift into a hard stop 0.264 m short of the
+#: kitchen goal.  The margin applies to the **base/mast** bands and the goal
+#: approach, keeping them clear of the *observed* drift, not merely of the ideal
+#: path; the **arm** band is checked at its exact envelope (see
+#: :data:`ROBOT_ENVELOPES`).  A seed edit that re-tightens the corridor fails
+#: here instead of in a six-minute end-to-end run.
 CORRIDOR_MARGIN = 0.10
 
 #: The x-range over which the corridor envelopes matter (R2): it covers the
@@ -60,14 +64,20 @@ CORRIDOR_MARGIN = 0.10
 CORRIDOR_X = (-0.5, 2.5)
 
 #: The envelopes the robot's body occupies along the corridor, as
-#: ``(half_width_y, z_low, z_high)`` boxes centred on ``y = 0``: the base disc +
-#: wheels, the column mast (fused into ``base_link``) and the arms (issue #152
-#: context §2, re-measured on the compiled model at the seed column height
-#: 0.30).  A body on the corridor must miss **every** one.
+#: ``(half_width_y, z_low, z_high, margin)`` boxes centred on ``y = 0``: the base
+#: disc + wheels, the column mast (fused into ``base_link``) and the arms (issue
+#: #152 context §2, re-measured on the compiled model at the seed column height
+#: 0.30).  A body on the corridor must clear **every** box by its ``margin``.
+#:
+#: The base and mast bands carry :data:`CORRIDOR_MARGIN`; the arm band's margin
+#: is zero -- its exact envelope.  Issue #158 M10 measured the per-arm IK
+#: ceilings: at the arm band the graspables are already at the edge of reach
+#: (``bowl_1``'s seed ``y`` *is* its limit), so no outward margin is reachable
+#: while they stay graspable (M13), and pushing them out broke the arm tests.
 ROBOT_ENVELOPES = (
-    (0.15, 0.0, 0.115),      # base disc (r 0.15) + wheels, on the floor
-    (0.03, 0.115, 1.445),    # column mast (fused into base_link)
-    (0.294, 0.94, 1.106),    # arm links + jaws at column height 0.30
+    (0.15, 0.0, 0.115, CORRIDOR_MARGIN),     # base disc (r 0.15) + wheels
+    (0.03, 0.115, 1.445, CORRIDOR_MARGIN),   # mast (fused into base_link)
+    (0.294, 0.94, 1.106, 0.0),               # arm links + jaws, exact envelope
 )
 
 #: The kitchen reference pose the charger->kitchen drive aims at (issue #158).
@@ -113,21 +123,22 @@ def _blockers(document):
     """Return the bodies that intrude into the corridor envelopes.
 
     A body matters only if it overlaps the corridor's x-range; within that it
-    must miss every box in :data:`ROBOT_ENVELOPES` by :data:`CORRIDOR_MARGIN` --
-    ``|y| <= half_width + CORRIDOR_MARGIN`` while its z-span overlaps the
-    envelope's is a blocker, so a body grazing an envelope at zero gap (the
-    #158 regression) or merely closing on it fails here.
+    must clear every box in :data:`ROBOT_ENVELOPES` by that band's ``margin`` --
+    a body whose ``|y|`` stays within ``half_width + margin`` while its z-span
+    overlaps the envelope's is a blocker, so a body grazing the base band at
+    zero gap (the #158 regression) or merely closing on it fails here.
     """
     blocking = []
     for (name, x_lo, x_hi, y_lo, y_hi, z_lo, z_hi) in _boxes(document):
         if not _overlaps((x_lo, x_hi), CORRIDOR_X):
             continue  # outside the corridor's x-range: it is not on the path
-        for half_width, env_z_lo, env_z_hi in ROBOT_ENVELOPES:
-            reach = half_width + CORRIDOR_MARGIN
-            if (y_lo <= reach and y_hi >= -reach
-                    and _overlaps((z_lo, z_hi), (env_z_lo, env_z_hi))):
-                blocking.append((name, (y_lo, y_hi), (z_lo, z_hi)))
-                break
+        for half_width, env_z_lo, env_z_hi, margin in ROBOT_ENVELOPES:
+            if not _overlaps((z_lo, z_hi), (env_z_lo, env_z_hi)):
+                continue  # not at this band's height: it cannot touch there
+            if y_lo - half_width >= margin or -half_width - y_hi >= margin:
+                continue  # clear of this band by its margin
+            blocking.append((name, (y_lo, y_hi), (z_lo, z_hi)))
+            break
     return blocking
 
 
@@ -141,7 +152,7 @@ def _goal_blockers(document, goal=GOAL_XY):
     drifted).  The comparison is horizontal only -- the goal is a base pose, and
     the base is what drives to it.  Returns ``(name, x-span, y-span)`` tuples.
     """
-    clearance = ROBOT_ENVELOPES[0][0] + CORRIDOR_MARGIN
+    clearance = ROBOT_ENVELOPES[0][0] + ROBOT_ENVELOPES[0][3]
     blocking = []
     for (name, x_lo, x_hi, y_lo, y_hi, _z_lo, _z_hi) in _boxes(document):
         dx = max(x_lo - goal[0], 0.0, goal[0] - x_hi)
@@ -169,9 +180,9 @@ def test_the_shipped_seed_clears_the_kitchen_goal_approach():
 
     The corridor-band check above only proves the *drive* is unobstructed; the
     goal has to be reachable too.  The counter's near edge used to sit 0.170 m
-    from ``(2.0, 0)`` -- inside the 0.15 m base disc once the base drifted
-    0.045 m, which is exactly the #158 stall -- so the goal approach is checked
-    explicitly at the same margin.
+    from ``(2.0, 0)`` -- inside the 0.15 m base disc once the base drifted,
+    which is exactly the #158 stall -- so the goal approach is checked
+    explicitly at the base band's margin.
     """
     blocking = _goal_blockers(default_seed_document())
     assert not blocking, (
