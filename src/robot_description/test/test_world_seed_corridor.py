@@ -23,9 +23,18 @@ fights the robot and breaks navigation -- the regression that forced PR A's
 derived support pad outside all of them, and -- since issue #158 -- outside the
 **base** and **mast** bands by :data:`CORRIDOR_MARGIN`, so the plant's own
 lateral drift cannot push the base into a body the ideal path would have missed.
-The **arm** band is checked at its exact envelope (:data:`ROBOT_ENVELOPES`): the
-graspables must stay inside the 5-DOF arm's reach, and their measured IK
-ceilings leave no room for an outward margin there (issue #158 M10/M13).
+
+**The arm band is translation-only.** The checks below are a pure ``y`` test:
+they model lateral *position* error but not *heading* error. The arms and
+gripper sit ~**0.35 m** forward of the base centre, so at the observed free-run
+heading error ``|dyaw| = 0.192 rad`` a jaw sweeps ~**0.066 m** laterally, while
+the shipped pads clear the arm envelope by only **0.026-0.036 m**. A passing
+nav pose can therefore graze a pad -- reproduced at ``dist = -0.0009 m``
+between ``world_support_4`` (the bowl's derived pad) and the right jaw (issue
+#158 red team, B1). The guard consequently does **not** prove the corridor is
+clear of the arms under heading error: issue **#159** owns the guard's heading
+term, and PR-C / **#154** owns the object and pad placement that has to clear
+it.
 
 This file is the **fast, geometric** guard for that invariant (issue #152
 R2/R8): it needs no MuJoCo and no sim, so it always runs, and it holds the
@@ -47,14 +56,17 @@ from robot_skills import Point, Pose
 from robot_world import default_seed_document, WorldDocument, WorldObject
 
 #: The clearance the robot needs *beyond* its own envelope, in metres (issue
-#: #158).  The nav stack does not track the corridor centreline exactly: with
-#: the world materialized the base drifts laterally, and ``counter_1``'s 0.020 m
-#: centreline clearance turned that drift into a hard stop 0.264 m short of the
-#: kitchen goal.  The margin applies to the **base/mast** bands and the goal
-#: approach, keeping them clear of the *observed* drift, not merely of the ideal
-#: path; the **arm** band is checked at its exact envelope (see
-#: :data:`ROBOT_ENVELOPES`).  A seed edit that re-tightens the corridor fails
-#: here instead of in a six-minute end-to-end run.
+#: #158).  The nav stack does not track the corridor centreline exactly: across
+#: the recorded *passing* runs the base drifts laterally by ``|dy| <= 0.019 m``
+#: (seven free-run endpoints; the ``dy = 0.045`` figure in the original repro
+#: came from the **blocked** run, not a free one).  With the world materialized,
+#: that drift was enough for ``counter_1``'s 0.020 m centreline clearance to
+#: stop the base 0.264 m short of the kitchen goal.  This margin is therefore
+#: ~5x the measured free-run error (0.10 / 0.019), sized for ordinary run-to-run
+#: spread rather than for one observed endpoint.  It applies to the
+#: **base/mast** bands and the goal approach; the **arm** band is checked at its
+#: exact envelope (see :data:`ROBOT_ENVELOPES`).  A seed edit that re-tightens
+#: the corridor fails here instead of in a six-minute end-to-end run.
 CORRIDOR_MARGIN = 0.10
 
 #: The x-range over which the corridor envelopes matter (R2): it covers the
@@ -70,10 +82,20 @@ CORRIDOR_X = (-0.5, 2.5)
 #: 0.30).  A body on the corridor must clear **every** box by its ``margin``.
 #:
 #: The base and mast bands carry :data:`CORRIDOR_MARGIN`; the arm band's margin
-#: is zero -- its exact envelope.  Issue #158 M10 measured the per-arm IK
-#: ceilings: at the arm band the graspables are already at the edge of reach
-#: (``bowl_1``'s seed ``y`` *is* its limit), so no outward margin is reachable
-#: while they stay graspable (M13), and pushing them out broke the arm tests.
+#: is zero -- its exact envelope, and that envelope is **translation-only** (see
+#: the module docstring): heading error adds ~0.066 m at the arm's 0.35 m
+#: forward lever, which this band does not model (issue **#159**).
+#:
+#: The bodies that bind the arm band are the **derived support pads**, not the
+#: graspable objects: the pads clear the envelope by only 0.026-0.036 m
+#: (``world_support_4`` by 0.026 m), whereas giving the band a
+#: :data:`CORRIDOR_MARGIN`-style margin would require moving each object ~0.066 m
+#: further out.  Issue #158 M10 measured the per-arm IK ceilings: the objects
+#: are already at the edge of reach (``bowl_1``'s seed ``y = -0.44`` *is* its
+#: reach ceiling, and ``mug_1``/``plate_1`` are likewise past theirs), so that
+#: outward move is IK-infeasible while the objects stay graspable (M13), and
+#: pushing them out broke the arm tests.  Clearing the pads under heading error
+#: is therefore a placement problem for PR-C / **#154**, not a seed tweak here.
 ROBOT_ENVELOPES = (
     (0.15, 0.0, 0.115, CORRIDOR_MARGIN),     # base disc (r 0.15) + wheels
     (0.03, 0.115, 1.445, CORRIDOR_MARGIN),   # mast (fused into base_link)
