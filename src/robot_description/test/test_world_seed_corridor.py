@@ -20,7 +20,21 @@ own body at the seed's column height (0.30) occupies three envelopes there
 A physical body whose footprint enters any of those envelopes over that stretch
 fights the robot and breaks navigation -- the regression that forced PR A's
 ``world_objects`` opt-out. The seed therefore has to keep every object and every
-derived support pad outside all of them.
+derived support pad outside all of them, and -- since issue #158 -- outside the
+**base** and **mast** bands by :data:`CORRIDOR_MARGIN`, so the plant's own
+lateral drift cannot push the base into a body the ideal path would have missed.
+
+**The arm band is translation-only.** The checks below are a pure ``y`` test:
+they model lateral *position* error but not *heading* error. The arms and
+gripper sit ~**0.35 m** forward of the base centre, so at the observed free-run
+heading error ``|dyaw| = 0.192 rad`` a jaw sweeps ~**0.066 m** laterally, while
+the shipped pads clear the arm envelope by only **0.026-0.036 m**. A passing
+nav pose can therefore graze a pad -- reproduced at ``dist = -0.0009 m``
+between ``world_support_4`` (the bowl's derived pad) and the right jaw (issue
+#158 red team, B1). The guard consequently does **not** prove the corridor is
+clear of the arms under heading error: issue **#159** owns the guard's heading
+term, and PR-C / **#154** owns the object and pad placement that has to clear
+it.
 
 This file is the **fast, geometric** guard for that invariant (issue #152
 R2/R8): it needs no MuJoCo and no sim, so it always runs, and it holds the
@@ -31,6 +45,8 @@ for real; this file is the guard that fails in a second when a seed edit
 re-introduces a blocker.
 """
 
+import math
+
 from robot_description.world_bodies import (
     derived_support_surfaces,
     physical_geom_for_label,
@@ -39,6 +55,20 @@ from robot_description.world_bodies import (
 from robot_skills import Point, Pose
 from robot_world import default_seed_document, WorldDocument, WorldObject
 
+#: The clearance the robot needs *beyond* its own envelope, in metres (issue
+#: #158).  The nav stack does not track the corridor centreline exactly: across
+#: the recorded *passing* runs the base drifts laterally by ``|dy| <= 0.019 m``
+#: (seven free-run endpoints; the ``dy = 0.045`` figure in the original repro
+#: came from the **blocked** run, not a free one).  With the world materialized,
+#: that drift was enough for ``counter_1``'s 0.020 m centreline clearance to
+#: stop the base 0.264 m short of the kitchen goal.  This margin is therefore
+#: ~5x the measured free-run error (0.10 / 0.019), sized for ordinary run-to-run
+#: spread rather than for one observed endpoint.  It applies to the
+#: **base/mast** bands and the goal approach; the **arm** band is checked at its
+#: exact envelope (see :data:`ROBOT_ENVELOPES`).  A seed edit that re-tightens
+#: the corridor fails here instead of in a six-minute end-to-end run.
+CORRIDOR_MARGIN = 0.10
+
 #: The x-range over which the corridor envelopes matter (R2): it covers the
 #: drive from the charger ``(0, 0)`` to the kitchen ``(2, 0)``.  0.5 m of slack
 #: either side is more than the robot's own ``max |x|`` (0.4914 m), so a body
@@ -46,15 +76,38 @@ from robot_world import default_seed_document, WorldDocument, WorldObject
 CORRIDOR_X = (-0.5, 2.5)
 
 #: The envelopes the robot's body occupies along the corridor, as
-#: ``(half_width_y, z_low, z_high)`` boxes centred on ``y = 0``: the base disc +
-#: wheels, the column mast (fused into ``base_link``) and the arms (issue #152
-#: context §2, re-measured on the compiled model at the seed column height
-#: 0.30).  A body on the corridor must miss **every** one.
+#: ``(half_width_y, z_low, z_high, margin)`` boxes centred on ``y = 0``: the base
+#: disc + wheels, the column mast (fused into ``base_link``) and the arms (issue
+#: #152 context §2, re-measured on the compiled model at the seed column height
+#: 0.30).  A body on the corridor must clear **every** box by its ``margin``.
+#:
+#: The base and mast bands carry :data:`CORRIDOR_MARGIN`; the arm band's margin
+#: is zero -- its exact envelope, and that envelope is **translation-only** (see
+#: the module docstring): heading error adds ~0.066 m at the arm's 0.35 m
+#: forward lever, which this band does not model (issue **#159**).
+#:
+#: The bodies that bind the arm band are the **derived support pads**, not the
+#: graspable objects: the pads clear the envelope by only 0.026-0.036 m
+#: (``world_support_4`` by 0.026 m), whereas giving the band a
+#: :data:`CORRIDOR_MARGIN`-style margin would require moving each object ~0.066 m
+#: further out.  Issue #158 M10 measured the per-arm IK ceilings: the objects
+#: are already at the edge of reach (``bowl_1``'s seed ``y = -0.44`` *is* its
+#: reach ceiling, and ``mug_1``/``plate_1`` are likewise past theirs), so that
+#: outward move is IK-infeasible while the objects stay graspable (M13), and
+#: pushing them out broke the arm tests.  Clearing the pads under heading error
+#: is therefore a placement problem for PR-C / **#154**, not a seed tweak here.
 ROBOT_ENVELOPES = (
-    (0.15, 0.0, 0.115),      # base disc (r 0.15) + wheels, on the floor
-    (0.03, 0.115, 1.445),    # column mast (fused into base_link)
-    (0.294, 0.94, 1.106),    # arm links + jaws at column height 0.30
+    (0.15, 0.0, 0.115, CORRIDOR_MARGIN),     # base disc (r 0.15) + wheels
+    (0.03, 0.115, 1.445, CORRIDOR_MARGIN),   # mast (fused into base_link)
+    (0.294, 0.94, 1.106, 0.0),               # arm links + jaws, exact envelope
 )
+
+#: The kitchen reference pose the charger->kitchen drive aims at (issue #158).
+#: The base must physically reach it, so every body's horizontal AABB has to
+#: clear it by the base envelope plus :data:`CORRIDOR_MARGIN` -- the *approach*
+#: the corridor-band check alone did not cover, and where the counter's 0.170 m
+#: near edge turned the final 0.26 m into a wall.
+GOAL_XY = (2.0, 0.0)
 
 
 def _boxes(document):
@@ -92,19 +145,42 @@ def _blockers(document):
     """Return the bodies that intrude into the corridor envelopes.
 
     A body matters only if it overlaps the corridor's x-range; within that it
-    must miss every box in :data:`ROBOT_ENVELOPES`. Anything intersecting one of
-    them -- ``|y| <= half_width`` while its z-span overlaps the envelope's --
-    is a blocker.
+    must clear every box in :data:`ROBOT_ENVELOPES` by that band's ``margin`` --
+    a body whose ``|y|`` stays within ``half_width + margin`` while its z-span
+    overlaps the envelope's is a blocker, so a body grazing the base band at
+    zero gap (the #158 regression) or merely closing on it fails here.
     """
     blocking = []
     for (name, x_lo, x_hi, y_lo, y_hi, z_lo, z_hi) in _boxes(document):
         if not _overlaps((x_lo, x_hi), CORRIDOR_X):
             continue  # outside the corridor's x-range: it is not on the path
-        for half_width, env_z_lo, env_z_hi in ROBOT_ENVELOPES:
-            if (y_lo <= half_width and y_hi >= -half_width
-                    and _overlaps((z_lo, z_hi), (env_z_lo, env_z_hi))):
-                blocking.append((name, (y_lo, y_hi), (z_lo, z_hi)))
-                break
+        for half_width, env_z_lo, env_z_hi, margin in ROBOT_ENVELOPES:
+            if not _overlaps((z_lo, z_hi), (env_z_lo, env_z_hi)):
+                continue  # not at this band's height: it cannot touch there
+            if y_lo - half_width >= margin or -half_width - y_hi >= margin:
+                continue  # clear of this band by its margin
+            blocking.append((name, (y_lo, y_hi), (z_lo, z_hi)))
+            break
+    return blocking
+
+
+def _goal_blockers(document, goal=GOAL_XY):
+    """Return the bodies that leave the base no room at the kitchen goal.
+
+    :data:`GOAL_XY` is the point the navigation action has to reach, so a body
+    whose horizontal AABB comes within ``base half-width + CORRIDOR_MARGIN`` of
+    it leaves the base no legal resting place there (issue #158: the counter's
+    near edge was 0.170 m away, inside the 0.15 m base disc once the base had
+    drifted).  The comparison is horizontal only -- the goal is a base pose, and
+    the base is what drives to it.  Returns ``(name, x-span, y-span)`` tuples.
+    """
+    clearance = ROBOT_ENVELOPES[0][0] + ROBOT_ENVELOPES[0][3]
+    blocking = []
+    for (name, x_lo, x_hi, y_lo, y_hi, _z_lo, _z_hi) in _boxes(document):
+        dx = max(x_lo - goal[0], 0.0, goal[0] - x_hi)
+        dy = max(y_lo - goal[1], 0.0, goal[1] - y_hi)
+        if math.hypot(dx, dy) < clearance:
+            blocking.append((name, (x_lo, x_hi), (y_lo, y_hi)))
     return blocking
 
 
@@ -119,6 +195,43 @@ def test_the_shipped_seed_has_no_corridor_blocker():
     assert not blocking, (
         'these bodies intrude into the navigation corridor envelopes %r over '
         'x in %r: %r' % (ROBOT_ENVELOPES, CORRIDOR_X, blocking))
+
+
+def test_the_shipped_seed_clears_the_kitchen_goal_approach():
+    """The base can actually occupy the kitchen goal pose (issue #158).
+
+    The corridor-band check above only proves the *drive* is unobstructed; the
+    goal has to be reachable too.  The counter's near edge used to sit 0.170 m
+    from ``(2.0, 0)`` -- inside the 0.15 m base disc once the base drifted,
+    which is exactly the #158 stall -- so the goal approach is checked
+    explicitly at the base band's margin.
+    """
+    blocking = _goal_blockers(default_seed_document())
+    assert not blocking, (
+        'these bodies leave the base no clearance at the kitchen goal %r '
+        '(needs >= %.2f m): %r'
+        % (GOAL_XY, ROBOT_ENVELOPES[0][0] + CORRIDOR_MARGIN, blocking))
+
+
+def test_the_goal_guard_catches_a_body_on_the_approach():
+    """The goal guard is not a tautology: a body at the goal is caught.
+
+    A deliberate counter-example -- a counter planted 0.20 m off the goal, well
+    inside the 0.15 + 0.10 m clearance -- must be reported, or the test above
+    proves nothing.
+    """
+    document = WorldDocument(
+        locations={'charger': Pose.from_xyz(0.0, 0.0, 0.0)},
+        start_location='charger',
+        objects=(
+            WorldObject(object_id='blocker_1', label='counter',
+                        pose=Pose(position=Point(GOAL_XY[0],
+                                                 GOAL_XY[1] + 0.20, 0.40))),
+        ),
+    )
+    blocking = _goal_blockers(document)
+    assert [name for name, _, _ in blocking] == ['blocker_1', 'world_support_0'], (
+        blocking)
 
 
 def test_the_corridor_guard_measures_a_real_scene():

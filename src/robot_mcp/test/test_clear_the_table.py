@@ -122,6 +122,17 @@ SIDE_BY_SIDE = 0.15
 #: drop has to add this back to land just above the counter's **top**.
 COUNTER_HALF_HEIGHT = 0.45
 
+#: The counter's horizontal half-extent -- a 0.60 x 0.60 m footprint, mirroring
+#: ``robot_moveit.scene_geometry.GEOMETRY_BY_LABEL['counter']`` (0.60, 0.60,
+#: 0.90) and
+#: ``robot_description.world_bodies.PHYSICAL_GEOMS_BY_LABEL['counter']``
+#: (0.30, 0.30, 0.45) exactly as :data:`COUNTER_HALF_HEIGHT` mirrors the
+#: vertical one.  An observation gives the counter's *centre*, so a region that
+#: spans the counter has to add this back to get its real footprint: a fixture
+#: must not shape the world's counter with a number that is not the counter's
+#: own (the keep-out test below is the one that needs it).
+COUNTER_HALF_WIDTH = 0.30
+
 #: The travel range the shipped safety limits allow.
 COLUMN = SafetyLimits.defaults().column
 
@@ -357,20 +368,22 @@ async def test_a_keep_out_region_refuses_the_place_into_it_however_often_it_is_t
     prompt wording and no repetition talks that pose past the gate, because
     the gate is below the tool boundary (D21).
 
-    What it does **not** prove is asserted below rather than implied away: by
-    the time the place is refused, the carried object is *already inside the
-    region*, driven there by ``navigate_to``, which commands no pose for a
-    guard to look at.  Stub geometry judges goals -- not swept volumes, not a
-    driving base, not a load in a gripper (see ``robot_mcp/README.md``).
+    What it does **not** prove is the other half of that scope, asserted below
+    rather than left to a comment: the verdict is on the pose *commanded*, and
+    the gate watches nothing else.  The ``navigate_to`` that carried the object
+    here commands a *location*, not a pose, so no verdict was ever taken on the
+    route the base drove or on the load in the gripper -- catching that needs a
+    swept-volume check against the base's route (see ``robot_mcp/README.md``;
+    MoveIt's job, a later feature).
     """
     counter = next(
         spec for spec in default_world().objects if spec.label == 'counter')
     forbidden = KeepOutBox(
         label='counter_top',
-        x_min=counter.pose.position.x - 0.5,
-        x_max=counter.pose.position.x + 0.5,
-        y_min=counter.pose.position.y - 0.5,
-        y_max=counter.pose.position.y + 0.5,
+        x_min=counter.pose.position.x - COUNTER_HALF_WIDTH,
+        x_max=counter.pose.position.x + COUNTER_HALF_WIDTH,
+        y_min=counter.pose.position.y - COUNTER_HALF_WIDTH,
+        y_max=counter.pose.position.y + COUNTER_HALF_WIDTH,
         z_min=counter.pose.position.z,
     )
     backend = MockBackend()
@@ -394,14 +407,24 @@ async def test_a_keep_out_region_refuses_the_place_into_it_however_often_it_is_t
     assert [item['object_id'] for item in refused['observation']['objects']
             if item['held_by'] is not None] == [target]
 
-    # ...and here is the gap, asserted so nobody has to trust a comment about
-    # it: the held object is inside the forbidden box already, carried there
-    # by a navigate the guard never judged. Catching this needs a swept-volume
-    # check against the base's route -- MoveIt's job, a later feature. If this
-    # assertion ever fails, the guard grew that check and this test should be
-    # rewritten to celebrate it.
+    # ...and here is the guard's scope, asserted so nobody has to trust a
+    # comment about it.  The region is the counter's *real* footprint -- this
+    # fixture mirrors the geometry tables, it does not cap the world -- and the
+    # verdict above is on the pose *commanded*: the drop target sits inside the
+    # region and the refusal names it, while the object the guard was never
+    # asked about sits, carried, clear of that region at the kitchen stance.
+    # What no assertion can reach is the rest of the scope, because there is
+    # nothing to read: a ``navigate_to`` commands a location, so the route the
+    # base drove and the load it carried were never judged at all.  Catching
+    # that needs a swept-volume check against the base's route -- MoveIt's job,
+    # a later feature; if it lands, rewrite this block to celebrate it.
+    commanded = pose['position']
+    assert forbidden.contains(
+        Point(commanded['x'], commanded['y'], commanded['z'])), pose
+    assert (f'({commanded["x"]:g}, {commanded["y"]:g}, {commanded["z"]:g})'
+            in refused['reason']), refused['reason']
     held = next(
         item for item in refused['observation']['objects']
         if item['object_id'] == target)
     where = held['pose']['position']
-    assert forbidden.contains(Point(where['x'], where['y'], where['z'])), where
+    assert not forbidden.contains(Point(where['x'], where['y'], where['z'])), where
